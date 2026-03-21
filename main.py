@@ -10,6 +10,7 @@ from telegram.ext import (
 )
 from dotenv import load_dotenv
 from database import init_db, get_or_create_user
+from deepseek import call_deepseek
 
 load_dotenv()
 
@@ -37,17 +38,39 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         raise
 
 
-async def echo_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     text = update.message.text
     logger.info("IN  | user_id=%s | type=text | content=%s", user_id, text)
     try:
-        get_or_create_user(user_id)
-        reply = f"Saathi heard: {text}"
+        user_row = get_or_create_user(user_id)
+
+        # Build context dict from the user's profile row.
+        # Module 7 will enrich this with diary entries + memory archive.
+        user_context = {
+            "user_id":              user_id,
+            "name":                 user_row["name"],
+            "bot_name":             user_row["bot_name"],
+            "persona":              user_row["persona"],
+            "language":             user_row["language"],
+            "city":                 user_row["city"],
+            "spouse_name":          user_row["spouse_name"],
+            "religion":             user_row["religion"],
+            "health_sensitivities": user_row["health_sensitivities"],
+            "music_preferences":    user_row["music_preferences"],
+            "favourite_topics":     user_row["favourite_topics"],
+            "family_members":       None,   # populated in Module 6
+            "recent_diary":         None,   # populated in Module 7
+        }
+
+        reply = call_deepseek(text, user_context)
         await update.message.reply_text(reply)
         logger.info("OUT | user_id=%s | type=text | content=%s", user_id, reply)
     except Exception as e:
         logger.error("ERR | user_id=%s | error=%s", user_id, e)
+        await update.message.reply_text(
+            "Maafi chahta hoon, abhi kuch takleef aa rahi hai. Thodi der mein dobara try karein. 🙏"
+        )
         raise
 
 
@@ -76,7 +99,7 @@ def main() -> None:
 
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo_text))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, receive_voice))
 
     if WEBHOOK_URL:

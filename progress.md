@@ -1,7 +1,7 @@
 # SAATHI BOT — Build Progress
 
 Last updated: 21 March 2026
-Current phase: Module 3 — DeepSeek Integration + System Prompt + Protocol 2
+Current phase: Module 4 — Protocol 1 Mental Health Crisis Handler
 
 ---
 
@@ -48,18 +48,20 @@ Current phase: Module 3 — DeepSeek Integration + System Prompt + Protocol 2
 
 ---
 
-### ⬜ Module 3 — DeepSeek Integration + System Prompt + Protocol 2 Sensitivity Wrapper
-- [ ] DeepSeek API connected and responding
-- [ ] Base system prompt written (Saathi persona, language, cultural context)
-- [ ] Protocol 2 sensitivity wrapper baked into system prompt:
-  - [ ] Indirect emotional distress scanning
-  - [ ] Family conflict venting handling (validate feeling not story)
-  - [ ] Money-guilt signal handling
-  - [ ] Warmth default
-- [ ] Language auto-detection (Hindi in → Hindi out, Hinglish in → Hinglish out)
-- [ ] Context injection working (profile + diary entries fed to DeepSeek)
-- [ ] Warm follow-up question default implemented
-- [ ] Signal-reading graceful exit implemented
+### ✅ Module 3 — DeepSeek Integration + System Prompt + Protocol 2 Sensitivity Wrapper
+- [x] DeepSeek API connected and responding (deepseek-chat / V3)
+- [x] Base system prompt written (Saathi persona, language, cultural context)
+- [x] Protocol 2 sensitivity wrapper baked into system prompt:
+  - [x] Indirect emotional distress scanning (Rule 1)
+  - [x] Family conflict venting handling — validate feeling not story (Rule 2)
+  - [x] Money-guilt signal handling (Rule 3)
+  - [x] Warmth default (Rule 4)
+- [x] Language auto-detection (Hindi in → Hindi out, Hinglish in → Hinglish out)
+- [x] Context injection working (profile fields from users table fed to DeepSeek)
+- [x] Warm follow-up question default implemented
+- [x] Signal-reading graceful exit implemented
+- [x] Human relationship tending nudges in system prompt
+- [x] Persona system (friend/caring_child/grandchild/assistant) shapes tone
 
 ---
 
