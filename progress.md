@@ -1,32 +1,32 @@
 # SAATHI BOT — Build Progress
 
 Last updated: 21 March 2026
-Current phase: Pre-build (all accounts set up, ready to start Module 0)
+Current phase: Module 2 — Database Schema (SQLite, v2-Ready)
 
 ---
 
 ## Module Status
 
-### ⬜ Module 0 — Project Setup
-- [ ] GitHub repo `saathi-bot` created (private)
-- [ ] Railway.app connected to GitHub
-- [ ] All environment variables added to Railway:
+### ✅ Module 0 — Project Setup
+- [x] GitHub repo `saathi-bot` created (private)
+- [x] Railway.app connected to GitHub
+- [x] All environment variables added to Railway:
   - TELEGRAM_BOT_TOKEN
   - DEEPSEEK_API_KEY
   - OPENAI_API_KEY
   - GOOGLE_CLOUD_API_KEY
   - ELEVENLABS_API_KEY
-- [ ] Python project structure created (`main.py`, `requirements.txt`, `.env.example`)
-- [ ] Telegram webhook registered
-- [ ] First successful deployment to Railway (bot responds to /start)
+- [x] Python project structure created (`main.py`, `requirements.txt`, `.env.example`)
+- [x] Telegram webhook registered
+- [x] First successful deployment to Railway (bot responds to /start)
 
 ---
 
-### ⬜ Module 1 — Telegram Bot + Basic Echo
-- [ ] Bot receives text messages and echoes them back
-- [ ] Bot receives voice notes (stores temporarily for Whisper in Module 8)
-- [ ] /start command handled with placeholder greeting
-- [ ] Logging in place (message received, response sent, errors)
+### ✅ Module 1 — Telegram Bot + Basic Echo
+- [x] Bot receives text messages and echoes them back
+- [x] Bot receives voice notes (stores temporarily for Whisper in Module 8)
+- [x] /start command handled with placeholder greeting
+- [x] Logging in place (message received, response sent, errors)
 
 ---
 
