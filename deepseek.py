@@ -151,8 +151,11 @@ def call_deepseek(user_message: str, user_context: dict) -> str:
     response = _get_client().chat.completions.create(
         model="deepseek-chat",
         messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": user_message},
+            {"role": "system",    "content": system_prompt},
+            {"role": "assistant", "content": "I will always respond in English."},
+            {"role": "user",      "content": "Please always reply to me in English only."},
+            {"role": "assistant", "content": "Understood. I will only respond in English unless you write to me in another language first."},
+            {"role": "user",      "content": user_message},
         ],
         temperature=0.8,
         max_tokens=400,
