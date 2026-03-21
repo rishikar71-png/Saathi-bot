@@ -210,7 +210,7 @@ See `progress.md` for detailed status. Summary:
 |---|---|---|
 | 0 | Project setup (Railway, GitHub, env vars) | ✅ Done |
 | 1 | Telegram bot + basic message echo | ✅ Done |
-| 2 | Database schema (SQLite, v2-ready) | ⬜ Not started |
+| 2 | Database schema (SQLite, v2-ready) | ✅ Done |
 | 3 | DeepSeek integration + system prompt + Protocol 2 wrapper | ⬜ Not started |
 | 4 | Protocol 1 — Mental health crisis handler | ⬜ Not started |
 | 5 | Protocol 3 — Financial/legal handler | ⬜ Not started |
@@ -263,3 +263,4 @@ See `progress.md` for detailed status. Summary:
 | 21 Mar 2026 | CLAUDE.md created. Documents read. Ready to begin Module 0. | Build order confirmed. Database to be v2-ready from day one. | Start Module 0: project setup + env vars |
 | 21 Mar 2026 | Module 0 complete. Bot live on Railway, responding to /start on Telegram. | Railway + GitHub pipeline confirmed working. | Start Module 1: text/voice echo + logging |
 | 21 Mar 2026 | Module 1 complete. database.py created (users table). main.py updated: text echo, voice handler, structured logging, /start preserved. | saathi.db excluded from git via .gitignore. Voice handler stubs file_id for Whisper in Module 8. | Start Module 2: full v2-ready SQLite schema |
+| 21 Mar 2026 | Module 2 complete. Full 10-table schema in database.py. Users table migrated safely. All indexes in place. | Named tables: users, family_members, messages, diary_entries, health_logs, medicine_reminders, memories, heartbeat_log, protocol_log, session_log. | Start Module 3: DeepSeek + system prompt + Protocol 2 |

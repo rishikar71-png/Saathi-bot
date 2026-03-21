@@ -1,7 +1,7 @@
 # SAATHI BOT — Build Progress
 
 Last updated: 21 March 2026
-Current phase: Module 2 — Database Schema (SQLite, v2-Ready)
+Current phase: Module 3 — DeepSeek Integration + System Prompt + Protocol 2
 
 ---
 
@@ -30,18 +30,21 @@ Current phase: Module 2 — Database Schema (SQLite, v2-Ready)
 
 ---
 
-### ⬜ Module 2 — Database Schema (SQLite, v2-Ready)
+### ✅ Module 2 — Database Schema (SQLite, v2-Ready)
 **Critical: design with family caregiver dashboard in mind from day one.**
-- [ ] `users` table
-- [ ] `family_contacts` table
-- [ ] `diary_entries` table
-- [ ] `health_log` table
-- [ ] `memory_archive` table
-- [ ] `reminders` table
-- [ ] `heartbeat_log` table
-- [ ] `protocol_log` table
-- [ ] `session_log` table
-- [ ] Schema reviewed — all v2 dashboard fields present
+- [x] `users` table (expanded with full onboarding + persona + safety fields)
+- [x] `family_members` table (roles, notification prefs, setup user flag)
+- [x] `messages` table (full in/out history, session grouping)
+- [x] `diary_entries` table (mood score, health, family, protocol flags)
+- [x] `health_logs` table (medicine ack + passive health mentions)
+- [x] `medicine_reminders` table (schedule, ack/miss streaks)
+- [x] `memories` table (life archive with theme + question linking)
+- [x] `heartbeat_log` table (ping history, family alert history)
+- [x] `protocol_log` table (Protocol 1 + 3 trigger events, anonymised)
+- [x] `session_log` table (session length, frequency, hour-of-day)
+- [x] Schema reviewed — all v2 dashboard fields present
+- [x] Indexes on user_id for all tables + targeted query indexes
+- [x] Migration function for existing users table (no data loss)
 
 ---
 
