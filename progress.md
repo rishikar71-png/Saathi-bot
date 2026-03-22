@@ -1,7 +1,7 @@
 # SAATHI BOT — Build Progress
 
 Last updated: 22 March 2026
-Current phase: Module 6 — Onboarding Flow
+Current phase: Module 7 — Memory System
 
 ---
 
@@ -85,15 +85,17 @@ Current phase: Module 6 — Onboarding Flow
 
 ---
 
-### ⬜ Module 6 — Onboarding Flow (Child-Led, 18 Questions)
-- [ ] First-time user detection
-- [ ] Family setup mode offered to adult child
-- [ ] All 18 questions asked in sequence with natural conversation
-- [ ] Answers stored in `users` and `family_contacts` tables
-- [ ] Bot naming step included
-- [ ] Persona selection included
-- [ ] Heartbeat consent collected
-- [ ] Warm handoff message to senior generated in their language
+### ✅ Module 6 — Onboarding Flow (Child-Led, 18 Questions)
+- [x] First-time user detection (onboarding_complete = 0 gate in main.py)
+- [x] Onboarding offered as family setup mode on /start
+- [x] All 18 questions asked one at a time, personalised with earlier answers (setup_name, senior_name)
+- [x] Answers stored progressively: users table (name, salutation, city, language, spouse, health, medicines, music, topics, religion, news, persona, bot_name, wake/sleep times, heartbeat consent) + family_members table (setup person, children, grandchildren, emergency contact)
+- [x] Bot naming step (step 16) — stores in users.bot_name
+- [x] Persona selection (step 15) — friend / caring_child / grandchild / assistant
+- [x] Heartbeat consent collected (step 18) — sets heartbeat_consent + heartbeat_enabled
+- [x] Warm personalised completion message with senior name + bot name
+- [x] /start mid-onboarding resumes from current step (not restart)
+- [x] medicines_raw column added to users table (parsed by Module 11)
 
 ---
 
@@ -216,3 +218,4 @@ Current phase: Module 6 — Onboarding Flow
 | progress.md | This file — module-by-module build tracker |
 | protocol1.py | Protocol 1 crisis handler — keyword matching, staged responses, escalation |
 | protocol3.py | Protocol 3 financial/legal handler — three bucket keyword matching, warm deflection response |
+| onboarding.py | Child-led 18-question onboarding flow — progressive DB saving, personalised questions, warm completion |

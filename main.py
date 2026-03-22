@@ -13,6 +13,11 @@ from database import init_db, get_or_create_user
 from deepseek import call_deepseek
 from protocol1 import check_protocol1
 from protocol3 import check_protocol3
+from onboarding import (
+    get_intro_message,
+    get_resume_prompt,
+    handle_onboarding_answer,
+)
 
 load_dotenv()
 
@@ -36,10 +41,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     logger.info("IN  | user_id=%s | type=command | content=/start", user_id)
     try:
-        get_or_create_user(user_id)
-        reply = "Namaste! Main Saathi hoon. 🙏"
-        await update.message.reply_text(reply)
-        logger.info("OUT | user_id=%s | type=text | content=%s", user_id, reply)
+        user_row = get_or_create_user(user_id)
+
+        if not user_row["onboarding_complete"]:
+            step = user_row["onboarding_step"]
+            if step == 0:
+                # First ever /start — begin onboarding
+                reply = get_intro_message()
+            else:
+                # /start sent again mid-onboarding — resume from current question
+                reply = get_resume_prompt(user_id, step)
+        else:
+            reply = "Namaste! Main yahan hoon. 🙏"
+
+        await update.message.reply_text(reply, parse_mode="Markdown")
+        logger.info("OUT | user_id=%s | type=text | content=%s", user_id, reply[:80])
     except Exception as e:
         logger.error("ERR | user_id=%s | error=%s", user_id, e)
         raise
@@ -51,6 +67,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     logger.info("IN  | user_id=%s | type=text | content=%s", user_id, text)
     try:
         user_row = get_or_create_user(user_id)
+
+        # --- Onboarding gate ---
+        if not user_row["onboarding_complete"]:
+            reply = handle_onboarding_answer(user_id, user_row["onboarding_step"], text)
+            await update.message.reply_text(reply, parse_mode="Markdown")
+            logger.info("OUT | user_id=%s | type=onboarding | step=%d", user_id, user_row["onboarding_step"])
+            return
 
         # Build context dict from the user's profile row.
         # Module 7 will enrich this with diary entries + memory archive.
@@ -66,7 +89,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "health_sensitivities": user_row["health_sensitivities"],
             "music_preferences":    user_row["music_preferences"],
             "favourite_topics":     user_row["favourite_topics"],
-            "family_members":       None,   # populated in Module 6
+            "family_members":       None,   # TODO Module 7: inject from family_members table
             "recent_diary":         None,   # populated in Module 7
         }
 

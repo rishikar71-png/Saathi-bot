@@ -46,6 +46,7 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             music_preferences       TEXT,
             news_interests          TEXT,
             health_sensitivities    TEXT,
+            medicines_raw           TEXT,
             wake_time               TEXT,
             sleep_time              TEXT,
             evening_checkin_time    TEXT,
@@ -248,6 +249,7 @@ _USERS_NEW_COLUMNS = [
     "ALTER TABLE users ADD COLUMN music_preferences TEXT",
     "ALTER TABLE users ADD COLUMN news_interests TEXT",
     "ALTER TABLE users ADD COLUMN health_sensitivities TEXT",
+    "ALTER TABLE users ADD COLUMN medicines_raw TEXT",
     "ALTER TABLE users ADD COLUMN wake_time TEXT",
     "ALTER TABLE users ADD COLUMN sleep_time TEXT",
     "ALTER TABLE users ADD COLUMN evening_checkin_time TEXT",
@@ -292,6 +294,72 @@ def _create_indexes(conn: sqlite3.Connection) -> None:
 # ---------------------------------------------------------------------------
 # Helper — used by message handlers in main.py
 # ---------------------------------------------------------------------------
+
+def update_user_fields(user_id: int, **kwargs) -> None:
+    """Update one or more columns in the users table in a single query."""
+    if not kwargs:
+        return
+    set_clause = ", ".join(f"{k} = ?" for k in kwargs)
+    values = list(kwargs.values()) + [user_id]
+    with get_connection() as conn:
+        conn.execute(
+            f"UPDATE users SET {set_clause}, updated_at = datetime('now') WHERE user_id = ?",
+            values,
+        )
+        conn.commit()
+
+
+def advance_onboarding_step(user_id: int, step: int) -> None:
+    update_user_fields(user_id, onboarding_step=step)
+
+
+def complete_onboarding(user_id: int) -> None:
+    update_user_fields(user_id, onboarding_complete=1, onboarding_step=19)
+
+
+def add_family_members_bulk(user_id: int, names: list, relationship: str) -> None:
+    """Insert multiple family members in one transaction."""
+    if not names:
+        return
+    with get_connection() as conn:
+        for name in names:
+            clean = name.strip().title()
+            if clean and clean.lower() not in ("no", "none", "nahi"):
+                conn.execute(
+                    """
+                    INSERT INTO family_members (user_id, name, relationship, role)
+                    VALUES (?, ?, ?, 'family')
+                    """,
+                    (user_id, clean, relationship),
+                )
+        conn.commit()
+
+
+def save_setup_person(user_id: int, name: str) -> None:
+    """Record the adult child who performed onboarding in family_members."""
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO family_members (user_id, name, relationship, role, is_setup_user)
+            VALUES (?, ?, 'setup', 'family', 1)
+            """,
+            (user_id, name.strip()),
+        )
+        conn.commit()
+
+
+def save_emergency_contact(user_id: int, name: str, phone: str) -> None:
+    """Save the emergency contact collected during onboarding."""
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO family_members (user_id, name, relationship, phone, role)
+            VALUES (?, ?, 'emergency_contact', ?, 'emergency')
+            """,
+            (user_id, name.strip(), phone.strip()),
+        )
+        conn.commit()
+
 
 def log_protocol_event(
     user_id: int,
