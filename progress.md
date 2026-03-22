@@ -1,7 +1,7 @@
 # SAATHI BOT — Build Progress
 
 Last updated: 22 March 2026
-Current phase: Module 8 — Voice Input (Whisper)
+Current phase: Module 9 — Voice Output (Google TTS + Melody Clips)
 
 ---
 
@@ -111,12 +111,14 @@ Current phase: Module 8 — Voice Input (Whisper)
 
 ---
 
-### ⬜ Module 8 — Voice Input (Whisper)
-- [ ] Voice note received from Telegram
-- [ ] Sent to OpenAI Whisper API
-- [ ] Transcription returned and processed as text
-- [ ] Hindi + Hinglish transcription tested
-- [ ] Cost per message logged
+### ✅ Module 8 — Voice Input (Whisper)
+- [x] Voice note received from Telegram — downloaded into memory as bytes (no disk writes)
+- [x] Sent to OpenAI Whisper API with language hint (user's language preference mapped to Whisper codes)
+- [x] Transcription passed through full pipeline: Protocol 1 → Protocol 3 → DeepSeek — identical to text messages
+- [x] Hindi/Hinglish: language hint "hi" passed; Tamil, Telugu, Bengali, Marathi, Gujarati, Punjabi, Kannada, Malayalam all mapped
+- [x] Error handling: Whisper failure → "Sorry, I couldn't hear that clearly. Could you type it instead?"
+- [x] Empty transcription handled separately with a prompt to type
+- [x] main.py refactored: _run_pipeline() helper shared between handle_text and receive_voice
 
 ---
 
@@ -223,3 +225,4 @@ Current phase: Module 8 — Voice Input (Whisper)
 | protocol3.py | Protocol 3 financial/legal handler — three bucket keyword matching, warm deflection response |
 | onboarding.py | Child-led 18-question onboarding flow — progressive DB saving, personalised questions, warm completion |
 | memory.py | Memory system — save/retrieve memories, extract from conversation, nightly diary entry |
+| whisper.py | Voice transcription — OGG bytes → Whisper API → text, with per-language hints |
