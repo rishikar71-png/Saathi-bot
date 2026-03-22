@@ -1,7 +1,7 @@
 # SAATHI BOT — Build Progress
 
 Last updated: 22 March 2026
-Current phase: Module 12 — Daily Rituals
+Current phase: Module 14 — Family Integration
 
 ---
 
