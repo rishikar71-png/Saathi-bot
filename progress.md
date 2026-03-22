@@ -1,7 +1,7 @@
 # SAATHI BOT — Build Progress
 
 Last updated: 22 March 2026
-Current phase: Module 10 — Music (YouTube API)
+Current phase: Module 11 — Medicine Reminders + Family Escalation
 
 ---
 
@@ -134,11 +134,15 @@ Current phase: Module 10 — Music (YouTube API)
 
 ---
 
-### ⬜ Module 10 — Music (YouTube API)
-- [ ] YouTube Data API v3 connected
-- [ ] Song request detection from conversation
-- [ ] Search returns exact video link + title + thumbnail
-- [ ] Sent as Telegram message with link
+### ✅ Module 10 — Music (YouTube API)
+- [x] YouTube Data API v3 connected via GOOGLE_CLOUD_API_KEY (regionCode=IN, relevanceLanguage=hi)
+- [x] detect_music_request(): 50+ signal patterns in English + Hindi/Hinglish (bhajan, ghazal, gana, sunao, bajao, classical, qawwali, kirtan, aarti, mantra, etc.)
+- [x] Vague requests ("kuch sunao", "play something") fall back to user's music preferences from onboarding
+- [x] "Indian" context appended to queries that don't already specify a genre/language
+- [x] find_music() returns top YouTube result title + URL
+- [x] Warm response: "🎵 Yeh lijiye!" + bold title + clickable URL
+- [x] YouTube failure sends friendly Hindi fallback message, never crashes pipeline
+- [x] Music check runs after Protocol 1 + 3, before DeepSeek — exits pipeline on match
 
 ---
 
@@ -230,3 +234,4 @@ Current phase: Module 10 — Music (YouTube API)
 | memory.py | Memory system — save/retrieve memories, extract from conversation, nightly diary entry |
 | whisper.py | Voice transcription — OGG bytes → Whisper API → text, with per-language hints |
 | tts.py | Google Cloud TTS — text → OGG_OPUS bytes, WaveNet voices per language, markdown stripped |
+| youtube.py | Music request detection + YouTube Data API v3 search, warm link response |

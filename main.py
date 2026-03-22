@@ -22,6 +22,7 @@ from onboarding import (
 from memory import extract_and_save_memories
 from whisper import transcribe_voice
 from tts import text_to_speech
+from youtube import detect_music_request, find_music, build_music_message
 
 load_dotenv()
 
@@ -102,6 +103,25 @@ async def _run_pipeline(
     if protocol3_reply:
         await update.message.reply_text(protocol3_reply)
         logger.info("OUT | user_id=%s | type=protocol3", user_id)
+        return
+
+    # --- Music request check (runs BEFORE DeepSeek, AFTER protocols) ---
+    music_query = detect_music_request(
+        text, music_preferences=user_context.get("music_preferences") or ""
+    )
+    if music_query:
+        try:
+            title, url = find_music(music_query)
+            reply = build_music_message(title, url)
+            await update.message.reply_text(reply, parse_mode="Markdown")
+            save_message_record(user_id, "out", reply)
+            logger.info("OUT | user_id=%s | type=music | query=%r", user_id, music_query)
+        except Exception as yt_err:
+            logger.warning("YOUTUBE | user_id=%s | failed: %s", user_id, yt_err)
+            await update.message.reply_text(
+                "Koshish ki lekin abhi koi gaana nahi mil raha. "
+                "Thodi der mein dobara try karein! 🙏"
+            )
         return
 
     # --- DeepSeek ---
