@@ -1,7 +1,7 @@
 # SAATHI BOT — Build Progress
 
 Last updated: 22 March 2026
-Current phase: Module 5 — Protocol 3 Financial/Legal Handler
+Current phase: Module 6 — Onboarding Flow
 
 ---
 
@@ -76,12 +76,12 @@ Current phase: Module 5 — Protocol 3 Financial/Legal Handler
 
 ---
 
-### ⬜ Module 5 — Protocol 3: Financial/Legal Handler
-- [ ] Trigger keyword list compiled (Bucket 1, 2, 3)
-- [ ] Runs BEFORE DeepSeek on every message
-- [ ] Response posture implemented (5-step)
-- [ ] Neutral on transaction, warm on feeling
-- [ ] Protocol trigger logged to `protocol_log` table
+### ✅ Module 5 — Protocol 3: Financial/Legal Handler
+- [x] Trigger keyword list compiled (Bucket 1, 2, 3) — Hindi/Hinglish/English, 60+ patterns
+- [x] Runs BEFORE DeepSeek, AFTER Protocol 1, on every message
+- [x] Response posture implemented (5-step): acknowledge → name the weight → honest limits → real human → leave door open
+- [x] Completely neutral on transaction — warm on feeling only
+- [x] Protocol trigger logged to `protocol_log` table (bucket name recorded)
 
 ---
 
@@ -215,3 +215,4 @@ Current phase: Module 5 — Protocol 3 Financial/Legal Handler
 | CLAUDE.md | Master context — read at start of every session |
 | progress.md | This file — module-by-module build tracker |
 | protocol1.py | Protocol 1 crisis handler — keyword matching, staged responses, escalation |
+| protocol3.py | Protocol 3 financial/legal handler — three bucket keyword matching, warm deflection response |

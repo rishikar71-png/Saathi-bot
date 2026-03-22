@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from database import init_db, get_or_create_user
 from deepseek import call_deepseek
 from protocol1 import check_protocol1
+from protocol3 import check_protocol3
 
 load_dotenv()
 
@@ -76,6 +77,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             _protocol1_session_counts[user_id] = session_count + 1
             await update.message.reply_text(protocol1_reply)
             logger.info("OUT | user_id=%s | type=protocol1 | stage=%d", user_id, session_count + 1)
+            return
+
+        # --- Protocol 3 check (runs BEFORE DeepSeek, AFTER Protocol 1) ---
+        protocol3_reply = check_protocol3(user_id, text)
+        if protocol3_reply:
+            await update.message.reply_text(protocol3_reply)
+            logger.info("OUT | user_id=%s | type=protocol3", user_id)
             return
 
         reply = call_deepseek(text, user_context)
