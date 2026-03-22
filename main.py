@@ -23,6 +23,11 @@ from memory import extract_and_save_memories
 from whisper import transcribe_voice
 from tts import text_to_speech
 from youtube import detect_music_request, find_music, build_music_message
+from reminders import (
+    check_and_send_reminders,
+    is_acknowledgement,
+    mark_reminder_acknowledged,
+)
 
 load_dotenv()
 
@@ -59,6 +64,20 @@ async def _run_pipeline(
     input_type is "text" or "voice" — used for message logging only.
     """
     save_message_record(user_id, "in", text, message_type=input_type)
+
+    # --- Medicine reminder acknowledgement ---
+    # Checked before anything else so 👍 is never routed to DeepSeek.
+    # mark_reminder_acknowledged only matches if there is a reminder sent
+    # in the last 2 hours that is still unacknowledged.
+    if user_row["onboarding_complete"] and is_acknowledgement(text):
+        if mark_reminder_acknowledged(user_id):
+            ack_reply = (
+                "Shukriya! Dawai le li — bahut achha kiya. "
+                "Apna khayal rakhein. 🙏"
+            )
+            await update.message.reply_text(ack_reply)
+            logger.info("OUT | user_id=%s | type=reminder_ack", user_id)
+            return
 
     # --- Onboarding gate ---
     if not user_row["onboarding_complete"]:
@@ -234,6 +253,18 @@ async def receive_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 # ---------------------------------------------------------------------------
+# Scheduler job — runs every 60 seconds via PTB JobQueue (APScheduler)
+# ---------------------------------------------------------------------------
+
+async def reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Called every minute. Sends due reminders and escalates unacknowledged ones."""
+    try:
+        await check_and_send_reminders(context.bot)
+    except Exception as e:
+        logger.error("SCHEDULER | reminder_job failed: %s", e)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -245,6 +276,10 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, receive_voice))
+
+    # Register the reminder scheduler — fires every 60 seconds, first check after 10s
+    app.job_queue.run_repeating(reminder_job, interval=60, first=10)
+    logger.info("Reminder scheduler registered (interval=60s)")
 
     if WEBHOOK_URL:
         logger.info("Starting webhook mode on port %s", PORT)

@@ -16,6 +16,7 @@ def init_db() -> None:
     with get_connection() as conn:
         _create_tables(conn)
         _migrate_users_table(conn)
+        _migrate_reminders_table(conn)
         _create_indexes(conn)
         conn.commit()
 
@@ -151,11 +152,12 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             schedule_time   TEXT    NOT NULL,
             days_of_week    TEXT    DEFAULT 'daily',
             is_active       INTEGER DEFAULT 1,
-            last_sent_at    TEXT,
-            last_acked_at   TEXT,
-            ack_streak      INTEGER DEFAULT 0,
-            miss_streak     INTEGER DEFAULT 0,
-            created_at      TEXT    DEFAULT (datetime('now'))
+            last_sent_at      TEXT,
+            last_acked_at     TEXT,
+            family_alerted_at TEXT,
+            ack_streak        INTEGER DEFAULT 0,
+            miss_streak       INTEGER DEFAULT 0,
+            created_at        TEXT    DEFAULT (datetime('now'))
         )
     """)
 
@@ -263,6 +265,19 @@ _USERS_NEW_COLUMNS = [
 
 def _migrate_users_table(conn: sqlite3.Connection) -> None:
     for sql in _USERS_NEW_COLUMNS:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+
+_REMINDERS_NEW_COLUMNS = [
+    "ALTER TABLE medicine_reminders ADD COLUMN family_alerted_at TEXT",
+]
+
+
+def _migrate_reminders_table(conn: sqlite3.Connection) -> None:
+    for sql in _REMINDERS_NEW_COLUMNS:
         try:
             conn.execute(sql)
         except sqlite3.OperationalError:

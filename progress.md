@@ -1,7 +1,7 @@
 # SAATHI BOT — Build Progress
 
 Last updated: 22 March 2026
-Current phase: Module 11 — Medicine Reminders + Family Escalation
+Current phase: Module 12 — Daily Rituals
 
 ---
 
@@ -146,12 +146,18 @@ Current phase: Module 11 — Medicine Reminders + Family Escalation
 
 ---
 
-### ⬜ Module 11 — Medicine Reminders + Family Escalation
-- [ ] Reminders scheduled per user (from onboarding)
-- [ ] Reminder fires as voice + melody at scheduled time
-- [ ] 3 unanswered attempts → family contact notified
-- [ ] Single 👍 acknowledges and resets counter
-- [ ] Acknowledgement logged in `health_log`
+### ✅ Module 11 — Medicine Reminders + Family Escalation
+- [x] add_reminder(user_id, medicine_name, time_str, frequency) — parses free-form time ("8am", "morning", "21:00") to HH:MM IST
+- [x] get_due_reminders() — matches current IST HH:MM against schedule_time, skips already-sent-today
+- [x] Reminder fires as: bell tone (synthesized C5 WAV, stdlib only) + text message + TTS voice note
+- [x] Single 👍 / "haan" / "le li" / "kha li" acknowledges — updates ack_streak, resets miss_streak
+- [x] Ack detection runs before all other pipeline steps so 👍 is never routed to DeepSeek
+- [x] Family escalation: if unacknowledged for 30+ minutes, warm Telegram message sent to family_members.telegram_user_id
+- [x] seed_reminders_from_raw() parses medicines_raw from onboarding on first scheduler tick
+- [x] check_and_send_reminders(bot) registered as JobQueue job (60s interval) in main.py
+- [x] family_alerted_at column added to medicine_reminders (schema + migration)
+- [x] requirements.txt: [job-queue] extra added (installs APScheduler for PTB JobQueue)
+- [ ] Note: family alert requires telegram_user_id — onboarding currently only collects phone number. Future pass needed.
 
 ---
 
@@ -235,3 +241,4 @@ Current phase: Module 11 — Medicine Reminders + Family Escalation
 | whisper.py | Voice transcription — OGG bytes → Whisper API → text, with per-language hints |
 | tts.py | Google Cloud TTS — text → OGG_OPUS bytes, WaveNet voices per language, markdown stripped |
 | youtube.py | Music request detection + YouTube Data API v3 search, warm link response |
+| reminders.py | Medicine reminders: scheduler, bell tone, TTS voice, ack detection, family escalation |
