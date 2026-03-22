@@ -5,9 +5,9 @@ The adult child sets up Saathi on the senior's Telegram account.
 Questions are asked one at a time; answers are saved progressively to the DB.
 
 Step layout:
-  Step 0  — Intro message + "What is your name?" (setup person)
-  Steps 1–18 — The 18 questions about the senior (from CLAUDE.md)
-  After step 18 is answered → complete_onboarding() + warm handoff message
+  Step 0   — Intro message + "What is your name?" (setup person)
+  Steps 1–20 — The 20 questions about the senior
+  After step 20 is answered → complete_onboarding() + warm handoff message
 
 onboarding_step in the DB always reflects which question we are WAITING to
 receive an answer for. Advancing happens AFTER the answer is saved.
@@ -140,11 +140,18 @@ def _q(step: int, ctx: dict) -> str:
             f"(Or just say 'Saathi' to keep the default.)"
         ),
         17: (
-            f"What time does {senior} usually wake up, "
-            f"and what time do they go to sleep?\n\n"
-            f"(For example: '6am and 10pm')"
+            f"What time in the morning would you like me to check in with {senior}?\n\n"
+            f"(For example: '8am' or '9 baje')"
         ),
         18: (
+            f"What time in the afternoon?\n\n"
+            f"(For example: '1pm' or '2 baje')"
+        ),
+        19: (
+            f"And what time in the evening?\n\n"
+            f"(For example: '7pm' or '8 baje')"
+        ),
+        20: (
             f"Last one — I can do a gentle check-in with {senior} three times "
             f"a day (morning, afternoon, evening) and quietly let you know "
             f"if they don't respond. It's a simple safety net called a heartbeat check.\n\n"
@@ -181,7 +188,7 @@ def handle_onboarding_answer(user_id: int, step: int, text: str) -> str:
 
     Args:
         user_id: Telegram user ID.
-        step:    Current onboarding_step value from the DB (0–18).
+        step:    Current onboarding_step value from the DB (0–20).
         text:    The user's message text.
 
     Returns:
@@ -195,7 +202,7 @@ def handle_onboarding_answer(user_id: int, step: int, text: str) -> str:
 
     next_step = step + 1
 
-    if next_step > 18:
+    if next_step > 20:
         # All questions answered — wrap up
         complete_onboarding(user_id)
         reply = _build_completion_message(user_id, ctx)
@@ -307,11 +314,21 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
         update_user_fields(user_id, bot_name=bot_name)
 
     elif step == 17:
-        # Wake + sleep times
-        wake, sleep = _parse_wake_sleep(t)
-        update_user_fields(user_id, wake_time=wake, sleep_time=sleep)
+        # Morning check-in time
+        hhmm = _parse_single_time(t)
+        update_user_fields(user_id, morning_checkin_time=hhmm, wake_time=hhmm)
 
     elif step == 18:
+        # Afternoon check-in time
+        hhmm = _parse_single_time(t)
+        update_user_fields(user_id, afternoon_checkin_time=hhmm)
+
+    elif step == 19:
+        # Evening check-in time
+        hhmm = _parse_single_time(t)
+        update_user_fields(user_id, evening_checkin_time=hhmm, sleep_time=hhmm)
+
+    elif step == 20:
         # Heartbeat + escalation consent
         consent = 1 if t.lower() in (
             "yes", "haan", "ha", "han", "yeah", "y", "sure",
@@ -389,6 +406,36 @@ def _parse_persona(text: str) -> str:
     if "assistant" in t or "practical" in t or "helpful" in t:
         return "assistant"
     return "friend"
+
+
+def _parse_single_time(text: str) -> str:
+    """Extract a single time from free-form text like '8am', '9 baje', '21:00'.
+    Returns 'HH:MM' string, or None if unparseable."""
+    import re as _re
+    t = text.strip().lower()
+    # Common Hindi time words → defaults
+    _aliases = {
+        "subah": "08:00", "morning": "08:00", "breakfast": "08:00",
+        "dopahar": "13:00", "afternoon": "13:00", "lunch": "13:00",
+        "shaam": "18:00", "evening": "18:00",
+        "raat": "21:00", "night": "21:00", "dinner": "20:00",
+    }
+    for alias, hhmm in _aliases.items():
+        if alias in t:
+            return hhmm
+    m = _re.search(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm|baje)?", t, _re.IGNORECASE)
+    if not m:
+        return None
+    hour = int(m.group(1))
+    minute = int(m.group(2) or 0)
+    period = (m.group(3) or "").lower()
+    if period == "pm" and hour != 12:
+        hour += 12
+    elif period == "am" and hour == 12:
+        hour = 0
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return f"{hour:02d}:{minute:02d}"
 
 
 def _parse_wake_sleep(text: str) -> tuple[str, str]:

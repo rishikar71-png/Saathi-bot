@@ -50,7 +50,10 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             medicines_raw           TEXT,
             wake_time               TEXT,
             sleep_time              TEXT,
+            morning_checkin_time    TEXT,
+            afternoon_checkin_time  TEXT,
             evening_checkin_time    TEXT,
+            last_adapted_at         TEXT,
             heartbeat_consent       INTEGER DEFAULT 0,
             heartbeat_enabled       INTEGER DEFAULT 0,
             escalation_opted_in     INTEGER DEFAULT 0,
@@ -234,6 +237,37 @@ def _create_tables(conn: sqlite3.Connection) -> None:
         )
     """)
 
+    # ------------------------------------------------------------------
+    # user_activity_patterns — tracks first daily message time per user.
+    # Powers adaptive morning check-in time (Module 12).
+    # ------------------------------------------------------------------
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_activity_patterns (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id             INTEGER NOT NULL REFERENCES users(user_id),
+            activity_date       TEXT    NOT NULL,
+            day_of_week         INTEGER NOT NULL CHECK(day_of_week BETWEEN 0 AND 6),
+            first_message_hour  INTEGER NOT NULL CHECK(first_message_hour BETWEEN 0 AND 23),
+            created_at          TEXT    DEFAULT (datetime('now')),
+            UNIQUE(user_id, activity_date)
+        )
+    """)
+
+    # ------------------------------------------------------------------
+    # ritual_log — records when each daily ritual was sent per user.
+    # Prevents double-sending if the scheduler ticks during the same minute.
+    # ------------------------------------------------------------------
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ritual_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL REFERENCES users(user_id),
+            ritual_type TEXT    NOT NULL CHECK(ritual_type IN ('morning', 'afternoon', 'evening')),
+            sent_date   TEXT    NOT NULL,
+            created_at  TEXT    DEFAULT (datetime('now')),
+            UNIQUE(user_id, ritual_type, sent_date)
+        )
+    """)
+
 
 # ---------------------------------------------------------------------------
 # Migration — add new columns to the existing users table without data loss.
@@ -257,6 +291,9 @@ _USERS_NEW_COLUMNS = [
     "ALTER TABLE users ADD COLUMN wake_time TEXT",
     "ALTER TABLE users ADD COLUMN sleep_time TEXT",
     "ALTER TABLE users ADD COLUMN evening_checkin_time TEXT",
+    "ALTER TABLE users ADD COLUMN morning_checkin_time TEXT",
+    "ALTER TABLE users ADD COLUMN afternoon_checkin_time TEXT",
+    "ALTER TABLE users ADD COLUMN last_adapted_at TEXT",
     "ALTER TABLE users ADD COLUMN heartbeat_consent INTEGER DEFAULT 0",
     "ALTER TABLE users ADD COLUMN heartbeat_enabled INTEGER DEFAULT 0",
     "ALTER TABLE users ADD COLUMN escalation_opted_in INTEGER DEFAULT 0",
@@ -303,8 +340,11 @@ def _create_indexes(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_medicine_reminders_user_id ON medicine_reminders(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_memories_user_id           ON memories(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_heartbeat_log_user_id      ON heartbeat_log(user_id)",
-        "CREATE INDEX IF NOT EXISTS idx_protocol_log_user_id       ON protocol_log(user_id)",
-        "CREATE INDEX IF NOT EXISTS idx_session_log_user_id        ON session_log(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_protocol_log_user_id           ON protocol_log(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_session_log_user_id            ON session_log(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_activity_patterns_user_id      ON user_activity_patterns(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_activity_patterns_date         ON user_activity_patterns(user_id, activity_date)",
+        "CREATE INDEX IF NOT EXISTS idx_ritual_log_user_id             ON ritual_log(user_id)",
     ]
     for sql in indexes:
         conn.execute(sql)
@@ -333,7 +373,7 @@ def advance_onboarding_step(user_id: int, step: int) -> None:
 
 
 def complete_onboarding(user_id: int) -> None:
-    update_user_fields(user_id, onboarding_complete=1, onboarding_step=19)
+    update_user_fields(user_id, onboarding_complete=1, onboarding_step=21)
 
 
 def add_family_members_bulk(user_id: int, names: list, relationship: str) -> None:

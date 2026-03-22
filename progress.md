@@ -163,13 +163,23 @@ Current phase: Module 12 — Daily Rituals
 
 ---
 
-### ⬜ Module 12 — Daily Rituals
-- [ ] Morning briefing (name + weather + news + cricket + On This Day + religious/motivational + reminders + open question)
-- [ ] Evening check-in + daily reflection prompt
-- [ ] 'On This Day' content source integrated
-- [ ] Festival/occasion calendar loaded (full Indian calendar)
-- [ ] Family birthday/anniversary reminders from onboarding
-- [ ] Daily trivia question
+### ✅ Module 12 — Daily Rituals
+- [x] Three check-in questions added to onboarding (steps 17/18/19): morning, afternoon, evening times stored in users table
+- [x] Heartbeat consent moves to step 20; onboarding now completes at step 21
+- [x] morning_checkin_time, afternoon_checkin_time columns added to users (evening_checkin_time was already present)
+- [x] user_activity_patterns table: records first daily message hour + day_of_week per user (UNIQUE per user/date)
+- [x] ritual_log table: prevents double-sending per user/ritual_type/date
+- [x] rituals.py: check_and_send_rituals() queries users by stored check-in time, sends via DeepSeek + TTS
+- [x] Morning briefing: warm greeting + thought for the day (religion/topics aligned) + one open question
+- [x] Afternoon check-in: warm one-line prompt
+- [x] Evening check-in: daily reflection (one good thing from today)
+- [x] record_first_message(user_id) called on every inbound message — tracks waking-hours first message only (5am–11pm)
+- [x] Adaptive learning: after 7+ days data, nudge morning_checkin_time toward average first-message hour (max ±30 min per week, skips if delta <15 min)
+- [x] Adaptation rate-limited: last_adapted_at column in users, re-adapts only after 7 days
+- [x] ritual_job() registered in JobQueue (60s interval, 15s offset from reminder_job)
+- [ ] Weather/news/cricket/On This Day — external API integrations deferred to later pass
+- [ ] Festival/occasion calendar — deferred
+- [ ] Family birthday/anniversary reminders from onboarding — deferred
 
 ---
 

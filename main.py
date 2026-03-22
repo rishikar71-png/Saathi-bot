@@ -28,6 +28,7 @@ from reminders import (
     is_acknowledgement,
     mark_reminder_acknowledged,
 )
+from rituals import check_and_send_rituals, record_first_message
 
 load_dotenv()
 
@@ -64,6 +65,9 @@ async def _run_pipeline(
     input_type is "text" or "voice" — used for message logging only.
     """
     save_message_record(user_id, "in", text, message_type=input_type)
+
+    # Track first message of the day for adaptive ritual scheduling
+    record_first_message(user_id)
 
     # --- Medicine reminder acknowledgement ---
     # Checked before anything else so 👍 is never routed to DeepSeek.
@@ -264,6 +268,14 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("SCHEDULER | reminder_job failed: %s", e)
 
 
+async def ritual_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Called every minute. Sends morning/afternoon/evening rituals at user-set times."""
+    try:
+        await check_and_send_rituals(context.bot)
+    except Exception as e:
+        logger.error("SCHEDULER | ritual_job failed: %s", e)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -280,6 +292,10 @@ def main() -> None:
     # Register the reminder scheduler — fires every 60 seconds, first check after 10s
     app.job_queue.run_repeating(reminder_job, interval=60, first=10)
     logger.info("Reminder scheduler registered (interval=60s)")
+
+    # Register the ritual scheduler — same interval, offset by 15s to spread load
+    app.job_queue.run_repeating(ritual_job, interval=60, first=15)
+    logger.info("Ritual scheduler registered (interval=60s)")
 
     if WEBHOOK_URL:
         logger.info("Starting webhook mode on port %s", PORT)
