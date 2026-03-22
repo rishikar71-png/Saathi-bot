@@ -53,6 +53,7 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             evening_checkin_time    TEXT,
             heartbeat_consent       INTEGER DEFAULT 0,
             heartbeat_enabled       INTEGER DEFAULT 0,
+            escalation_opted_in     INTEGER DEFAULT 0,
             onboarding_complete     INTEGER DEFAULT 0,
             onboarding_step         INTEGER DEFAULT 0,
             last_active_at          TEXT,
@@ -155,6 +156,7 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             last_sent_at      TEXT,
             last_acked_at     TEXT,
             family_alerted_at TEXT,
+            reminder_attempt  INTEGER DEFAULT 0,
             ack_streak        INTEGER DEFAULT 0,
             miss_streak       INTEGER DEFAULT 0,
             created_at        TEXT    DEFAULT (datetime('now'))
@@ -257,6 +259,7 @@ _USERS_NEW_COLUMNS = [
     "ALTER TABLE users ADD COLUMN evening_checkin_time TEXT",
     "ALTER TABLE users ADD COLUMN heartbeat_consent INTEGER DEFAULT 0",
     "ALTER TABLE users ADD COLUMN heartbeat_enabled INTEGER DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN escalation_opted_in INTEGER DEFAULT 0",
     "ALTER TABLE users ADD COLUMN onboarding_step INTEGER DEFAULT 0",
     "ALTER TABLE users ADD COLUMN last_active_at TEXT",
     "ALTER TABLE users ADD COLUMN updated_at TEXT DEFAULT (datetime('now'))",
@@ -273,6 +276,7 @@ def _migrate_users_table(conn: sqlite3.Connection) -> None:
 
 _REMINDERS_NEW_COLUMNS = [
     "ALTER TABLE medicine_reminders ADD COLUMN family_alerted_at TEXT",
+    "ALTER TABLE medicine_reminders ADD COLUMN reminder_attempt INTEGER DEFAULT 0",
 ]
 
 

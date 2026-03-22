@@ -148,15 +148,17 @@ Current phase: Module 12 — Daily Rituals
 
 ### ✅ Module 11 — Medicine Reminders + Family Escalation
 - [x] add_reminder(user_id, medicine_name, time_str, frequency) — parses free-form time ("8am", "morning", "21:00") to HH:MM IST
-- [x] get_due_reminders() — matches current IST HH:MM against schedule_time, skips already-sent-today
+- [x] get_due_reminders() — initial send at schedule_time + up to 2 retries at 30-min intervals; skips if acked
 - [x] Reminder fires as: bell tone (synthesized C5 WAV, stdlib only) + text message + TTS voice note
-- [x] Single 👍 / "haan" / "le li" / "kha li" acknowledges — updates ack_streak, resets miss_streak
+- [x] Single 👍 / "haan" / "le li" / "kha li" acknowledges — updates ack_streak, resets miss_streak, resets reminder_attempt
 - [x] Ack detection runs before all other pipeline steps so 👍 is never routed to DeepSeek
-- [x] Family escalation: if unacknowledged for 30+ minutes, warm Telegram message sent to family_members.telegram_user_id
+- [x] Three attempts before escalation: reminder sent at 0 min, +30 min, +60 min; family alerted only after 3rd goes unacknowledged (90 min total)
+- [x] Explicit opt-in only: escalation_opted_in INTEGER DEFAULT 0 in users table; family never alerted unless user opted in at onboarding
 - [x] seed_reminders_from_raw() parses medicines_raw from onboarding on first scheduler tick
 - [x] check_and_send_reminders(bot) registered as JobQueue job (60s interval) in main.py
-- [x] family_alerted_at column added to medicine_reminders (schema + migration)
-- [x] requirements.txt: [job-queue] extra added (installs APScheduler for PTB JobQueue)
+- [x] family_alerted_at + reminder_attempt columns added to medicine_reminders (schema + migration)
+- [x] escalation_opted_in column added to users (schema + migration)
+- [x] onboarding step 18 sets escalation_opted_in alongside heartbeat_consent and heartbeat_enabled
 - [ ] Note: family alert requires telegram_user_id — onboarding currently only collects phone number. Future pass needed.
 
 ---

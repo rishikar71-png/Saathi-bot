@@ -238,8 +238,12 @@ def add_reminder(
 
 def get_due_reminders() -> list:
     """
-    Return active reminders whose schedule_time matches the current IST minute
-    and have not already been sent today.
+    Return active reminders that are due to be sent now.
+
+    Two cases are returned:
+    1. Initial send — schedule_time matches current IST minute and not sent today yet.
+    2. Retry send — already sent today, not acknowledged, 30+ minutes since last send,
+       and fewer than 3 attempts have been made (attempts 1 and 2 are retries).
     """
     now_hhmm = _current_hhmm()
     today = _current_date()
@@ -248,14 +252,24 @@ def get_due_reminders() -> list:
         return conn.execute(
             """
             SELECT r.id, r.user_id, r.medicine_name, r.schedule_time,
+                   r.reminder_attempt,
                    u.name, u.preferred_salutation, u.language, u.bot_name
             FROM medicine_reminders r
             JOIN users u ON u.user_id = r.user_id
             WHERE r.is_active = 1
-              AND r.schedule_time = ?
-              AND (r.last_sent_at IS NULL OR date(r.last_sent_at) < ?)
+              AND (
+                  -- Initial send: scheduled minute reached, not yet sent today
+                  (r.schedule_time = ?
+                   AND (r.last_sent_at IS NULL OR date(r.last_sent_at) < ?))
+                  OR
+                  -- Retry: sent today, unacknowledged, 30+ min ago, under 3 attempts
+                  (date(r.last_sent_at) = ?
+                   AND (r.last_acked_at IS NULL OR r.last_acked_at < r.last_sent_at)
+                   AND datetime(r.last_sent_at) <= datetime('now', '-30 minutes')
+                   AND r.reminder_attempt < 3)
+              )
             """,
-            (now_hhmm, today),
+            (now_hhmm, today, today),
         ).fetchall()
 
 
@@ -264,10 +278,31 @@ def get_due_reminders() -> list:
 # ---------------------------------------------------------------------------
 
 def mark_reminder_sent(reminder_id: int) -> None:
+    """
+    Record that a reminder was sent. Tracks attempt count:
+    - First send of the day: resets reminder_attempt to 1.
+    - Subsequent sends (retries): increments reminder_attempt.
+    """
+    today = _current_date()
     with get_connection() as conn:
-        conn.execute(
-            "UPDATE medicine_reminders SET last_sent_at = datetime('now') WHERE id = ?",
+        row = conn.execute(
+            "SELECT last_sent_at, reminder_attempt FROM medicine_reminders WHERE id = ?",
             (reminder_id,),
+        ).fetchone()
+        if row and row["last_sent_at"] and row["last_sent_at"][:10] == today:
+            # Same-day retry — increment attempt count
+            new_attempt = (row["reminder_attempt"] or 0) + 1
+        else:
+            # First send of the day
+            new_attempt = 1
+        conn.execute(
+            """
+            UPDATE medicine_reminders
+            SET last_sent_at = datetime('now'),
+                reminder_attempt = ?
+            WHERE id = ?
+            """,
+            (new_attempt, reminder_id),
         )
         conn.commit()
 
@@ -298,9 +333,10 @@ def mark_reminder_acknowledged(user_id: int) -> bool:
         conn.execute(
             """
             UPDATE medicine_reminders
-            SET last_acked_at = datetime('now'),
-                ack_streak    = ?,
-                miss_streak   = 0
+            SET last_acked_at    = datetime('now'),
+                ack_streak       = ?,
+                miss_streak      = 0,
+                reminder_attempt = 0
             WHERE id = ?
             """,
             (row["ack_streak"] + 1, row["id"]),
@@ -311,8 +347,12 @@ def mark_reminder_acknowledged(user_id: int) -> bool:
 
 def get_unacknowledged_for_escalation() -> list:
     """
-    Return reminders sent >30 minutes ago, not yet acknowledged,
-    and not yet escalated to family.
+    Return reminders ready for family escalation.
+
+    All three conditions must be met:
+    1. All 3 attempts have been sent (reminder_attempt >= 3).
+    2. Still unacknowledged after the 3rd attempt, and 30+ min since last send.
+    3. User has explicitly opted in to family escalation (escalation_opted_in = 1).
     """
     with get_connection() as conn:
         return conn.execute(
@@ -327,9 +367,11 @@ def get_unacknowledged_for_escalation() -> list:
                    ON fm.user_id = r.user_id AND fm.is_setup_user = 1
             WHERE r.is_active = 1
               AND r.last_sent_at IS NOT NULL
+              AND r.reminder_attempt >= 3
               AND (r.last_acked_at IS NULL OR r.last_acked_at < r.last_sent_at)
               AND (r.family_alerted_at IS NULL OR r.family_alerted_at < r.last_sent_at)
               AND datetime(r.last_sent_at) <= datetime('now', '-30 minutes')
+              AND u.escalation_opted_in = 1
             """,
         ).fetchall()
 
@@ -486,8 +528,8 @@ async def _escalate_to_family(bot, row) -> None:
 
     alert = (
         f"Namaste{' ' + family_name if family_name else ''}! 🙏\n\n"
-        f"*{address}* ki *{medicine}* ki dawai ka reminder 30 minute pehle bheja tha — "
-        f"abhi tak unka jawab nahi aaya.\n\n"
+        f"*{address}* ko *{medicine}* ki dawai ke liye teen baar reminder bheja — "
+        f"abhi tak koi jawab nahi aaya.\n\n"
         f"Ek baar unhe check kar lein. Shukriya! 💙"
     )
 

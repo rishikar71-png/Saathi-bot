@@ -312,12 +312,17 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
         update_user_fields(user_id, wake_time=wake, sleep_time=sleep)
 
     elif step == 18:
-        # Heartbeat consent
+        # Heartbeat + escalation consent
         consent = 1 if t.lower() in (
             "yes", "haan", "ha", "han", "yeah", "y", "sure",
             "ok", "okay", "haa", "bilkul", "please", "please yes"
         ) else 0
-        update_user_fields(user_id, heartbeat_consent=consent, heartbeat_enabled=consent)
+        update_user_fields(
+            user_id,
+            heartbeat_consent=consent,
+            heartbeat_enabled=consent,
+            escalation_opted_in=consent,
+        )
 
 
 # ---------------------------------------------------------------------------
