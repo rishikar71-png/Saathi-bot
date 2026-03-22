@@ -1,7 +1,7 @@
 # SAATHI BOT — Build Progress
 
 Last updated: 22 March 2026
-Current phase: Module 7 — Memory System
+Current phase: Module 8 — Voice Input (Whisper)
 
 ---
 
@@ -99,12 +99,15 @@ Current phase: Module 7 — Memory System
 
 ---
 
-### ⬜ Module 7 — Memory System
-- [ ] Nightly diary summarisation (midnight cron job)
-- [ ] Diary entry structure: family mentions, health, mood, songs, reminders, Protocol 3 flags
-- [ ] Context retrieval before each conversation: profile + 3 diary entries + same-day-last-week + same-day-last-month
-- [ ] Context silently injected into DeepSeek prompt
-- [ ] Life archive storage for memory bank responses
+### ✅ Module 7 — Memory System
+- [x] save_memory(user_id, memory_text, memory_type) — saves to memories table (response_text + theme columns)
+- [x] get_relevant_memories(user_id) — 5 recent memories + last 3 diary summaries + same-day-last-week + same-day-last-month; returns formatted string
+- [x] extract_and_save_memories(user_id, user_message, bot_response) — DeepSeek JSON extraction after every turn; silently swallows failures
+- [x] write_diary_entry(user_id) — fetches today's messages, DeepSeek summarises into full diary_entries row (mood_score, mood_label, health_complaints, family_mentioned, songs_requested, protocol flags, emotions_summary, full_summary)
+- [x] deepseek.py: get_relevant_memories() called inside call_deepseek() before system prompt is built; injected as memory_context block
+- [x] main.py: save_message_record() for every inbound + outbound message; extract_and_save_memories() called after each DeepSeek reply
+- [x] database.py: save_message_record() and upsert_diary_entry() added
+- [x] Nightly scheduling is a stub — Module 12 will wire the cron call to write_diary_entry()
 
 ---
 
@@ -219,3 +222,4 @@ Current phase: Module 7 — Memory System
 | protocol1.py | Protocol 1 crisis handler — keyword matching, staged responses, escalation |
 | protocol3.py | Protocol 3 financial/legal handler — three bucket keyword matching, warm deflection response |
 | onboarding.py | Child-led 18-question onboarding flow — progressive DB saving, personalised questions, warm completion |
+| memory.py | Memory system — save/retrieve memories, extract from conversation, nightly diary entry |

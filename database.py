@@ -361,6 +361,43 @@ def save_emergency_contact(user_id: int, name: str, phone: str) -> None:
         conn.commit()
 
 
+def save_message_record(
+    user_id: int,
+    direction: str,
+    content: str,
+    message_type: str = "text",
+) -> None:
+    """Persist an inbound or outbound message to the messages table."""
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO messages (user_id, direction, message_type, content)
+            VALUES (?, ?, ?, ?)
+            """,
+            (user_id, direction, message_type, content),
+        )
+        conn.commit()
+
+
+def upsert_diary_entry(user_id: int, entry_date: str, **kwargs) -> None:
+    """
+    Insert or replace a diary entry for the given user and date.
+    kwargs maps directly to diary_entries columns.
+    """
+    cols = ["user_id", "entry_date"] + list(kwargs.keys())
+    placeholders = ", ".join("?" for _ in cols)
+    values = [user_id, entry_date] + list(kwargs.values())
+    with get_connection() as conn:
+        conn.execute(
+            f"""
+            INSERT OR REPLACE INTO diary_entries ({', '.join(cols)})
+            VALUES ({placeholders})
+            """,
+            values,
+        )
+        conn.commit()
+
+
 def log_protocol_event(
     user_id: int,
     protocol_type: str,

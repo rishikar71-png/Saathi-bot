@@ -18,6 +18,8 @@ from onboarding import (
     get_resume_prompt,
     handle_onboarding_answer,
 )
+from memory import extract_and_save_memories
+from database import save_message_record
 
 load_dotenv()
 
@@ -67,6 +69,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     logger.info("IN  | user_id=%s | type=text | content=%s", user_id, text)
     try:
         user_row = get_or_create_user(user_id)
+        save_message_record(user_id, "in", text)
 
         # --- Onboarding gate ---
         if not user_row["onboarding_complete"]:
@@ -90,7 +93,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "music_preferences":    user_row["music_preferences"],
             "favourite_topics":     user_row["favourite_topics"],
             "family_members":       None,   # TODO Module 7: inject from family_members table
-            "recent_diary":         None,   # populated in Module 7
         }
 
         # --- Protocol 1 check (runs BEFORE DeepSeek) ---
@@ -111,7 +113,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         reply = call_deepseek(text, user_context)
         await update.message.reply_text(reply)
+        save_message_record(user_id, "out", reply)
         logger.info("OUT | user_id=%s | type=text | content=%s", user_id, reply)
+
+        # Extract and save memories from this turn (runs after reply is sent)
+        extract_and_save_memories(user_id, text, reply)
     except Exception as e:
         logger.error("ERR | user_id=%s | error=%s", user_id, e)
         await update.message.reply_text(

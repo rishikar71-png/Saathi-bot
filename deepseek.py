@@ -1,6 +1,7 @@
 import os
 import logging
 from openai import OpenAI
+from memory import get_relevant_memories
 
 logger = logging.getLogger(__name__)
 
@@ -111,8 +112,8 @@ def _build_system_prompt(user_context: dict) -> str:
         context_lines.append(f"- Music they love: {user_context['music_preferences']}")
     if user_context.get("favourite_topics"):
         context_lines.append(f"- Topics they enjoy talking about: {user_context['favourite_topics']}")
-    if user_context.get("recent_diary"):
-        context_lines.append(f"\nRecent memory (from last few days):\n{user_context['recent_diary']}")
+    if user_context.get("memory_context"):
+        context_lines.append(f"\n{user_context['memory_context']}")
     if user_context.get("family_members"):
         context_lines.append(f"- Family: {user_context['family_members']}")
 
@@ -135,11 +136,21 @@ def call_deepseek(user_message: str, user_context: dict) -> str:
     """
     Send user_message to DeepSeek V3 with the full Protocol 2 system prompt.
 
-    user_context keys (all optional, filled in by Module 7 once onboarding exists):
+    user_context keys (all optional):
         name, bot_name, persona, language, city, spouse_name, religion,
         health_sensitivities, music_preferences, favourite_topics,
-        family_members, recent_diary
+        family_members, memory_context (injected here from Module 7)
     """
+    # Inject live memory context before building the system prompt
+    user_id = user_context.get("user_id")
+    if user_id:
+        try:
+            memory_ctx = get_relevant_memories(user_id, user_message)
+            if memory_ctx:
+                user_context = {**user_context, "memory_context": memory_ctx}
+        except Exception as e:
+            logger.warning("DEEPSEEK | memory retrieval failed: %s", e)
+
     system_prompt = _build_system_prompt(user_context)
 
     logger.info(
