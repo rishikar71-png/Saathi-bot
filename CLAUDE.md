@@ -212,7 +212,7 @@ See `progress.md` for detailed status. Summary:
 | 1 | Telegram bot + basic message echo | ✅ Done |
 | 2 | Database schema (SQLite, v2-ready) | ✅ Done |
 | 3 | DeepSeek integration + system prompt + Protocol 2 wrapper | ✅ Done |
-| 4 | Protocol 1 — Mental health crisis handler | ⬜ Not started |
+| 4 | Protocol 1 — Mental health crisis handler | ✅ Done |
 | 5 | Protocol 3 — Financial/legal handler | ⬜ Not started |
 | 6 | Onboarding flow (child-led, 18 questions) | ⬜ Not started |
 | 7 | Memory system (diary, retrieval, context injection) | ⬜ Not started |
@@ -265,3 +265,4 @@ See `progress.md` for detailed status. Summary:
 | 21 Mar 2026 | Module 1 complete. database.py created (users table). main.py updated: text echo, voice handler, structured logging, /start preserved. | saathi.db excluded from git via .gitignore. Voice handler stubs file_id for Whisper in Module 8. | Start Module 2: full v2-ready SQLite schema |
 | 21 Mar 2026 | Module 2 complete. Full 10-table schema in database.py. Users table migrated safely. All indexes in place. | Named tables: users, family_members, messages, diary_entries, health_logs, medicine_reminders, memories, heartbeat_log, protocol_log, session_log. | Start Module 3: DeepSeek + system prompt + Protocol 2 |
 | 21 Mar 2026 | Module 3 complete. deepseek.py created with full Protocol 2 system prompt. main.py echo replaced with real AI responses. openai library added to requirements. English language default fixed: IMPORTANT instruction moved to first line of system prompt + Hindi example phrases removed + conversation history primed with two English exchanges before each user message. | DeepSeek uses openai SDK with base_url override. Context dict built from users table — enriched by Module 7 later. Conversation priming (hardcoded assistant+user turns) proved more reliable than system prompt instruction alone for language enforcement. | Start Module 4: Protocol 1 crisis handler |
+| 22 Mar 2026 | Module 4 complete. protocol1.py created: keyword matching (Hindi/Hinglish/English), Stage 1 warm response, Stage 2 with iCall (9152987821), auto-escalation path. log_protocol_event() added to database.py. main.py updated to run Protocol 1 before every DeepSeek call with session-level trigger count tracking. | Family alert in escalation path is a stub — wired in Module 13/14. Session trigger count lives in-memory (_protocol1_session_counts dict) — Module 7 can persist this. | Start Module 5: Protocol 3 financial/legal handler |

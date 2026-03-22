@@ -293,6 +293,26 @@ def _create_indexes(conn: sqlite3.Connection) -> None:
 # Helper — used by message handlers in main.py
 # ---------------------------------------------------------------------------
 
+def log_protocol_event(
+    user_id: int,
+    protocol_type: str,
+    trigger_bucket: str,
+    trigger_keywords: str,
+    family_alerted: int = 0,
+) -> None:
+    """Write a Protocol 1 or Protocol 3 trigger event to protocol_log."""
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO protocol_log
+                (user_id, protocol_type, trigger_bucket, trigger_keywords, family_alerted)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (user_id, protocol_type, trigger_bucket, trigger_keywords, family_alerted),
+        )
+        conn.commit()
+
+
 def get_or_create_user(user_id: int) -> sqlite3.Row:
     with get_connection() as conn:
         row = conn.execute(

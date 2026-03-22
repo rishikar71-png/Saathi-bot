@@ -11,6 +11,7 @@ from telegram.ext import (
 from dotenv import load_dotenv
 from database import init_db, get_or_create_user
 from deepseek import call_deepseek
+from protocol1 import check_protocol1
 
 load_dotenv()
 
@@ -23,6 +24,11 @@ logger = logging.getLogger(__name__)
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
 PORT = int(os.environ.get("PORT", 8443))
+
+# Tracks how many times Protocol 1 has fired per user in this process lifetime.
+# Resets on bot restart — sufficient for MVP. Module 7 (memory) can make this
+# session-persistent later.
+_protocol1_session_counts: dict[int, int] = {}
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -62,6 +68,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "family_members":       None,   # populated in Module 6
             "recent_diary":         None,   # populated in Module 7
         }
+
+        # --- Protocol 1 check (runs BEFORE DeepSeek) ---
+        session_count = _protocol1_session_counts.get(user_id, 0)
+        protocol1_reply = check_protocol1(user_id, text, session_count)
+        if protocol1_reply:
+            _protocol1_session_counts[user_id] = session_count + 1
+            await update.message.reply_text(protocol1_reply)
+            logger.info("OUT | user_id=%s | type=protocol1 | stage=%d", user_id, session_count + 1)
+            return
 
         reply = call_deepseek(text, user_context)
         await update.message.reply_text(reply)
