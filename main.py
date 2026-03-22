@@ -1,3 +1,4 @@
+import io
 import os
 import logging
 from telegram import Update
@@ -20,6 +21,7 @@ from onboarding import (
 )
 from memory import extract_and_save_memories
 from whisper import transcribe_voice
+from tts import text_to_speech
 
 load_dotenv()
 
@@ -104,9 +106,20 @@ async def _run_pipeline(
 
     # --- DeepSeek ---
     reply = call_deepseek(text, user_context)
+
+    # Send text first — user gets the response immediately regardless of TTS
     await update.message.reply_text(reply)
     save_message_record(user_id, "out", reply)
     logger.info("OUT | user_id=%s | type=%s | content=%s", user_id, input_type, reply[:80])
+
+    # Send voice note — if TTS fails, text is already delivered so we never lose the response
+    user_language = user_row["language"] or "english"
+    try:
+        audio_bytes = text_to_speech(reply, user_language=user_language)
+        await update.message.reply_voice(voice=io.BytesIO(audio_bytes))
+        logger.info("TTS | user_id=%s | voice note sent", user_id)
+    except Exception as tts_err:
+        logger.warning("TTS | user_id=%s | failed, text-only: %s", user_id, tts_err)
 
     # Extract and save memories (runs after reply is sent to user)
     extract_and_save_memories(user_id, text, reply)

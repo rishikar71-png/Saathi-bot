@@ -1,7 +1,7 @@
 # SAATHI BOT — Build Progress
 
 Last updated: 22 March 2026
-Current phase: Module 9 — Voice Output (Google TTS + Melody Clips)
+Current phase: Module 10 — Music (YouTube API)
 
 ---
 
@@ -122,12 +122,15 @@ Current phase: Module 9 — Voice Output (Google TTS + Melody Clips)
 
 ---
 
-### ⬜ Module 9 — Voice Output (Google TTS + Melody Clips)
-- [ ] Google TTS API connected
-- [ ] Personalised voice reminder generation ('Ramesh ji, aapki dawai...')
-- [ ] Voice message sent as Telegram audio
-- [ ] 6-8 melody clips stored on server (temple bells, shehnai, harmonium)
-- [ ] Melody clip sent alongside reminder text
+### ✅ Module 9 — Voice Output (Google TTS + Melody Clips)
+- [x] Google TTS REST API connected via GOOGLE_CLOUD_API_KEY
+- [x] text_to_speech(text, user_language) → OGG_OPUS bytes
+- [x] WaveNet voices per language: hi-IN-Wavenet-A (Hindi/Hinglish), en-IN-Wavenet-D (English), ta-IN, bn-IN, mr-IN, gu-IN, kn-IN, ml-IN WaveNet voices mapped; English fallback for others
+- [x] Speaking rate 0.9 — slightly slower for elderly clarity
+- [x] Markdown stripped before TTS so symbols aren't read aloud
+- [x] main.py: text sent first, voice note follows via reply_voice(); TTS failure is a silent warning — response always delivered
+- [ ] Melody clips (temple bells, shehnai, harmonium) — deferred to Module 11 (medicine reminders) where they are needed
+- [ ] Personalised reminder voice notes ('Ramesh ji, aapki dawai...') — deferred to Module 11
 
 ---
 
@@ -226,3 +229,4 @@ Current phase: Module 9 — Voice Output (Google TTS + Melody Clips)
 | onboarding.py | Child-led 18-question onboarding flow — progressive DB saving, personalised questions, warm completion |
 | memory.py | Memory system — save/retrieve memories, extract from conversation, nightly diary entry |
 | whisper.py | Voice transcription — OGG bytes → Whisper API → text, with per-language hints |
+| tts.py | Google Cloud TTS — text → OGG_OPUS bytes, WaveNet voices per language, markdown stripped |
