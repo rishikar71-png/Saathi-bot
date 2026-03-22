@@ -183,14 +183,20 @@ Current phase: Module 12 — Daily Rituals
 
 ---
 
-### ⬜ Module 13 — Safety Features
-- [ ] Heartbeat: 3 pings at 30-min intervals (morning/afternoon/evening)
-- [ ] Single 👍 resets heartbeat counter
-- [ ] Family alert sent if no response after 3 pings (warm framing)
-- [ ] Silence detection: 4+ hours no message during waking hours → gentle check-in
-- [ ] Silence detection: 30 min no response to check-in → quiet family alert
-- [ ] Emergency command: 'help', 'emergency', 'I fell', 'call someone' → immediate family alert
-- [ ] All heartbeat/alert events logged to `heartbeat_log`
+### ✅ Module 13 — Safety Features
+- [x] Emergency keyword detection: "help", "bachao", "I fell", "gir gaya", "ambulance", "call someone" + 15 Hindi/English variants — fires before Protocol 1 in pipeline
+- [x] /help command: inline keyboard with "I'm okay, just checking 🙏" and "I need help right now"
+- [x] "I need help" callback: immediately reassures senior, alerts all family contacts with telegram_user_id
+- [x] Family alert: fires only if escalation_opted_in=1 AND contacts have telegram_user_id — explicit opt-in respected
+- [x] No contacts configured fallback: tells senior to call someone or dial 112
+- [x] Inactivity detector: adaptive threshold = 2× average inter-message gap, bounded [24h, 168h], default 48h
+- [x] Inactivity check: runs once per hour (module-level gate), opt-in only (heartbeat_consent=1)
+- [x] Inactivity check-in: warm language-aware message ("kuch dino se aapki baat nahi hui — theek hain aap?")
+- [x] Outlier gaps > 14 days excluded from threshold calculation (vacations, illness)
+- [x] Every inactivity alert logged to heartbeat_log (alert_type='inactivity_checkin')
+- [x] safety_job() registered in JobQueue (60s interval, 30s offset) — self-gated to once/hour
+- [x] CallbackQueryHandler registered in main.py for help_ok/help_needed callbacks
+- [ ] Heartbeat pings (3× daily, 👍 resets counter) — deferred: requires heartbeat scheduler design separate from inactivity
 
 ---
 

@@ -4,6 +4,7 @@ import logging
 from telegram import Update
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
     ContextTypes,
@@ -29,6 +30,13 @@ from reminders import (
     mark_reminder_acknowledged,
 )
 from rituals import check_and_send_rituals, record_first_message
+from safety import (
+    check_emergency_keywords,
+    send_help_prompt,
+    handle_help_command,
+    handle_help_callback,
+    check_inactivity,
+)
 
 load_dotenv()
 
@@ -108,6 +116,14 @@ async def _run_pipeline(
         "favourite_topics":     user_row["favourite_topics"],
         "family_members":       None,  # TODO Module 7: inject from family_members table
     }
+
+    # --- Emergency keyword check (runs BEFORE Protocol 1) ---
+    # Detects physical safety signals ("I fell", "bachao", etc.) and presents
+    # the /help inline keyboard. Mental health crisis is handled by Protocol 1.
+    if check_emergency_keywords(text):
+        await send_help_prompt(update)
+        logger.info("OUT | user_id=%s | type=emergency_prompt", user_id)
+        return
 
     # --- Protocol 1 check (runs BEFORE DeepSeek) ---
     session_count = _protocol1_session_counts.get(user_id, 0)
@@ -276,6 +292,14 @@ async def ritual_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("SCHEDULER | ritual_job failed: %s", e)
 
 
+async def safety_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Called every minute. Runs the hourly inactivity check (self-gated to once/hour)."""
+    try:
+        await check_inactivity(context.bot)
+    except Exception as e:
+        logger.error("SCHEDULER | safety_job failed: %s", e)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -286,6 +310,8 @@ def main() -> None:
 
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", handle_help_command))
+    app.add_handler(CallbackQueryHandler(handle_help_callback, pattern="^help_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, receive_voice))
 
@@ -296,6 +322,10 @@ def main() -> None:
     # Register the ritual scheduler — same interval, offset by 15s to spread load
     app.job_queue.run_repeating(ritual_job, interval=60, first=15)
     logger.info("Ritual scheduler registered (interval=60s)")
+
+    # Register the safety scheduler — runs every minute, self-gated to hourly
+    app.job_queue.run_repeating(safety_job, interval=60, first=30)
+    logger.info("Safety scheduler registered (interval=60s, hourly inactivity check)")
 
     if WEBHOOK_URL:
         logger.info("Starting webhook mode on port %s", PORT)
