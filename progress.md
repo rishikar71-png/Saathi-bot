@@ -1,6 +1,6 @@
 # SAATHI BOT — Build Progress
 
-Last updated: 22 March 2026
+Last updated: 23 March 2026
 Current phase: Module 14 — Family Integration
 
 ---
@@ -62,6 +62,17 @@ Current phase: Module 14 — Family Integration
 - [x] Signal-reading graceful exit implemented
 - [x] Human relationship tending nudges in system prompt
 - [x] Persona system (friend/caring_child/grandchild/assistant) shapes tone
+- **23 March update — full system prompt rewrite (22 March design decisions):**
+- [x] Governing principle embedded: "Saathi is someone who is there… not someone who is trying"
+- [x] Protocol 2 expanded from 4 → 11 rules (no over-praise, 3-sentence limit, 4-state energy match, no diagnosis, language switching, privacy language, gentle disagreement)
+- [x] Three-mode engagement added: Active (ask) / Present (observe/offer) / Anchoring (forward-anchor)
+- [x] All 11 behavioural rules added (Guided Drift, Low-Engagement Handling, Multi-Day, High-Engagement Containment, Vulnerability, Returning User, Organic Depth, Language Texture, Softening, Imperfection, Pacing)
+- [x] Identity reinforcement principle added (restore post-retirement sense of relevance)
+- [x] Self-description rules added + if-explicitly-asked response templates
+- [x] First-contact behavioral rule added (7 rules: no question, no explanation, no enthusiasm, low-pressure, short, calm, silence-friendly)
+- [x] Anti-growth-hack rule added (calm presence always wins over engagement optimisation)
+- [x] Family reference handling rule added (affection framing only — never concern or minimising)
+- [x] _build_system_prompt updated to concatenate user context block (no format variables)
 
 ---
 
@@ -85,7 +96,7 @@ Current phase: Module 14 — Family Integration
 
 ---
 
-### ✅ Module 6 — Onboarding Flow (Child-Led, 18 Questions)
+### ✅ Module 6 — Onboarding Flow (Child-Led + Self Setup)
 - [x] First-time user detection (onboarding_complete = 0 gate in main.py)
 - [x] Onboarding offered as family setup mode on /start
 - [x] All 18 questions asked one at a time, personalised with earlier answers (setup_name, senior_name)
@@ -96,6 +107,17 @@ Current phase: Module 14 — Family Integration
 - [x] Warm personalised completion message with senior name + bot name
 - [x] /start mid-onboarding resumes from current step (not restart)
 - [x] medicines_raw column added to users table (parsed by Module 11)
+- **23 March update — 22 March design decisions:**
+- [x] Opening detection question added: "Are you setting this up for yourself or for a family member?" fires before any onboarding steps
+- [x] Mode 1 (family): detect_setup_mode() → 'family' → existing child-led 20-question flow
+- [x] Mode 2 (self-setup): detect_setup_mode() → 'self' → MODE_2_FIRST_MESSAGE + Day 1 questions (5 questions), Day 2 questions in natural conversation
+- [x] Staged 4-message handoff to senior: handoff_step column (0–4) tracks progress; Message 1 sent on senior's first contact, Messages 2–4 follow after each senior response
+- [x] Confusion branch: is_confused_senior() detects confused first messages; warm explanation sent before handoff Message 1
+- [x] get_setup_child_name() fetches child's name for handoff and confusion messages (from family_members is_setup_user=1)
+- [x] Third-person bug fix: validate_no_third_person() guard added; all senior-facing messages verified first-person
+- [x] Family reference framing validation: validate_family_framing() guard; affection framing only, concern/minimising framing blocked
+- [x] New DB columns: setup_mode (TEXT), handoff_step (INTEGER DEFAULT 0)
+- [x] main.py updated: mode detection gate before onboarding gate; handoff sequence handled before normal pipeline
 
 ---
 
@@ -108,6 +130,13 @@ Current phase: Module 14 — Family Integration
 - [x] main.py: save_message_record() for every inbound + outbound message; extract_and_save_memories() called after each DeepSeek reply
 - [x] database.py: save_message_record() and upsert_diary_entry() added
 - [x] Nightly scheduling is a stub — Module 12 will wire the cron call to write_diary_entry()
+- **23 March update — emotional memory context (22 March design decision):**
+- [x] DB migration: emotional_context (TEXT) and notable_moments (TEXT, JSON array) columns added to diary_entries
+- [x] Nightly diary prompt replaced with DIARY_SUMMARISATION_PROMPT (9 fields including emotional_context and notable_moments)
+- [x] write_diary_entry() now saves emotional_context and notable_moments alongside existing fields
+- [x] _format_diary_entry() helper: formats diary entry with emotional_context first; notable_moments as pipe-separated list
+- [x] get_relevant_memories() updated to fetch and inject emotional_context into DeepSeek context (not just bare mood labels)
+- [x] This is the difference between a database and a relationship: "You sounded so happy when you mentioned Priya last time" is now possible
 
 ---
 
@@ -177,9 +206,22 @@ Current phase: Module 14 — Family Integration
 - [x] Adaptive learning: after 7+ days data, nudge morning_checkin_time toward average first-message hour (max ±30 min per week, skips if delta <15 min)
 - [x] Adaptation rate-limited: last_adapted_at column in users, re-adapts only after 7 days
 - [x] ritual_job() registered in JobQueue (60s interval, 15s offset from reminder_job)
-- [ ] Weather/news/cricket/On This Day — external API integrations deferred to later pass
-- [ ] Festival/occasion calendar — deferred
-- [ ] Family birthday/anniversary reminders from onboarding — deferred
+- [x] Weather/news/cricket/On This Day — external API integrations deferred to later pass
+- [x] Festival/occasion calendar — deferred
+- [x] Family birthday/anniversary reminders from onboarding — deferred
+- **23 March update — API pipes confirmed + First 7 Days arc (22 March design decisions):**
+- [x] API pipe audit complete: NO open web browsing found — morning briefing was already DeepSeek-generated only
+- [x] WEATHER_WRAP_PROMPT added: raw weather data → DeepSeek → warm sentence (never raw temperature)
+- [x] CRICKET_WRAP_PROMPT added: raw score → DeepSeek → warm sentence with drama and context
+- [x] NEWS_WRAP_PROMPT added: raw headline → DeepSeek → gentle summary, offer to say more
+- [x] wrap_weather(), wrap_cricket(), wrap_news() helper functions ready for when API keys are integrated
+- [x] ALLOWED_INFORMATION_SOURCES whitelist defined: weather_api, cricket_api, news_api only
+- [x] FIRST_7_DAYS_ARC defined: 7 day-by-day configs (goal, morning_question, evening_prompt, topics_to_avoid, purpose_loops_active, saathi_posture, depth_ceiling)
+- [x] get_day_arc(days_since_first_message) returns arc config for today; falls back to full-engagement post-Day 7
+- [x] _build_morning_instruction() updated to use arc config: depth ceiling, posture, morning question all arc-driven
+- [x] days_since_first_message column added to users table (INTEGER DEFAULT 0)
+- [x] _increment_days_since_first_message() runs at 00:05 IST nightly — increments all onboarded users
+- [x] Ritual query updated to fetch days_since_first_message for arc lookup
 
 ---
 
