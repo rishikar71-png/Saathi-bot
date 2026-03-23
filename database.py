@@ -300,6 +300,11 @@ _USERS_NEW_COLUMNS = [
     "ALTER TABLE users ADD COLUMN onboarding_step INTEGER DEFAULT 0",
     "ALTER TABLE users ADD COLUMN last_active_at TEXT",
     "ALTER TABLE users ADD COLUMN updated_at TEXT DEFAULT (datetime('now'))",
+    # Module 6 — onboarding mode detection and staged senior handoff
+    "ALTER TABLE users ADD COLUMN setup_mode TEXT",
+    "ALTER TABLE users ADD COLUMN handoff_step INTEGER DEFAULT 0",
+    # Module 12 — First 7 Days arc
+    "ALTER TABLE users ADD COLUMN days_since_first_message INTEGER DEFAULT 0",
 ]
 
 

@@ -1,16 +1,26 @@
 """
-Module 6 — Child-led onboarding flow.
+Module 6 — Onboarding flow.
+Updated: 23 March 2026 — 22 March design decisions applied.
 
-The adult child sets up Saathi on the senior's Telegram account.
-Questions are asked one at a time; answers are saved progressively to the DB.
+Two modes:
+  Mode 1 (child-led / family) — adult child sets up the bot on the senior's device.
+    - Opening detection asks "for yourself or family member?"
+    - Child answers 20 questions about the senior
+    - Senior then receives a 4-message staged handoff (tracked via handoff_step)
+    - Confusion branch handles seniors who don't know why the bot appeared
 
-Step layout:
-  Step 0   — Intro message + "What is your name?" (setup person)
-  Steps 1–20 — The 20 questions about the senior
-  After step 20 is answered → complete_onboarding() + warm handoff message
+  Mode 2 (self-setup) — tech-comfortable senior sets up for themselves.
+    - Same opening detection, different path
+    - Questions spread across Day 1 (4-5) and natural Day 2 follow-up
+    - No staged handoff needed; MODE_2_FIRST_MESSAGE lands immediately
 
-onboarding_step in the DB always reflects which question we are WAITING to
-receive an answer for. Advancing happens AFTER the answer is saved.
+Hard rule — first person always:
+  The moment Saathi speaks TO the senior, it is always in first person.
+  Never "the primary user prefers" or "your parent mentioned".
+  Always "what would you like me to call you?"
+
+onboarding_step in the DB reflects which question we are WAITING to receive
+an answer for. Advancing happens AFTER the answer is saved.
 """
 
 import re
@@ -24,33 +34,241 @@ from database import (
     add_family_members_bulk,
     save_setup_person,
     save_emergency_contact,
+    get_connection,
 )
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# In-memory context — used to personalise later questions with earlier answers.
-# Survives only for the life of the process (acceptable for MVP; Module 7 will
-# persist this properly via the diary/memory system).
+# In-memory context — personalises later questions with earlier answers.
 # ---------------------------------------------------------------------------
 _ctx: dict[int, dict] = {}
 
+
 # ---------------------------------------------------------------------------
-# Intro message — sent when /start is received and onboarding_step == 0
+# OPENING DETECTION — sent BEFORE any onboarding questions
+# Determines Mode 1 (family) vs Mode 2 (self-setup)
+# ---------------------------------------------------------------------------
+
+OPENING_DETECTION_QUESTION = (
+    "Namaste! I'm Saathi — a companion for elderly loved ones. 🙏\n\n"
+    "Before we begin, one quick question:\n\n"
+    "*Are you setting this up for yourself, or for a family member?*\n\n"
+    "Reply: *myself* or *family member*"
+)
+
+
+def detect_setup_mode(text: str) -> Optional[str]:
+    """
+    Parse the user's answer to the opening detection question.
+    Returns 'self' or 'family', or None if unclear.
+    """
+    t = text.lower().strip()
+    self_signals = [
+        "myself", "me", "for me", "for myself", "i am", "i'm setting",
+        "self", "apne liye", "mujhe", "mere liye"
+    ]
+    family_signals = [
+        "family", "member", "parent", "father", "mother", "dad", "mom",
+        "maa", "papa", "mata", "pita", "grandparent", "dadi", "nana",
+        "relative", "someone else", "unke liye", "for them", "for a"
+    ]
+    for s in self_signals:
+        if s in t:
+            return "self"
+    for s in family_signals:
+        if s in t:
+            return "family"
+    # Default to family if unclear (primary path)
+    if len(t) <= 3:
+        return None
+    return "family"
+
+
+# ---------------------------------------------------------------------------
+# MODE 1 — CHILD-LED SETUP
+# Intro message sent to the adult child after mode='family' is confirmed
 # ---------------------------------------------------------------------------
 
 INTRO_MESSAGE = (
-    "Namaste! I'm Saathi — a companion for your loved one. 🙏\n\n"
-    "You're doing something really thoughtful right now. Once we go through "
-    "a few questions together, I'll be all set and waiting for them.\n\n"
+    "Wonderful! You're doing something really thoughtful right now. 🙏\n\n"
+    "Once we go through a few questions together, I'll be all set and waiting for them.\n\n"
     "It should take about 5 minutes. Let's begin.\n\n"
     "First — what is *your* name? (So I can introduce you to them properly.)"
 )
 
 
 # ---------------------------------------------------------------------------
-# Questions — steps 1 through 18
-# Each is a function so it can reference earlier answers via ctx.
+# MODE 2 — SELF SETUP
+# First message sent immediately when mode='self' is confirmed
+# RULE: No question, no enthusiasm, calm presence only.
+# ---------------------------------------------------------------------------
+
+MODE_2_FIRST_MESSAGE = (
+    "Hello… I'm Saathi. I'll be around — you can talk whenever you feel like."
+)
+
+# Day 1 questions — asked naturally, max 4-5 in first session
+SELF_SETUP_DAY_1_QUESTIONS = [
+    "What would you like me to call you?",
+    "And what would you like to call me? You can choose any name.",
+    "Which city are you in?",
+    "What language do you prefer to chat in — Hindi, English, or a mix?",
+    "Is there anyone I should know about — family members you talk to often?",
+]
+
+# Day 2 questions — asked naturally in second session
+SELF_SETUP_DAY_2_QUESTIONS = [
+    "Do you take any medicines regularly? I can remind you if you'd like.",
+    "What time do you usually wake up?",
+    "What time do you usually go to sleep?",
+    "What kind of music do you enjoy?",
+    "Do you follow cricket?",
+]
+
+
+def _self_setup_question(step: int) -> Optional[str]:
+    """Return the self-setup question for the given step (1-indexed). None if done."""
+    all_q = SELF_SETUP_DAY_1_QUESTIONS + SELF_SETUP_DAY_2_QUESTIONS
+    if 1 <= step <= len(all_q):
+        return all_q[step - 1]
+    return None
+
+
+# ---------------------------------------------------------------------------
+# STAGED HANDOFF — 4 messages sent to senior after child-led setup completes
+#
+# CRITICAL: Message 1 is sent immediately when senior first contacts the bot.
+# Then WAIT. Do not send Message 2 until senior responds or initiates.
+# Messages 2, 3, 4 follow conversationally after each senior response.
+#
+# handoff_step tracks where we are:
+#   0 = senior hasn't messaged yet (setup just completed)
+#   1 = Message 1 sent (waiting for senior response)
+#   2 = Message 2 sent ("What would you like me to call you?")
+#   3 = Message 3 sent ("What would you like to call me?")
+#   4 = Message 4 sent — handoff complete, full DeepSeek pipeline from here
+# ---------------------------------------------------------------------------
+
+def get_handoff_message(handoff_step: int, child_name: str = "Someone") -> str:
+    """
+    Returns the appropriate handoff message for the given step.
+
+    handoff_step=0: Message 1 — calm first contact, no question
+    handoff_step=1: Message 2 — ask senior's preferred name
+    handoff_step=2: Message 3 — ask what they'd like to call the bot
+    handoff_step=3: Message 4 — open invitation, complete handoff
+    """
+    messages = {
+        0: f"Namaste. {child_name} asked me to be in touch. I'm Saathi — I'm here whenever you'd like to talk.",
+        1: "Can I ask you something? What would you like me to call you?",
+        2: "And what would you like to call me? You can choose any name.",
+        3: "I'm really glad we're talking. We can chat about anything — your day, memories, music, cricket, whatever you feel like. Would you like me to tell you something interesting, or would you like to tell me about your day?",
+    }
+    return messages.get(handoff_step, messages[3])
+
+
+def get_setup_child_name(user_id: int) -> str:
+    """Fetch the name of the adult child who set up the bot (is_setup_user=1)."""
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT name FROM family_members
+                WHERE user_id = ? AND is_setup_user = 1
+                LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+            return row["name"] if row else "Someone"
+    except Exception:
+        return "Someone"
+
+
+# ---------------------------------------------------------------------------
+# CONFUSION BRANCH — triggers if senior's first message sounds confused
+# ---------------------------------------------------------------------------
+
+CONFUSION_SIGNALS = [
+    "who are you", "who is this", "what is this", "kya hai ye", "kaun ho",
+    "kaun hai", "ye kya hai", "kyun aaya", "kyun aya", "wrong number",
+    "galat number", "kaise aaya", "kahan se", "kisne bheja", "kisne diya",
+    "why did you", "why are you", "i don't know you", "mujhe nahi pata",
+    "pehchanta nahi", "pehchanti nahi",
+]
+
+
+def is_confused_senior(message: str) -> bool:
+    """
+    Detects if a senior's first message suggests confusion about the bot's appearance.
+    If True, trigger the confusion branch before the handoff message.
+    """
+    message_lower = message.lower()
+    return any(signal in message_lower for signal in CONFUSION_SIGNALS)
+
+
+def get_confusion_response(child_name: str = "Someone") -> str:
+    """
+    Warm explanation for a confused senior.
+    RULE: affection framing only — never concern framing.
+    """
+    return (
+        f"I'm Saathi — {child_name} thought you might enjoy having someone to chat with. "
+        "Think of me as just someone to chat with whenever you feel like it. "
+        "There's no need to do anything right now — I'm here whenever you'd like to talk."
+    )
+
+
+# ---------------------------------------------------------------------------
+# FIRST-PERSON VALIDATION
+# Banned phrases must never appear in messages addressed TO the senior.
+# Third-person framing about the senior is only permitted in child-facing messages.
+# ---------------------------------------------------------------------------
+
+BANNED_THIRD_PERSON_PHRASES = [
+    "the primary user",
+    "your parent",
+    "the senior",
+    "the user prefers",
+    "they prefer",
+    "their name is",
+]
+
+
+def validate_no_third_person(message: str) -> bool:
+    """
+    Returns True if the message passes (no banned third-person phrases).
+    Call this before sending any message directly to a senior.
+    """
+    message_lower = message.lower()
+    return not any(p.lower() in message_lower for p in BANNED_THIRD_PERSON_PHRASES)
+
+
+# ---------------------------------------------------------------------------
+# FAMILY REFERENCE FRAMING VALIDATION
+# All references to who set up the bot must use affection framing, not concern.
+# ---------------------------------------------------------------------------
+
+BANNED_FAMILY_FRAMING = [
+    "was worried", "were worried", "wanted to make sure", "check on you",
+    "keeping an eye", "nothing serious", "just a small", "not a big deal",
+    "don't worry", "no tension",
+]
+
+
+def validate_family_framing(message: str) -> bool:
+    """
+    Returns True if family references use affection framing, not concern or minimising.
+    PERMITTED: "Priya thought you might enjoy having someone to chat with."
+    BANNED: "Priya was worried about you." / "Nothing serious."
+    """
+    message_lower = message.lower()
+    return not any(p.lower() in message_lower for p in BANNED_FAMILY_FRAMING)
+
+
+# ---------------------------------------------------------------------------
+# CHILD-LED SETUP — Questions (steps 1–20, addressed TO the adult child)
+# These are NOT third-person bugs — they are correctly addressed to the child.
 # ---------------------------------------------------------------------------
 
 def _q(step: int, ctx: dict) -> str:
@@ -165,7 +383,10 @@ def _q(step: int, ctx: dict) -> str:
 # Resume prompt — if /start is sent again mid-onboarding
 # ---------------------------------------------------------------------------
 
-def get_resume_prompt(user_id: int, step: int) -> str:
+def get_resume_prompt(user_id: int, step: int, setup_mode: str = None) -> str:
+    if setup_mode == "self":
+        q = _self_setup_question(step)
+        return q or "We're almost done — just a few more things to set up."
     ctx = _ctx.get(user_id, {})
     senior = ctx.get("senior_name", "your loved one")
     return (
@@ -175,36 +396,75 @@ def get_resume_prompt(user_id: int, step: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Public interface called from main.py
+# Public interface
 # ---------------------------------------------------------------------------
 
 def get_intro_message() -> str:
     return INTRO_MESSAGE
 
 
+def get_opening_detection_question() -> str:
+    return OPENING_DETECTION_QUESTION
+
+
+def handle_mode_detection(user_id: int, text: str):
+    """
+    Handle the user's response to the opening detection question.
+    Returns (setup_mode, next_message) tuple.
+    setup_mode: 'self' or 'family'
+    next_message: the message to send next
+    """
+    mode = detect_setup_mode(text)
+    if mode is None:
+        # Unclear answer — ask again
+        return (None, (
+            "Sorry, I didn't quite catch that! 🙏\n\n"
+            "Are you setting this up *for yourself* or *for a family member*?\n\n"
+            "Just reply: *myself* or *family member*"
+        ))
+
+    update_user_fields(user_id, setup_mode=mode)
+
+    if mode == "family":
+        return ("family", INTRO_MESSAGE)
+    else:
+        # Self-setup: send first message + first question
+        update_user_fields(user_id, onboarding_step=1)
+        first_q = SELF_SETUP_DAY_1_QUESTIONS[0]
+        return ("self", f"{MODE_2_FIRST_MESSAGE}\n\n{first_q}")
+
+
 def handle_onboarding_answer(user_id: int, step: int, text: str) -> str:
     """
     Save the answer for the current step, advance, and return the next message.
 
-    Args:
-        user_id: Telegram user ID.
-        step:    Current onboarding_step value from the DB (0–20).
-        text:    The user's message text.
-
-    Returns:
-        The next question to send, or the completion message.
+    For family mode: standard 20-question flow.
+    For self-setup mode: SELF_SETUP_DAY_1_QUESTIONS then complete.
     """
     ctx = _ctx.setdefault(user_id, {})
 
-    # Save this step's answer
+    # Determine mode
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT setup_mode FROM users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            setup_mode = row["setup_mode"] if row else "family"
+    except Exception:
+        setup_mode = "family"
+
+    if setup_mode == "self":
+        return _handle_self_setup_answer(user_id, step, text, ctx)
+
+    # --- Family / child-led flow ---
     _save_answer(user_id, step, text, ctx)
-    logger.info("ONBOARDING | user_id=%s | step=%d answered", user_id, step)
+    logger.info("ONBOARDING | user_id=%s | mode=family | step=%d answered", user_id, step)
 
     next_step = step + 1
-
     if next_step > 20:
-        # All questions answered — wrap up
         complete_onboarding(user_id)
+        # handoff_step starts at 0 — senior hasn't been greeted yet
+        update_user_fields(user_id, handoff_step=0)
         reply = _build_completion_message(user_id, ctx)
         logger.info("ONBOARDING | user_id=%s | complete", user_id)
         return reply
@@ -213,38 +473,75 @@ def handle_onboarding_answer(user_id: int, step: int, text: str) -> str:
     return _q(next_step, ctx)
 
 
+def _handle_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> str:
+    """Handle answers in self-setup mode (questions spread across 2 days)."""
+    _save_self_setup_answer(user_id, step, text, ctx)
+    logger.info("ONBOARDING | user_id=%s | mode=self | step=%d answered", user_id, step)
+
+    next_step = step + 1
+    next_q = _self_setup_question(next_step)
+
+    if next_q is None or next_step > len(SELF_SETUP_DAY_1_QUESTIONS):
+        # Day 1 complete — set onboarding_complete so senior enters normal pipeline
+        complete_onboarding(user_id)
+        logger.info("ONBOARDING | user_id=%s | self-setup day 1 complete", user_id)
+        return (
+            "That's everything for now — thank you! 🙏\n\n"
+            "I'll be here whenever you'd like to talk. No need to reply straightaway."
+        )
+
+    advance_onboarding_step(user_id, next_step)
+    return next_q
+
+
+def _save_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
+    """Save self-setup mode answers (Day 1 questions only)."""
+    t = text.strip()
+    if step == 1:  # What would you like me to call you?
+        name = t.title()
+        ctx["senior_name"] = name
+        update_user_fields(user_id, name=name)
+    elif step == 2:  # What would you like to call me?
+        bot_name = t.title() if t.lower() not in ("saathi", "default") else "Saathi"
+        ctx["bot_name"] = bot_name
+        update_user_fields(user_id, bot_name=bot_name)
+    elif step == 3:  # City
+        update_user_fields(user_id, city=t.title())
+    elif step == 4:  # Language
+        update_user_fields(user_id, language=_parse_language(t))
+    elif step == 5:  # Family members
+        if t.lower() not in ("no", "none", "nahi", "nobody"):
+            names = [n.strip().title() for n in re.split(r"[,\n]", t) if n.strip()]
+            if names:
+                add_family_members_bulk(user_id, names, "family")
+
+
 # ---------------------------------------------------------------------------
-# Answer saving — one branch per step
+# Answer saving — family/child-led mode (steps 0–20)
 # ---------------------------------------------------------------------------
 
 def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
     t = text.strip()
 
     if step == 0:
-        # Setup person's name
         ctx["setup_name"] = t
         save_setup_person(user_id, t)
 
     elif step == 1:
-        # Senior's preferred name — title-case it
         name = t.title()
         ctx["senior_name"] = name
         update_user_fields(user_id, name=name)
 
     elif step == 2:
-        # Preferred salutation
         update_user_fields(user_id, preferred_salutation=t)
 
     elif step == 3:
-        # City
         update_user_fields(user_id, city=t.title())
 
     elif step == 4:
-        # Language
         update_user_fields(user_id, language=_parse_language(t))
 
     elif step == 5:
-        # Spouse name — treat "no", "nahi", "passed away" etc. as no spouse
         if t.lower() in ("no", "no.", "nahi", "nahi.", "nahin", "passed away",
                          "nahi hain", "nahi hai", "deceased", "expired"):
             update_user_fields(user_id, spouse_name=None)
@@ -252,60 +549,49 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
             update_user_fields(user_id, spouse_name=t)
 
     elif step == 6:
-        # Children's names — comma-separated
         names = [n.strip().title() for n in t.split(",")
                  if n.strip() and n.strip().lower() not in ("no", "none", "nahi")]
         if names:
             add_family_members_bulk(user_id, names, "child")
 
     elif step == 7:
-        # Grandchildren's names
         if t.lower() not in ("no", "no.", "none", "nahi", "nahin", "nope"):
             names = [n.strip().title() for n in t.split(",") if n.strip()]
             if names:
                 add_family_members_bulk(user_id, names, "grandchild")
 
     elif step == 8:
-        # Emergency contact: "Name — 9876543210"
         phone_match = re.search(r"[\d]{10,}", t.replace(" ", "").replace("-", ""))
         phone = phone_match.group() if phone_match else ""
         name  = re.sub(r"[\d\-—:,+\s]+$", "", t).strip().strip("—:,").strip()
         save_emergency_contact(user_id, name or t, phone)
 
     elif step == 9:
-        # Health sensitivities
         if t.lower() not in ("none", "no", "nahi", "nothing", "no.", "nil"):
             update_user_fields(user_id, health_sensitivities=t)
 
     elif step == 10:
-        # Medicines — store raw text; Module 11 will structure it
         if t.lower() not in ("no", "nahi", "none", "nothing", "no.", "nil"):
             update_user_fields(user_id, medicines_raw=t)
 
     elif step == 11:
-        # Music preferences
         update_user_fields(user_id, music_preferences=t)
 
     elif step == 12:
-        # Favourite topics
         update_user_fields(user_id, favourite_topics=t)
 
     elif step == 13:
-        # Religion
         if t.lower() != "prefer not to say":
             update_user_fields(user_id, religion=t)
 
     elif step == 14:
-        # News interests
         if t.lower() not in ("not interested", "none", "no", "nahi", "skip"):
             update_user_fields(user_id, news_interests=t)
 
     elif step == 15:
-        # Persona
         update_user_fields(user_id, persona=_parse_persona(t))
 
     elif step == 16:
-        # Bot name
         if t.lower() in ("saathi", "default", "keep saathi", "no", "same"):
             bot_name = "Saathi"
         else:
@@ -314,22 +600,18 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
         update_user_fields(user_id, bot_name=bot_name)
 
     elif step == 17:
-        # Morning check-in time
         hhmm = _parse_single_time(t)
         update_user_fields(user_id, morning_checkin_time=hhmm, wake_time=hhmm)
 
     elif step == 18:
-        # Afternoon check-in time
         hhmm = _parse_single_time(t)
         update_user_fields(user_id, afternoon_checkin_time=hhmm)
 
     elif step == 19:
-        # Evening check-in time
         hhmm = _parse_single_time(t)
         update_user_fields(user_id, evening_checkin_time=hhmm, sleep_time=hhmm)
 
     elif step == 20:
-        # Heartbeat + escalation consent
         consent = 1 if t.lower() in (
             "yes", "haan", "ha", "han", "yeah", "y", "sure",
             "ok", "okay", "haa", "bilkul", "please", "please yes"
@@ -343,7 +625,7 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Completion message
+# Completion message — sent to the adult child after all 20 questions
 # ---------------------------------------------------------------------------
 
 def _build_completion_message(user_id: int, ctx: dict) -> str:
@@ -354,8 +636,8 @@ def _build_completion_message(user_id: int, ctx: dict) -> str:
 
     return (
         f"That's everything{', ' + first if first else ''}! 🙏\n\n"
-        f"I'm all set for {senior_name}. The next time they open Telegram "
-        f"and send me a message, I'll be there with a warm, personal greeting.\n\n"
+        f"I'm all set for {senior_name}. The next time they message me, "
+        f"I'll greet them warmly and personally.\n\n"
         f"A couple of things you might want to do:\n"
         f"• Save this Telegram contact on their phone as *{bot_name}*\n"
         f"• Let them know their companion is ready and waiting for them\n\n"
@@ -393,7 +675,6 @@ def _parse_language(text: str) -> str:
         return "malayalam"
     if "hinglish" in t:
         return "hinglish"
-    # Store whatever they typed, lowercased
     return t.strip()
 
 
@@ -413,7 +694,6 @@ def _parse_single_time(text: str) -> str:
     Returns 'HH:MM' string, or None if unparseable."""
     import re as _re
     t = text.strip().lower()
-    # Common Hindi time words → defaults
     _aliases = {
         "subah": "08:00", "morning": "08:00", "breakfast": "08:00",
         "dopahar": "13:00", "afternoon": "13:00", "lunch": "13:00",
@@ -436,17 +716,3 @@ def _parse_single_time(text: str) -> str:
     if not (0 <= hour <= 23 and 0 <= minute <= 59):
         return None
     return f"{hour:02d}:{minute:02d}"
-
-
-def _parse_wake_sleep(text: str) -> tuple[str, str]:
-    """Extract two times from free-form text like '6am and 10pm'."""
-    times = re.findall(r"\d{1,2}(?::\d{2})?\s*(?:am|pm)", text.lower())
-    if len(times) >= 2:
-        return times[0].strip(), times[1].strip()
-    if len(times) == 1:
-        return times[0].strip(), ""
-    # Fallback: split on 'and' or comma
-    parts = re.split(r"\band\b|,", text, maxsplit=1)
-    if len(parts) == 2:
-        return parts[0].strip(), parts[1].strip()
-    return text.strip(), ""

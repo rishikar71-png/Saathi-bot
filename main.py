@@ -17,8 +17,14 @@ from protocol1 import check_protocol1
 from protocol3 import check_protocol3
 from onboarding import (
     get_intro_message,
+    get_opening_detection_question,
     get_resume_prompt,
     handle_onboarding_answer,
+    handle_mode_detection,
+    get_handoff_message,
+    get_setup_child_name,
+    is_confused_senior,
+    get_confusion_response,
 )
 from memory import extract_and_save_memories
 from whisper import transcribe_voice
@@ -93,12 +99,81 @@ async def _run_pipeline(
 
     # --- Onboarding gate ---
     if not user_row["onboarding_complete"]:
+        setup_mode = user_row["setup_mode"] if "setup_mode" in user_row.keys() else None
+
+        if setup_mode is None:
+            # Mode detection — parse "myself" or "family member"
+            mode, next_msg = handle_mode_detection(user_id, text)
+            await update.message.reply_text(next_msg, parse_mode="Markdown")
+            logger.info("OUT | user_id=%s | type=mode_detection | mode=%s", user_id, mode)
+            return
+
         reply = handle_onboarding_answer(user_id, user_row["onboarding_step"], text)
         await update.message.reply_text(reply, parse_mode="Markdown")
         logger.info(
             "OUT | user_id=%s | type=onboarding | step=%d",
             user_id, user_row["onboarding_step"],
         )
+        return
+
+    # --- Staged handoff (child-led mode only, handoff_step 0–3) ---
+    setup_mode = user_row["setup_mode"] if "setup_mode" in user_row.keys() else None
+    handoff_step = user_row["handoff_step"] if "handoff_step" in user_row.keys() else 4
+
+    if setup_mode == "family" and handoff_step is not None and handoff_step < 4:
+        child_name = get_setup_child_name(user_id)
+        replies = []
+
+        if handoff_step == 0:
+            # Senior's very first message — confusion check first
+            if is_confused_senior(text):
+                confusion_msg = get_confusion_response(child_name)
+                replies.append(confusion_msg)
+                logger.info("OUT | user_id=%s | type=confusion_branch", user_id)
+
+            msg1 = get_handoff_message(0, child_name)
+            replies.append(msg1)
+            from database import update_user_fields
+            update_user_fields(user_id, handoff_step=1)
+            logger.info("OUT | user_id=%s | type=handoff | step=0", user_id)
+
+        elif handoff_step == 1:
+            # Senior responded — ask their preferred name
+            msg2 = get_handoff_message(1, child_name)
+            replies.append(msg2)
+            from database import update_user_fields
+            update_user_fields(user_id, handoff_step=2)
+            logger.info("OUT | user_id=%s | type=handoff | step=1", user_id)
+
+        elif handoff_step == 2:
+            # Senior gave their name — save it, ask what to call the bot
+            name = text.strip().title()
+            if name and len(name) < 50:
+                from database import update_user_fields
+                update_user_fields(user_id, name=name, handoff_step=3)
+            else:
+                from database import update_user_fields
+                update_user_fields(user_id, handoff_step=3)
+            msg3 = get_handoff_message(2, child_name)
+            replies.append(msg3)
+            logger.info("OUT | user_id=%s | type=handoff | step=2 | name=%s", user_id, name)
+
+        elif handoff_step == 3:
+            # Senior gave bot name — save it, send final welcome message
+            bot_name = text.strip().title()
+            if bot_name and len(bot_name) < 50 and bot_name.lower() not in ("no", "nahi"):
+                from database import update_user_fields
+                update_user_fields(user_id, bot_name=bot_name, handoff_step=4)
+            else:
+                from database import update_user_fields
+                update_user_fields(user_id, handoff_step=4)
+            msg4 = get_handoff_message(3, child_name)
+            replies.append(msg4)
+            logger.info("OUT | user_id=%s | type=handoff | step=3 | bot_name=%s", user_id, bot_name)
+
+        for r in replies:
+            await update.message.reply_text(r)
+            save_message_record(user_id, "out", r)
         return
 
     # Build context dict from user profile.
@@ -195,11 +270,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user_row = get_or_create_user(user_id)
 
         if not user_row["onboarding_complete"]:
+            setup_mode = user_row["setup_mode"] if "setup_mode" in user_row.keys() else None
             step = user_row["onboarding_step"]
-            if step == 0:
+
+            if setup_mode is None:
+                # Opening detection — ask before any onboarding questions
+                reply = get_opening_detection_question()
+            elif setup_mode == "family" and step == 0:
                 reply = get_intro_message()
             else:
-                reply = get_resume_prompt(user_id, step)
+                reply = get_resume_prompt(user_id, step, setup_mode=setup_mode)
         else:
             reply = "Namaste! Main yahan hoon. 🙏"
 
