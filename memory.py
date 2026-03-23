@@ -90,14 +90,57 @@ def save_memory(user_id: int, memory_text: str, memory_type: str = "general") ->
 # get_relevant_memories
 # ---------------------------------------------------------------------------
 
+def _format_diary_entry(row) -> str:
+    """
+    Format a single diary entry row into natural language for DeepSeek context.
+    Prioritises emotional_context and notable_moments over raw mood labels.
+    This is the difference between a database and a relationship.
+    """
+    lines = []
+    if row["entry_date"]:
+        lines.append(f"[{row['entry_date']}]")
+    # Prefer emotional_context over bare mood label
+    try:
+        ec = row["emotional_context"]
+    except Exception:
+        ec = None
+    if ec:
+        lines.append(f"Emotional context: {ec}")
+    elif row["full_summary"]:
+        label = f" ({row['mood_label']})" if row["mood_label"] else ""
+        lines.append(f"Summary{label}: {row['full_summary'][:200]}")
+
+    try:
+        nm = row["notable_moments"]
+    except Exception:
+        nm = None
+    if nm:
+        import json as _json
+        moments = nm if isinstance(nm, list) else _json.loads(nm)
+        if moments:
+            lines.append("Notable moments: " + " | ".join(moments))
+
+    if row["family_mentioned"]:
+        import json as _json
+        try:
+            fam = _json.loads(row["family_mentioned"])
+            if fam:
+                lines.append(f"Family mentioned: {', '.join(fam)}")
+        except Exception:
+            pass
+
+    return "\n".join(lines)
+
+
 def get_relevant_memories(user_id: int, current_message: str = None) -> str:
     """
     Build a context string to inject into the DeepSeek system prompt.
 
     Includes:
     - 5 most recent memories from the memories table
-    - Last 3 diary entry summaries
-    - Diary entry from exactly one week ago (if it exists)
+    - Last 3 diary entries with full emotional context
+    - Diary entry from exactly one week ago
+    - Diary entry from exactly one month ago
 
     Returns an empty string if there is nothing to inject yet.
     """
@@ -116,10 +159,11 @@ def get_relevant_memories(user_id: int, current_message: str = None) -> str:
             (user_id,),
         ).fetchall()
 
-        # --- Last 3 diary summaries ---
+        # --- Last 3 diary entries (with emotional context) ---
         diary_rows = conn.execute(
             """
-            SELECT entry_date, mood_label, full_summary
+            SELECT entry_date, mood_label, emotional_context, notable_moments,
+                   family_mentioned, full_summary
             FROM diary_entries
             WHERE user_id = ?
             ORDER BY entry_date DESC
@@ -131,7 +175,8 @@ def get_relevant_memories(user_id: int, current_message: str = None) -> str:
         # --- Same day last week ---
         week_ago_row = conn.execute(
             """
-            SELECT entry_date, full_summary
+            SELECT entry_date, mood_label, emotional_context, notable_moments,
+                   family_mentioned, full_summary
             FROM diary_entries
             WHERE user_id = ? AND entry_date = date('now', '-7 days')
             LIMIT 1
@@ -142,7 +187,8 @@ def get_relevant_memories(user_id: int, current_message: str = None) -> str:
         # --- Same day last month ---
         month_ago_row = conn.execute(
             """
-            SELECT entry_date, full_summary
+            SELECT entry_date, mood_label, emotional_context, notable_moments,
+                   family_mentioned, full_summary
             FROM diary_entries
             WHERE user_id = ? AND entry_date = date('now', '-30 days')
             LIMIT 1
@@ -154,21 +200,18 @@ def get_relevant_memories(user_id: int, current_message: str = None) -> str:
         lines = [f"- [{row['theme']}] {row['response_text']}" for row in mem_rows]
         parts.append("Things I remember:\n" + "\n".join(lines))
 
-    diary_lines: list[str] = []
-    for row in diary_rows:
-        if row["full_summary"]:
-            label = f" ({row['mood_label']})" if row["mood_label"] else ""
-            diary_lines.append(f"- {row['entry_date']}{label}: {row['full_summary'][:180]}")
-    if diary_lines:
-        parts.append("Recent days:\n" + "\n".join(diary_lines))
+    if diary_rows:
+        diary_blocks = [_format_diary_entry(row) for row in diary_rows if row["full_summary"] or row["emotional_context"]]
+        if diary_blocks:
+            parts.append("Recent days:\n" + "\n\n".join(diary_blocks))
 
     extras: list[str] = []
-    if week_ago_row and week_ago_row["full_summary"]:
-        extras.append(f"This day last week ({week_ago_row['entry_date']}): {week_ago_row['full_summary'][:180]}")
-    if month_ago_row and month_ago_row["full_summary"]:
-        extras.append(f"This day last month ({month_ago_row['entry_date']}): {month_ago_row['full_summary'][:180]}")
+    if week_ago_row and (week_ago_row["full_summary"] or week_ago_row["emotional_context"]):
+        extras.append(f"This day last week:\n{_format_diary_entry(week_ago_row)}")
+    if month_ago_row and (month_ago_row["full_summary"] or month_ago_row["emotional_context"]):
+        extras.append(f"This day last month:\n{_format_diary_entry(month_ago_row)}")
     if extras:
-        parts.append("\n".join(extras))
+        parts.append("\n\n".join(extras))
 
     return "\n\n".join(parts)
 
@@ -275,25 +318,59 @@ def write_diary_entry(user_id: int) -> bool:
         lines.append(f"{speaker}: {row['content']}")
     transcript = "\n".join(lines)[:3000]
 
-    prompt = f"""You are reading today's conversation between an elderly Indian person and their AI companion Saathi.
-Write a care diary entry summarising this conversation.
+    # Updated prompt (Module 7 — 22 March design decision):
+    # Produces emotional_context and notable_moments, not just mood labels.
+    # This is the difference between a database and a relationship.
+    prompt = f"""You are creating a diary entry for an elderly Indian person's companion bot.
+This diary entry will be read at the start of tomorrow's conversation to help
+the bot speak naturally and personally.
 
-Conversation:
-{transcript}
+Read the conversation below and create a diary entry with these fields:
 
-Return ONLY this JSON (no other text, no markdown):
-{{
-  "mood_score": <integer 1-5, where 1=very distressed, 3=neutral, 5=very positive>,
-  "mood_label": "<one word from: sad / anxious / neutral / content / happy>",
-  "health_complaints": [<list of health mentions as short strings, or []>],
-  "family_mentioned": [<list of family member names mentioned, or []>],
-  "songs_requested": [<list of songs or artists mentioned, or []>],
-  "emotions_summary": "<2 sentences on emotional tone today>",
-  "full_summary": "<3-4 sentences on key themes, what was discussed, how the person seemed>"
-}}"""
+1. mood: One word (happy / content / tired / quiet / irritated / sad / anxious / energetic)
+
+2. emotional_context: 2-3 sentences describing the emotional texture of the conversation.
+   This is the most important field. Write it so that tomorrow's bot can reference
+   specific emotional moments naturally.
+
+   GOOD: "Senior sounded really happy after talking about Priya's upcoming visit.
+          Became animated and warm when describing Priya's cooking.
+          The conversation had a light, nostalgic quality."
+
+   BAD: "Senior was happy today. Talked about family."
+
+3. health_mentions: Any physical symptoms, medicines mentioned, or health topics raised.
+   Include exact words used where possible.
+   Example: "Mentioned knee pain ('thoda dard hai ghuthe mein'), said it comes and goes."
+
+4. family_mentions: Names of family members mentioned and context.
+   Example: "Priya (daughter) — visiting next week, very excited about this.
+              Rahul (son) — brief mention, no emotional weight."
+
+5. topics: List of main topics discussed (be specific, not generic).
+   Example: ["Priya's visit next week", "old Bombay memories", "cricket scores", "lunch"]
+   Not: ["family", "food", "sports"]
+
+6. notable_moments: 1-3 specific moments worth remembering for tomorrow.
+   Things the bot can naturally reference.
+   Example: ["Senior laughed a lot remembering the 1983 World Cup",
+              "Mentioned feeling tired in the afternoon — something about a poor night's sleep",
+              "Asked about a specific old Hindi song (Lag Ja Gale)"]
+
+7. songs_requested: Any specific songs or music requested or mentioned.
+
+8. protocol_triggers: Any Protocol 1 or Protocol 3 triggers that fired today. (Usually empty)
+
+9. conversation_length: "short" / "medium" / "long" (rough estimate of engagement level)
+
+Output as a JSON object with these exact field names.
+Do not add any explanation — just the JSON.
+
+CONVERSATION TO SUMMARISE:
+{transcript}"""
 
     try:
-        raw = _call(prompt, max_tokens=450)
+        raw = _call(prompt, max_tokens=600)
         raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
         data = json.loads(raw)
     except Exception as e:
@@ -303,16 +380,19 @@ Return ONLY this JSON (no other text, no markdown):
     upsert_diary_entry(
         user_id=user_id,
         entry_date=today,
-        mood_score=int(data.get("mood_score", 3)),
-        mood_label=data.get("mood_label", "neutral"),
-        health_complaints=json.dumps(data.get("health_complaints", [])),
-        family_mentioned=json.dumps(data.get("family_mentioned", [])),
+        mood_score=int(data.get("mood_score", 3)) if data.get("mood_score") else 3,
+        mood_label=data.get("mood", data.get("mood_label", "neutral")),
+        health_complaints=json.dumps(data.get("health_complaints", data.get("health_mentions", []))),
+        family_mentioned=json.dumps(data.get("family_mentioned", data.get("family_mentions", []))),
         songs_requested=json.dumps(data.get("songs_requested", [])),
         reminders_acknowledged=0,
         protocol1_triggered=1 if p1_count > 0 else 0,
         protocol3_triggered=1 if p3_count > 0 else 0,
-        emotions_summary=data.get("emotions_summary", ""),
+        emotions_summary=data.get("emotions_summary", data.get("emotional_context", "")[:400]),
         full_summary=data.get("full_summary", ""),
+        # Module 7 new fields — emotional context and notable moments
+        emotional_context=data.get("emotional_context", ""),
+        notable_moments=json.dumps(data.get("notable_moments", [])),
     )
 
     logger.info(

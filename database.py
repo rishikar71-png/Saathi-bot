@@ -17,6 +17,7 @@ def init_db() -> None:
         _create_tables(conn)
         _migrate_users_table(conn)
         _migrate_reminders_table(conn)
+        _migrate_diary_table(conn)
         _create_indexes(conn)
         conn.commit()
 
@@ -324,6 +325,21 @@ _REMINDERS_NEW_COLUMNS = [
 
 def _migrate_reminders_table(conn: sqlite3.Connection) -> None:
     for sql in _REMINDERS_NEW_COLUMNS:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+
+# Module 7 — add emotional_context and notable_moments to diary_entries
+_DIARY_NEW_COLUMNS = [
+    "ALTER TABLE diary_entries ADD COLUMN emotional_context TEXT",
+    "ALTER TABLE diary_entries ADD COLUMN notable_moments TEXT",
+]
+
+
+def _migrate_diary_table(conn: sqlite3.Connection) -> None:
+    for sql in _DIARY_NEW_COLUMNS:
         try:
             conn.execute(sql)
         except sqlite3.OperationalError:
