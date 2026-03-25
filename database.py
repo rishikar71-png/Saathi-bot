@@ -306,6 +306,17 @@ _USERS_NEW_COLUMNS = [
     "ALTER TABLE users ADD COLUMN handoff_step INTEGER DEFAULT 0",
     # Module 12 — First 7 Days arc
     "ALTER TABLE users ADD COLUMN days_since_first_message INTEGER DEFAULT 0",
+    # Phase 1 — Privacy and trust tracking (Rule 10 privacy question)
+    "ALTER TABLE users ADD COLUMN privacy_question_answered BOOLEAN DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN trust_check_count INTEGER DEFAULT 0",
+    # Phase 1 — Account status and end-of-life protocol
+    "ALTER TABLE users ADD COLUMN account_status TEXT DEFAULT 'active'",
+    "ALTER TABLE users ADD COLUMN death_notification_timestamp TEXT DEFAULT NULL",
+    "ALTER TABLE users ADD COLUMN death_notified_by TEXT DEFAULT NULL",
+    "ALTER TABLE users ADD COLUMN eulogy_delivered BOOLEAN DEFAULT 0",
+    # Phase 1 — Weekly report opt-in and family bridge opt-out
+    "ALTER TABLE users ADD COLUMN weekly_report_opt_in BOOLEAN DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN family_bridge_opt_out BOOLEAN DEFAULT 0",
 ]
 
 
