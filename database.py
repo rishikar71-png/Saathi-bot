@@ -317,6 +317,9 @@ _USERS_NEW_COLUMNS = [
     # Phase 1 — Weekly report opt-in and family bridge opt-out
     "ALTER TABLE users ADD COLUMN weekly_report_opt_in BOOLEAN DEFAULT 0",
     "ALTER TABLE users ADD COLUMN family_bridge_opt_out BOOLEAN DEFAULT 0",
+    # Module 6 two-mode fix — self-setup day tracking
+    "ALTER TABLE users ADD COLUMN self_setup_day1_complete INTEGER DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN self_setup_day2_complete INTEGER DEFAULT 0",
 ]
 
 

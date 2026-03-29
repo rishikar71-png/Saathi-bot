@@ -136,17 +136,24 @@ OPENING_DETECTION_QUESTION = (
 def detect_setup_mode(text: str) -> Optional[str]:
     """
     Parse the user's answer to the opening detection question.
-    Returns 'self' or 'family', or None if unclear.
+    Returns 'self', 'family', or None if unclear.
+
+    RULE: Never default to a mode — always ask again if unclear.
+    A wrong default silently puts a self-setup senior into the child-led flow.
     """
     t = text.lower().strip()
     self_signals = [
-        "myself", "me", "for me", "for myself", "i am", "i'm setting",
-        "self", "apne liye", "mujhe", "mere liye"
+        "myself", "for myself", "for me", "i am setting", "i'm setting",
+        "self setup", "apne liye", "mujhe", "mere liye",
+        "i will use", "i'll use", "i want to use", "for myself",
+        "setting up for me", "for myself",
     ]
     family_signals = [
-        "family", "member", "parent", "father", "mother", "dad", "mom",
-        "maa", "papa", "mata", "pita", "grandparent", "dadi", "nana",
-        "relative", "someone else", "unke liye", "for them", "for a"
+        "family member", "for my", "for a family", "for someone",
+        "my parent", "my father", "my mother", "my dad", "my mom",
+        "maa", "papa", "mata", "pita", "my grandparent", "dadi", "nana",
+        "someone else", "unke liye", "for them", "for my parent",
+        "for a parent", "for a relative",
     ]
     for s in self_signals:
         if s in t:
@@ -154,10 +161,13 @@ def detect_setup_mode(text: str) -> Optional[str]:
     for s in family_signals:
         if s in t:
             return "family"
-    # Default to family if unclear (primary path)
-    if len(t) <= 3:
-        return None
-    return "family"
+    # Single-word common answers
+    if t in ("myself", "me", "self", "i", "mujhe", "mera"):
+        return "self"
+    if t in ("family", "parent", "them", "relative", "unke", "someone"):
+        return "family"
+    # Never default — ask again
+    return None
 
 
 # ---------------------------------------------------------------------------

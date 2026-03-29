@@ -202,7 +202,19 @@ async def _run_pipeline(
         setup_mode = user_row["setup_mode"] if "setup_mode" in user_row.keys() else None
 
         if setup_mode is None:
-            # Mode detection — parse "myself" or "family member"
+            # First contact — we haven't asked the opening question yet.
+            # Send it now and set state to 'pending' so the NEXT message is parsed.
+            # Never try to detect mode from an unsolicited first message.
+            from database import update_user_fields as _uuf
+            _uuf(user_id, setup_mode="pending")
+            await update.message.reply_text(
+                get_opening_detection_question(), parse_mode="Markdown"
+            )
+            logger.info("OUT | user_id=%s | type=opening_detection_question", user_id)
+            return
+
+        if setup_mode == "pending":
+            # User is replying to the opening detection question — parse their answer.
             mode, next_msg = handle_mode_detection(user_id, text)
             await update.message.reply_text(next_msg, parse_mode="Markdown")
             logger.info("OUT | user_id=%s | type=mode_detection | mode=%s", user_id, mode)
@@ -396,8 +408,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             setup_mode = user_row["setup_mode"] if "setup_mode" in user_row.keys() else None
             step = user_row["onboarding_step"]
 
-            if setup_mode is None:
-                # Opening detection — ask before any onboarding questions
+            if setup_mode is None or setup_mode == "pending":
+                # Ask the opening detection question and mark it as pending.
+                # 'pending' = we've asked, waiting for the answer.
+                from database import update_user_fields as _uuf
+                _uuf(user_id, setup_mode="pending")
                 reply = get_opening_detection_question()
             elif setup_mode == "family" and step == 0:
                 reply = get_intro_message()
