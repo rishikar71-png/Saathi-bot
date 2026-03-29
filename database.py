@@ -269,6 +269,27 @@ def _create_tables(conn: sqlite3.Connection) -> None:
         )
     """)
 
+    # ------------------------------------------------------------------
+    # session_messages — in-session conversation buffer.
+    # Stores the current session's turn-by-turn exchanges so DeepSeek
+    # receives full conversation context, not just diary summaries.
+    # A session is any run of messages with gaps < SESSION_EXPIRY_MINUTES.
+    # Rows older than 2 hours are automatically excluded from queries.
+    # ------------------------------------------------------------------
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS session_messages (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL REFERENCES users(user_id),
+            role        TEXT    NOT NULL CHECK(role IN ('user', 'assistant')),
+            content     TEXT    NOT NULL,
+            created_at  TEXT    DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_session_messages_user_time
+            ON session_messages(user_id, created_at)
+    """)
+
 
 # ---------------------------------------------------------------------------
 # Migration — add new columns to the existing users table without data loss.
@@ -513,6 +534,69 @@ def log_protocol_event(
             (user_id, protocol_type, trigger_bucket, trigger_keywords, family_alerted),
         )
         conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Session buffer — in-session conversation history for DeepSeek context.
+# A session is a run of messages with gaps < 60 minutes.
+# ---------------------------------------------------------------------------
+
+SESSION_EXPIRY_MINUTES = 60
+# Max turns to retrieve — keeps context window manageable.
+# 20 pairs = 40 messages; at ~50 tokens each ≈ 2000 tokens of history.
+_SESSION_MAX_TURNS = 20
+
+
+def save_session_turn(user_id: int, role: str, content: str) -> None:
+    """
+    Append one turn (user or assistant) to the session_messages table.
+    Call this after every message exchange — DeepSeek, Protocol 3, rituals.
+    """
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                "INSERT INTO session_messages (user_id, role, content) VALUES (?, ?, ?)",
+                (user_id, role, content),
+            )
+            conn.commit()
+    except Exception:
+        pass  # non-fatal — degraded to diary-only context if this fails
+
+
+def get_session_messages(user_id: int) -> list:
+    """
+    Return all turns from the current session (last 60 min) for this user,
+    ordered oldest-first, capped at _SESSION_MAX_TURNS pairs (40 rows).
+
+    Returns a list of dicts: [{'role': 'user'|'assistant', 'content': str}, ...]
+    """
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT role, content FROM session_messages
+                WHERE user_id = ?
+                  AND created_at >= datetime('now', ? || ' minutes')
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (user_id, f"-{SESSION_EXPIRY_MINUTES}", _SESSION_MAX_TURNS * 2),
+            ).fetchall()
+        return [{"role": r["role"], "content": r["content"]} for r in rows]
+    except Exception:
+        return []
+
+
+def clear_session_messages(user_id: int) -> None:
+    """Delete all session messages for a user (e.g. on session expiry)."""
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                "DELETE FROM session_messages WHERE user_id = ?", (user_id,)
+            )
+            conn.commit()
+    except Exception:
+        pass
 
 
 def get_or_create_user(user_id: int) -> sqlite3.Row:

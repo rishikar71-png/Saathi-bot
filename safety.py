@@ -58,7 +58,10 @@ def _ist_now() -> datetime:
 # ---------------------------------------------------------------------------
 
 _EMERGENCY_EXACT = {
-    "help", "help!", "help!!", "sos",
+    # "help" alone is intentionally excluded — far too common a word.
+    # "can you help me decide?" must not trigger emergency.
+    # Only contextual emergency phrases are listed here.
+    "help!", "help!!", "sos",
     "emergency", "bachao", "bachao!", "madad",
     "ambulance", "112",
     "i fell", "i have fallen",
@@ -93,9 +96,11 @@ def check_emergency_keywords(text: str) -> bool:
     if t in _EMERGENCY_EXACT:
         return True
 
-    # Short message (≤ 5 words) containing an emergency word
+    # Short message (≤ 5 words) containing an unambiguous emergency word.
+    # "help" is excluded — too common ("can you help me?", "need some help").
+    # Physical emergency signals only: fell, ambulance, bachao, etc.
     if len(words) <= 5:
-        for keyword in ("help", "emergency", "bachao", "madad", "ambulance", "112"):
+        for keyword in ("emergency", "bachao", "madad", "ambulance", "112"):
             if keyword in words:
                 return True
 

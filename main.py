@@ -11,7 +11,10 @@ from telegram.ext import (
     filters,
 )
 from dotenv import load_dotenv
-from database import init_db, get_or_create_user, save_message_record
+from database import (
+    init_db, get_or_create_user, save_message_record,
+    save_session_turn, get_session_messages,
+)
 from deepseek import call_deepseek
 from protocol1 import check_protocol1
 from protocol3 import check_protocol3
@@ -131,6 +134,9 @@ async def _run_pipeline(
     input_type is "text" or "voice" — used for message logging only.
     """
     save_message_record(user_id, "in", text, message_type=input_type)
+    # Retrieve live session history AFTER saving the inbound message.
+    # Passed to DeepSeek so it has full in-session conversation context.
+    _session_history = get_session_messages(user_id)
 
     # --- End-of-life: death notification from a registered family member ---
     # Only check messages from registered family contacts — prevents abuse.
@@ -354,8 +360,10 @@ async def _run_pipeline(
         protocol3_reply = check_protocol3(user_id, text, language=user_language)
         if protocol3_reply:
             await update.message.reply_text(protocol3_reply)
-            # Save both sides of the exchange so DeepSeek has context on next message
+            # Save both sides so DeepSeek has full context on the next message
             save_message_record(user_id, "out", protocol3_reply)
+            save_session_turn(user_id, "user", text)
+            save_session_turn(user_id, "assistant", protocol3_reply)
             # Mark P3 active — prevents re-fire loop on follow-up messages
             from database import update_user_fields as _uuf_p3
             from datetime import datetime, timezone
@@ -388,11 +396,15 @@ async def _run_pipeline(
         return
 
     # --- DeepSeek ---
-    reply = call_deepseek(text, user_context)
+    # Pass _session_history so DeepSeek has full in-session conversation context.
+    reply = call_deepseek(text, user_context, session_messages=_session_history)
 
     # Send text first — user gets the response immediately regardless of TTS
     await update.message.reply_text(reply)
     save_message_record(user_id, "out", reply)
+    # Save this exchange to session buffer for the next DeepSeek call
+    save_session_turn(user_id, "user", text)
+    save_session_turn(user_id, "assistant", reply)
     logger.info("OUT | user_id=%s | type=%s | content=%s", user_id, input_type, reply[:80])
 
     # Send voice note — if TTS fails, text is already delivered so we never lose the response

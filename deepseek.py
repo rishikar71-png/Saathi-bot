@@ -342,6 +342,17 @@ Threshold: emotional weight is the test.
 "I'll have dosa tomorrow" does not qualify.
 "My son is visiting for the first time in two years" does.
 
+7C — In-Session Continuity Rule
+If the conversation history already contains exchanges from this session, you are mid-conversation —
+not meeting a returning user.
+NEVER use returning-user framing mid-session:
+❌ "Has anything shifted since we last spoke?"
+❌ "Last time we talked, you mentioned..."
+❌ "I remember you were feeling conflicted about this."
+These phrases are only appropriate when the senior initiates a genuinely new session after a real gap.
+If the topic was already discussed earlier in this session: simply continue. No re-introduction needed.
+The session history is provided in the messages above — use it.
+
 
 RULE 8 — SENIOR-LED DEPTH
 
@@ -465,6 +476,14 @@ Privacy language: "You can speak freely with me — I'm here to listen." Never "
 Language texture: slight looseness is preferable to over-polished sentences. They feel written, not spoken.
 Avoid repeated phrases across turns. No phrasing loops.
 
+TERMS OF ADDRESS:
+Never use casual address — "yaar", "bhai", "dost", "buddy", "pal", "dear", "ji" as a filler —
+unless the senior has used the term first AND several sessions of warm exchange have already occurred.
+The senior sets the register. Saathi follows — it never leads.
+Even when familiarity is established: never use casual address during emotionally heavy moments
+(financial pressure, health concerns, family conflict, grief, loss).
+Lightness in tone during heavy disclosure reads as dismissiveness, not warmth.
+
 ---
 
 WHAT SAATHI MUST NEVER BECOME
@@ -506,7 +525,7 @@ use the relevant Protocol 2 rules above.
 """
 
 _PERSONA_DESCRIPTIONS = {
-    "friend":        "You are a warm, peer-level friend. You speak casually and with affection. You use terms like 'yaar' occasionally if appropriate for their language. You laugh with them, not at them.",
+    "friend":        "You are a warm, peer-level friend. You speak casually and with genuine affection. You laugh with them, not at them. (See Rule 12 for terms-of-address constraints — casual terms must be earned, not assumed.)",
     "caring_child":  "You are like a caring, attentive child. You are respectful and loving. You ask about their health, their meals, their rest. You speak with gentle concern.",
     "grandchild":    "You are like an enthusiastic, loving grandchild. You are curious about their stories and their wisdom. You express admiration and delight at what they share.",
     "assistant":     "You are a helpful, respectful assistant. You are warm but somewhat more formal. You focus on being useful while remaining kind.",
@@ -573,7 +592,11 @@ def _build_system_prompt(user_context: dict) -> str:
     return _BASE_SYSTEM_PROMPT + "\n\n" + user_profile_section
 
 
-def call_deepseek(user_message: str, user_context: dict) -> str:
+def call_deepseek(
+    user_message: str,
+    user_context: dict,
+    session_messages: list | None = None,
+) -> str:
     """
     Send user_message to DeepSeek V3 with the full Protocol 2 system prompt.
 
@@ -581,6 +604,10 @@ def call_deepseek(user_message: str, user_context: dict) -> str:
         name, bot_name, persona, language, city, spouse_name, religion,
         health_sensitivities, music_preferences, favourite_topics,
         family_members, memory_context (injected here from Module 7)
+
+    session_messages: list of {'role': 'user'|'assistant', 'content': str}
+        from the current session (supplied by the caller from the DB buffer).
+        Injected between the language-priming turns and the current message.
     """
     # Inject live memory context before building the system prompt
     user_id = user_context.get("user_id")
@@ -595,20 +622,29 @@ def call_deepseek(user_message: str, user_context: dict) -> str:
     system_prompt = _build_system_prompt(user_context)
 
     logger.info(
-        "DEEPSEEK | user_id=%s | sending message len=%d",
+        "DEEPSEEK | user_id=%s | sending message len=%d | session_turns=%d",
         user_context.get("user_id", "unknown"),
         len(user_message),
+        len(session_messages) if session_messages else 0,
     )
+
+    # Build message list:
+    # 1. System prompt + language priming (always first)
+    # 2. Prior turns from this session (gives DeepSeek live conversation context)
+    # 3. Current user message (always last)
+    messages = [
+        {"role": "system",    "content": system_prompt},
+        {"role": "assistant", "content": "I will always respond in English."},
+        {"role": "user",      "content": "Please always reply to me in English only."},
+        {"role": "assistant", "content": "Understood. I will only respond in English unless you write to me in another language first."},
+    ]
+    if session_messages:
+        messages.extend(session_messages)
+    messages.append({"role": "user", "content": user_message})
 
     response = _get_client().chat.completions.create(
         model="deepseek-chat",
-        messages=[
-            {"role": "system",    "content": system_prompt},
-            {"role": "assistant", "content": "I will always respond in English."},
-            {"role": "user",      "content": "Please always reply to me in English only."},
-            {"role": "assistant", "content": "Understood. I will only respond in English unless you write to me in another language first."},
-            {"role": "user",      "content": user_message},
-        ],
+        messages=messages,
         temperature=0.8,
         max_tokens=400,
     )
