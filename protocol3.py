@@ -179,11 +179,22 @@ _ALL_BUCKETS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Response text — one warm, five-step response used across all three buckets.
+# Response text — language-branched, same five-step posture in both languages.
 # Completely neutral. Never validates or invalidates the transaction.
 # ---------------------------------------------------------------------------
 
-_PROTOCOL3_RESPONSE = (
+_PROTOCOL3_ENGLISH_RESPONSE = (
+    "Thank you for sharing that with me — it sounds like this has been sitting with you "
+    "for a while, and that kind of weight is real.\n\n"
+    "I want to be honest: this is not something I can help you decide, and I would be "
+    "worried if I tried. Money and loans — even with close friends or family — deserve "
+    "someone who truly knows your full situation. A CA, a trusted family member, or a "
+    "good lawyer would be the right person to talk to.\n\n"
+    "But if you want to talk about how this is sitting with you — not the decision "
+    "itself, just how it feels — I'm here for that."
+)
+
+_PROTOCOL3_HINDI_RESPONSE = (
     "Shukriya ki aapne mujhse share kiya. Yeh sab sunke lagta hai ki "
     "yeh kuch waqt se aapke mann mein chal raha hai — aur yeh baat bhaari hoti hai, "
     "jab aapko andar se pata ho ki kuch important decide karna hai.\n\n"
@@ -201,27 +212,39 @@ _PROTOCOL3_RESPONSE = (
 )
 
 
+def _get_protocol3_response(language: str) -> str:
+    """Return the Protocol 3 response in the user's preferred language."""
+    lang = (language or "english").strip().lower()
+    if lang in ("hindi", "hinglish", "hindi/english mix"):
+        return _PROTOCOL3_HINDI_RESPONSE
+    # Default to English — safer than defaulting to Hindi for unknown values
+    return _PROTOCOL3_ENGLISH_RESPONSE
+
+
 # ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
 
-def check_protocol3(user_id: int, text: str) -> Optional[str]:
+def check_protocol3(user_id: int, text: str, language: str = "english") -> Optional[str]:
     """
     Check the message for Protocol 3 financial/legal signals.
 
     Args:
         user_id: Telegram user ID (for logging).
         text: The incoming message text.
+        language: User's preferred language from the users table.
+                  Defaults to 'english' — never assume Hindi.
 
     Returns:
-        A response string if Protocol 3 fires, or None if the message is clear.
+        A response string in the user's language if Protocol 3 fires,
+        or None if the message is clear.
     """
     for bucket_name, patterns in _ALL_BUCKETS:
         matched_keywords = _find_matches(text, patterns)
         if matched_keywords:
             logger.warning(
-                "PROTOCOL3 | user_id=%s | bucket=%s | keywords=%s",
-                user_id, bucket_name, matched_keywords,
+                "PROTOCOL3 | user_id=%s | bucket=%s | keywords=%s | language=%s",
+                user_id, bucket_name, matched_keywords, language,
             )
             log_protocol_event(
                 user_id=user_id,
@@ -230,7 +253,7 @@ def check_protocol3(user_id: int, text: str) -> Optional[str]:
                 trigger_keywords=", ".join(matched_keywords),
                 family_alerted=0,
             )
-            return _PROTOCOL3_RESPONSE
+            return _get_protocol3_response(language)
 
     return None
 

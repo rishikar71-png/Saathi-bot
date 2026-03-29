@@ -329,7 +329,8 @@ async def _run_pipeline(
         return
 
     # --- Protocol 3 check (runs BEFORE DeepSeek, AFTER Protocol 1) ---
-    protocol3_reply = check_protocol3(user_id, text)
+    user_language = user_row["language"] or "english"
+    protocol3_reply = check_protocol3(user_id, text, language=user_language)
     if protocol3_reply:
         await update.message.reply_text(protocol3_reply)
         logger.info("OUT | user_id=%s | type=protocol3", user_id)
