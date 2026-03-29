@@ -25,6 +25,8 @@ from onboarding import (
     get_setup_child_name,
     is_confused_senior,
     get_confusion_response,
+    detect_archetype_signal,
+    get_archetype_adjustment_text,
 )
 from memory import extract_and_save_memories
 from whisper import transcribe_voice
@@ -43,6 +45,14 @@ from safety import (
     handle_help_callback,
     check_inactivity,
 )
+from end_of_life import (
+    find_senior_for_family_member,
+    is_death_notification,
+    handle_death_notification,
+    is_eulogy_yes,
+    build_eulogy_prompt,
+)
+from policy import POLICY_COMMAND_RESPONSE, USER_POLICY_DOCUMENT
 
 load_dotenv()
 
@@ -59,6 +69,48 @@ PORT = int(os.environ.get("PORT", 8443))
 # Tracks how many times Protocol 1 has fired per user in this process lifetime.
 # Resets on bot restart — sufficient for MVP.
 _protocol1_session_counts: dict[int, int] = {}
+
+# Archetype onboarding adjustments — First 7 Days only.
+# In-memory: 'striver', 'quiet_one', or 'default'. No DB storage.
+# Resets on bot restart — recalculates from messages if needed.
+_archetype_cache: dict[int, str] = {}
+
+
+def _get_archetype_adjustment(user_id: int, days_since_first_message: int) -> str | None:
+    """
+    Return archetype adjustment text for user_context, or None.
+
+    - Only active during First 7 Days (days_since_first_message <= 7)
+    - Calculates once after 3+ inbound messages, then caches in memory
+    - Returns None for 'default' or after Day 7
+    """
+    if days_since_first_message > 7:
+        return None
+
+    if user_id in _archetype_cache:
+        return get_archetype_adjustment_text(_archetype_cache[user_id])
+
+    # Not yet detected — check how many messages the senior has sent
+    try:
+        from database import get_connection
+        with get_connection() as conn:
+            rows = conn.execute(
+                """SELECT content FROM messages
+                   WHERE user_id = ? AND direction = 'in'
+                   ORDER BY created_at
+                   LIMIT 5""",
+                (user_id,),
+            ).fetchall()
+        if len(rows) >= 3:
+            messages = [r["content"] for r in rows if r["content"]]
+            label = detect_archetype_signal(messages)
+            _archetype_cache[user_id] = label
+            logger.info("ARCHETYPE | user_id=%s | detected=%s", user_id, label)
+            return get_archetype_adjustment_text(label)
+    except Exception as e:
+        logger.warning("ARCHETYPE | lookup failed | user_id=%s | %s", user_id, e)
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +131,54 @@ async def _run_pipeline(
     input_type is "text" or "voice" — used for message logging only.
     """
     save_message_record(user_id, "in", text, message_type=input_type)
+
+    # --- End-of-life: death notification from a registered family member ---
+    # Only check messages from registered family contacts — prevents abuse.
+    # This runs before everything else so it can silence the normal pipeline.
+    senior_id_for_family = find_senior_for_family_member(user_id)
+    if senior_id_for_family is not None:
+        from database import get_or_create_user as _get_senior
+        senior_row = _get_senior(senior_id_for_family)
+        senior_status = senior_row["account_status"] if senior_row else "active"
+
+        if senior_status == "active" and is_death_notification(text):
+            # Mark senior deceased, silence all proactive messages
+            eulogy_offer = handle_death_notification(senior_id_for_family, user_id)
+            if eulogy_offer:
+                await update.message.reply_text(eulogy_offer)
+                logger.info(
+                    "EOL | death notification received | senior_id=%s | notifier=%s",
+                    senior_id_for_family, user_id,
+                )
+            return
+
+        if senior_status == "deceased":
+            eulogy_delivered = senior_row["eulogy_delivered"] if senior_row else 1
+            if not eulogy_delivered and is_eulogy_yes(text):
+                # Family said yes to eulogy — generate and send
+                try:
+                    prompt = build_eulogy_prompt(senior_id_for_family)
+                    if prompt:
+                        eulogy_text = call_deepseek(prompt, {"language": "english"})
+                        await update.message.reply_text(eulogy_text)
+                        from database import update_user_fields
+                        update_user_fields(senior_id_for_family, eulogy_delivered=1)
+                        logger.info(
+                            "EOL | eulogy delivered | senior_id=%s", senior_id_for_family
+                        )
+                except Exception as eol_err:
+                    logger.error("EOL | eulogy generation failed: %s", eol_err)
+                    await update.message.reply_text(
+                        "I am so sorry — something went wrong and I wasn't able to send this right now. "
+                        "Please try again in a little while."
+                    )
+            return  # Family messages beyond this point are not processed normally
+
+    # --- Full policy request ---
+    if text.strip().lower() in ("full policy", "full policy.", "puri policy"):
+        await update.message.reply_text(USER_POLICY_DOCUMENT)
+        logger.info("OUT | user_id=%s | type=policy_full", user_id)
+        return
 
     # Track first message of the day for adaptive ritual scheduling
     record_first_message(user_id)
@@ -177,19 +277,23 @@ async def _run_pipeline(
         return
 
     # Build context dict from user profile.
+    days_since_first = user_row["days_since_first_message"] or 1
+    archetype_adjustment = _get_archetype_adjustment(user_id, days_since_first)
+
     user_context = {
-        "user_id":              user_id,
-        "name":                 user_row["name"],
-        "bot_name":             user_row["bot_name"],
-        "persona":              user_row["persona"],
-        "language":             user_row["language"],
-        "city":                 user_row["city"],
-        "spouse_name":          user_row["spouse_name"],
-        "religion":             user_row["religion"],
-        "health_sensitivities": user_row["health_sensitivities"],
-        "music_preferences":    user_row["music_preferences"],
-        "favourite_topics":     user_row["favourite_topics"],
-        "family_members":       None,  # TODO Module 7: inject from family_members table
+        "user_id":                user_id,
+        "name":                   user_row["name"],
+        "bot_name":               user_row["bot_name"],
+        "persona":                user_row["persona"],
+        "language":               user_row["language"],
+        "city":                   user_row["city"],
+        "spouse_name":            user_row["spouse_name"],
+        "religion":               user_row["religion"],
+        "health_sensitivities":   user_row["health_sensitivities"],
+        "music_preferences":      user_row["music_preferences"],
+        "favourite_topics":       user_row["favourite_topics"],
+        "family_members":         None,  # TODO Module 7: inject from family_members table
+        "archetype_adjustment":   archetype_adjustment,
     }
 
     # --- Emergency keyword check (runs BEFORE Protocol 1) ---
@@ -262,6 +366,25 @@ async def _run_pipeline(
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
+
+async def handle_policy_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/policy — sends the short privacy summary. Senior can request full policy by replying."""
+    user_id = update.effective_user.id
+    logger.info("IN  | user_id=%s | type=command | content=/policy", user_id)
+    await update.message.reply_text(POLICY_COMMAND_RESPONSE, parse_mode="Markdown")
+    logger.info("OUT | user_id=%s | type=policy_short", user_id)
+
+
+async def handle_full_policy_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    If the senior replies 'full policy' after the /policy short response,
+    send the complete policy document.
+    Called from handle_text when the message is exactly 'full policy'.
+    """
+    user_id = update.effective_user.id
+    await update.message.reply_text(USER_POLICY_DOCUMENT)
+    logger.info("OUT | user_id=%s | type=policy_full", user_id)
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -391,6 +514,7 @@ def main() -> None:
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", handle_help_command))
+    app.add_handler(CommandHandler("policy", handle_policy_command))
     app.add_handler(CallbackQueryHandler(handle_help_callback, pattern="^help_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, receive_voice))

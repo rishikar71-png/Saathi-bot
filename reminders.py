@@ -257,6 +257,7 @@ def get_due_reminders() -> list:
             FROM medicine_reminders r
             JOIN users u ON u.user_id = r.user_id
             WHERE r.is_active = 1
+              AND COALESCE(u.account_status, 'active') = 'active'
               AND (
                   -- Initial send: scheduled minute reached, not yet sent today
                   (r.schedule_time = ?
@@ -366,6 +367,7 @@ def get_unacknowledged_for_escalation() -> list:
             LEFT JOIN family_members fm
                    ON fm.user_id = r.user_id AND fm.is_setup_user = 1
             WHERE r.is_active = 1
+              AND COALESCE(u.account_status, 'active') = 'active'
               AND r.last_sent_at IS NOT NULL
               AND r.reminder_attempt >= 3
               AND (r.last_acked_at IS NULL OR r.last_acked_at < r.last_sent_at)

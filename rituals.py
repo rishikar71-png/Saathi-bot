@@ -163,74 +163,63 @@ FIRST_7_DAYS_ARC = {
         "goal": "Comfort and orientation",
         "morning_question": None,
         "evening_prompt": "How was your day today?",
-        "topics_to_avoid": ["deep memories", "health", "finances", "loneliness"],
         "topics_to_offer": ["weather", "cricket", "music", "simple chitchat"],
         "purpose_loops_active": [],
         "saathi_posture": (
             "Light conversation. Remove awkwardness. Offer topics. "
             "Repeat: 'Just say hello anytime — I'll take it from there.'"
         ),
-        "depth_ceiling": "surface",
     },
     2: {
         "goal": "Routine formation",
         "morning_question": "How did you sleep last night?",
         "evening_prompt": "Did anything nice happen today?",
-        "topics_to_avoid": ["deep memories", "loneliness"],
         "topics_to_offer": ["weather", "cricket", "family mentions", "food"],
         "purpose_loops_active": ["meal_anchor", "call_reminder"],
         "saathi_posture": (
             "Introduce gentle routine. Make the next session feel anticipated. "
             "Use forward-anchoring: 'I'll check in with you this evening.'"
         ),
-        "depth_ceiling": "light",
     },
     3: {
         "goal": "First memory trigger",
         "morning_question": "Where did you grow up?",
         "evening_prompt": "What's one thing from today you'd like to remember?",
-        "topics_to_avoid": ["loss", "illness", "regret"],
-        "topics_to_offer": ["childhood", "hometown", "early life — light only"],
+        "topics_to_offer": ["childhood", "hometown", "early life"],
         "purpose_loops_active": ["meal_anchor", "call_reminder", "memory_prompt"],
         "saathi_posture": (
             "One question from memory bank. Keep it light. "
             "Don't rush to the next question. Let it breathe."
         ),
-        "depth_ceiling": "light-to-medium",
     },
     4: {
         "goal": "Personalisation moment",
         "morning_question": None,
         "evening_prompt": "What was something good about today, even if it was small?",
-        "topics_to_avoid": [],
         "topics_to_offer": ["anything — but reference stored context naturally"],
         "purpose_loops_active": ["meal_anchor", "call_reminder", "memory_prompt", "story_loop"],
         "saathi_posture": (
             "Use something stored from earlier. 'You mentioned…' — "
             "this is the moment the senior feels genuinely remembered, not just processed."
         ),
-        "depth_ceiling": "medium",
         "special_instruction": "MUST reference at least one specific detail from previous conversations today.",
     },
     5: {
         "goal": "Relationship bridge",
         "morning_question": "Have you spoken to [family member name] recently?",
         "evening_prompt": "Did you get to talk to anyone today?",
-        "topics_to_avoid": ["family conflict", "family worry"],
         "topics_to_offer": ["family connection", "real-world plans"],
         "purpose_loops_active": ["meal_anchor", "call_reminder", "memory_prompt", "story_loop"],
         "saathi_posture": (
             "Gentle nudge toward real-world human connection. "
             "Frame as emotional bridge: 'I feel Priya would really enjoy hearing this from you.'"
         ),
-        "depth_ceiling": "medium",
     },
     6: {
         "goal": "Identity reinforcement",
         "morning_question": "What did you enjoy most about your work?",
         "morning_question_alt": "What are you proudest of in your life?",
         "evening_prompt": "Is there something from your life you think younger people don't appreciate enough?",
-        "topics_to_avoid": [],
         "topics_to_offer": ["career", "achievements", "wisdom", "life experience"],
         "purpose_loops_active": ["meal_anchor", "call_reminder", "memory_prompt", "story_loop", "daily_reflection"],
         "saathi_posture": (
@@ -238,20 +227,17 @@ FIRST_7_DAYS_ARC = {
             "Not through flattery but through genuine acknowledgement. "
             "'You've seen so much — I like hearing how you think about this.'"
         ),
-        "depth_ceiling": "medium-to-deep",
     },
     7: {
         "goal": "Reflection loop",
         "morning_question": "What's one thing you're looking forward to this week?",
         "evening_prompt": "What was one good part of your week — even something small?",
-        "topics_to_avoid": [],
         "topics_to_offer": ["reflection", "gratitude", "week ahead"],
         "purpose_loops_active": ["meal_anchor", "call_reminder", "memory_prompt", "story_loop", "daily_reflection"],
         "saathi_posture": (
             "Set the pattern for the Sunday evening ritual. "
             "This question becomes a weekly anchor going forward."
         ),
-        "depth_ceiling": "medium-to-deep",
         "special_instruction": (
             "This establishes the weekly reflection ritual. After Day 7, the Sunday evening "
             "prompt 'What was one good part of your week?' becomes permanent."
@@ -274,11 +260,9 @@ def get_day_arc(days_since_first_message: int) -> dict:
         "goal": "Ongoing relationship",
         "morning_question": None,
         "evening_prompt": "What was one good part of today, even if it was small?",
-        "topics_to_avoid": [],
         "topics_to_offer": ["anything"],
         "purpose_loops_active": ["meal_anchor", "call_reminder", "memory_prompt", "story_loop", "daily_reflection"],
-        "saathi_posture": "Full engagement mode. Three-mode framework applies. Organic depth only.",
-        "depth_ceiling": "unrestricted",
+        "saathi_posture": "Full engagement mode. Three-mode framework applies. Senior leads depth (Rule 8).",
     }
 
 
@@ -338,6 +322,7 @@ def _get_users_due_for_ritual(ritual_type: str, now_hhmm: str, today: str) -> li
                    COALESCE(u.days_since_first_message, 1) AS days_since_first_message
             FROM users u
             WHERE u.onboarding_complete = 1
+              AND COALESCE(u.account_status, 'active') = 'active'
               AND u.{time_column} = ?
               AND NOT EXISTS (
                   SELECT 1 FROM ritual_log rl
@@ -420,11 +405,8 @@ def _build_morning_instruction(user_row) -> str:
         "- Maximum 4-5 sentences total. Seniors should not need to scroll.",
         "- Warmth first, information second.",
         "- Never raw data. Always wrap in care.",
-        f"- Depth ceiling for today: {arc['depth_ceiling']}",
+        "- Follow the senior's lead on depth — Rule 8 of Protocol 2 governs this.",
     ]
-
-    if arc.get("topics_to_avoid"):
-        sections.append(f"- Do NOT introduce: {', '.join(arc['topics_to_avoid'])}")
 
     return "\n".join(sections)
 
@@ -638,3 +620,9 @@ async def check_and_send_rituals(bot) -> None:
     if now_hhmm == "00:05":
         _run_adaptation_pass()
         _increment_days_since_first_message()
+        # End-of-life: delete data for users 30 days past death notification
+        try:
+            from end_of_life import check_data_deletion
+            check_data_deletion()
+        except Exception as eol_err:
+            logger.error("RITUALS | check_data_deletion failed: %s", eol_err)
