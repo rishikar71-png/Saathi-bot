@@ -329,12 +329,44 @@ async def _run_pipeline(
         return
 
     # --- Protocol 3 check (runs BEFORE DeepSeek, AFTER Protocol 1) ---
+    #
+    # Session expiry: clear protocol3_active if >60 min since last P3 trigger.
+    # This resets the guard at the start of a new conversation session.
+    _p3_active = user_row["protocol3_active"] if "protocol3_active" in user_row.keys() else 0
+    _p3_triggered_at = user_row["protocol3_triggered_at"] if "protocol3_triggered_at" in user_row.keys() else None
+    if _p3_active and _p3_triggered_at:
+        try:
+            from datetime import datetime, timezone, timedelta
+            triggered = datetime.fromisoformat(_p3_triggered_at)
+            if triggered.tzinfo is None:
+                triggered = triggered.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) - triggered > timedelta(minutes=60):
+                from database import update_user_fields as _uuf_p3
+                _uuf_p3(user_id, protocol3_active=0, protocol3_triggered_at=None)
+                _p3_active = 0
+        except Exception:
+            pass  # on parse error, leave flag as-is
+
     user_language = user_row["language"] or "english"
-    protocol3_reply = check_protocol3(user_id, text, language=user_language)
-    if protocol3_reply:
-        await update.message.reply_text(protocol3_reply)
-        logger.info("OUT | user_id=%s | type=protocol3", user_id)
-        return
+
+    if not _p3_active:
+        # Only run keyword detection when P3 hasn't already fired this session
+        protocol3_reply = check_protocol3(user_id, text, language=user_language)
+        if protocol3_reply:
+            await update.message.reply_text(protocol3_reply)
+            # Save both sides of the exchange so DeepSeek has context on next message
+            save_message_record(user_id, "out", protocol3_reply)
+            # Mark P3 active — prevents re-fire loop on follow-up messages
+            from database import update_user_fields as _uuf_p3
+            from datetime import datetime, timezone
+            _uuf_p3(
+                user_id,
+                protocol3_active=1,
+                protocol3_triggered_at=datetime.now(timezone.utc).isoformat(),
+            )
+            logger.info("OUT | user_id=%s | type=protocol3", user_id)
+            return
+        # If no P3 trigger, fall through to DeepSeek normally
 
     # --- Music request check (runs BEFORE DeepSeek, AFTER protocols) ---
     music_query = detect_music_request(
