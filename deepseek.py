@@ -567,6 +567,9 @@ def _build_system_prompt(user_context: dict) -> str:
         f"not \"According to my records...\""
     )
 
+    archetype_adjustment = user_context.get("archetype_adjustment")
+    if archetype_adjustment:
+        return _BASE_SYSTEM_PROMPT + "\n\n" + user_profile_section + "\n" + archetype_adjustment
     return _BASE_SYSTEM_PROMPT + "\n\n" + user_profile_section
 
 

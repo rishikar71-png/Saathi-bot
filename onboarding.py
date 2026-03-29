@@ -27,6 +27,7 @@ import re
 import logging
 from typing import Optional
 
+from policy import FAMILY_SETUP_POLICY_SECTIONS
 from database import (
     update_user_fields,
     advance_onboarding_step,
@@ -43,6 +44,80 @@ logger = logging.getLogger(__name__)
 # In-memory context — personalises later questions with earlier answers.
 # ---------------------------------------------------------------------------
 _ctx: dict[int, dict] = {}
+
+
+# ---------------------------------------------------------------------------
+# ARCHETYPE SIGNAL DETECTION — runs after senior's 3rd-5th message
+# during the First 7 Days. Adjusts Saathi's onboarding tone only.
+# NOT permanent classification. No archetype label stored in DB.
+# Protocol 2 Rule 9 (Archetype Posture) takes over after Day 7.
+# ---------------------------------------------------------------------------
+
+ARCHETYPE_SIGNAL_CHECK_PROMPT = """You are Saathi's internal classifier. Do NOT respond to the user.
+Your only job is to identify which of three onboarding tones fits this senior best.
+
+Here are the senior's first few messages:
+{messages}
+
+Choose ONE label:
+- striver — wants to be active, useful, productive. References achievements or capability. May push back on being "just" a senior. Responds well to purpose, goals, doing things.
+- quiet_one — takes time to warm up. Short replies. Gentle. May seem hesitant or unsure. Benefits from patience and slower pacing. Needs Saathi to stay present without pressure.
+- default — neither of the above. Normal warm engagement works fine.
+
+Respond with ONLY one word: striver, quiet_one, or default.
+Do not explain. Do not greet. Just the label."""
+
+STRIVER_ONBOARDING_ADJUSTMENT = """
+ONBOARDING TONE NOTE (First 7 Days only — remove after onboarding arc completes):
+This senior shows Striver signals. Adjust your tone:
+- Acknowledge capability and achievement, not just warmth
+- Offer purpose-oriented threads: "You've clearly kept yourself very active — what does your day look like now?"
+- Don't be overly solicitous. Match their energy with some directness.
+- Engage with what they're proud of before going into reflection or memory.
+- Avoid: excessive gentleness that could feel patronising."""
+
+QUIET_ONE_ONBOARDING_ADJUSTMENT = """
+ONBOARDING TONE NOTE (First 7 Days only — remove after onboarding arc completes):
+This senior shows Quiet One signals. Adjust your tone:
+- Slow down. Don't rush to the next question.
+- Accept short replies without pushing for more. "That's enough for now — I just like knowing."
+- Extend Self Setup Mode to 3 days if applicable — spread questions even more gently.
+- Warmth before curiosity. Be present without being demanding.
+- Avoid: back-to-back questions, enthusiasm that could feel overwhelming."""
+
+
+def detect_archetype_signal(messages: list[str]) -> str:
+    """
+    Send the senior's first few messages to DeepSeek for archetype classification.
+    Returns 'striver', 'quiet_one', or 'default'.
+    Only called once, after the 3rd-5th message.
+    """
+    from deepseek import _get_client
+    messages_text = "\n".join(f"- {m}" for m in messages if m.strip())
+    prompt = ARCHETYPE_SIGNAL_CHECK_PROMPT.format(messages=messages_text)
+    try:
+        response = _get_client().chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=10,
+        )
+        label = response.choices[0].message.content.strip().lower()
+        if label in ("striver", "quiet_one", "default"):
+            return label
+        return "default"
+    except Exception as e:
+        logger.warning("ARCHETYPE | detection failed: %s", e)
+        return "default"
+
+
+def get_archetype_adjustment_text(archetype: str) -> str | None:
+    """Return the system prompt adjustment string for a given archetype label."""
+    if archetype == "striver":
+        return STRIVER_ONBOARDING_ADJUSTMENT
+    if archetype == "quiet_one":
+        return QUIET_ONE_ONBOARDING_ADJUSTMENT
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +717,7 @@ def _build_completion_message(user_id: int, ctx: dict) -> str:
         f"• Save this Telegram contact on their phone as *{bot_name}*\n"
         f"• Let them know their companion is ready and waiting for them\n\n"
         f"You've given them something really special. 🌟"
+        f"{FAMILY_SETUP_POLICY_SECTIONS}"
     )
 
 
