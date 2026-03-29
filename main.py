@@ -18,6 +18,7 @@ from database import (
 from deepseek import call_deepseek
 from protocol1 import check_protocol1
 from protocol3 import check_protocol3
+from protocol4 import check_protocol4
 from onboarding import (
     get_intro_message,
     get_opening_detection_question,
@@ -332,6 +333,18 @@ async def _run_pipeline(
             "OUT | user_id=%s | type=protocol1 | stage=%d",
             user_id, session_count + 1,
         )
+        return
+
+    # --- Protocol 4 check (runs AFTER Protocol 1, BEFORE Protocol 3) ---
+    # Handles romantic or sexual signals with a gentle, non-shaming boundary.
+    _p4_language = user_row["language"] or "english"
+    protocol4_reply = check_protocol4(user_id, text, language=_p4_language)
+    if protocol4_reply:
+        await update.message.reply_text(protocol4_reply)
+        save_message_record(user_id, "out", protocol4_reply)
+        save_session_turn(user_id, "user", text)
+        save_session_turn(user_id, "assistant", protocol4_reply)
+        logger.info("OUT | user_id=%s | type=protocol4", user_id)
         return
 
     # --- Protocol 3 check (runs BEFORE DeepSeek, AFTER Protocol 1) ---
