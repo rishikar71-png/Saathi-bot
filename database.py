@@ -46,14 +46,20 @@ def run_startup_migrations() -> None:
     conn.commit()
     # Backfill: mark existing users who already have a name as onboarding complete
     # so they are never sent through the onboarding flow again.
-    conn.execute("""
-        UPDATE users
-        SET onboarding_complete = 1
-        WHERE name IS NOT NULL
-          AND name != ''
-          AND onboarding_complete = 0
-    """)
-    conn.commit()
+    # Wrapped in try/except: on a fresh Railway deploy the users table doesn't
+    # exist yet when this runs (init_db() hasn't been called). Safe to skip —
+    # there are no users to backfill on a fresh DB.
+    try:
+        conn.execute("""
+            UPDATE users
+            SET onboarding_complete = 1
+            WHERE name IS NOT NULL
+              AND name != ''
+              AND onboarding_complete = 0
+        """)
+        conn.commit()
+    except Exception as e:
+        _log.debug("MIGRATION backfill skip (fresh DB): %s", e)
     conn.close()
     _log.info("STARTUP MIGRATIONS complete")
 
