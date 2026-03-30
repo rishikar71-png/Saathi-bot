@@ -12,7 +12,7 @@ from telegram.ext import (
 )
 from dotenv import load_dotenv
 from database import (
-    init_db, get_or_create_user, save_message_record,
+    init_db, run_startup_migrations, get_or_create_user, save_message_record,
     save_session_turn, get_session_messages,
 )
 from deepseek import call_deepseek, get_user_local_hour, get_time_of_day_label
@@ -654,6 +654,7 @@ async def safety_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    run_startup_migrations()
     init_db()
     logger.info("Database initialised")
 

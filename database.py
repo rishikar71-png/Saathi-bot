@@ -11,6 +11,53 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def run_startup_migrations() -> None:
+    """
+    Explicit startup migration — runs directly against the live DB file.
+    Called first in main() before init_db(). Safe to run on every startup:
+    CREATE TABLE uses IF NOT EXISTS, each ALTER TABLE is individually
+    wrapped in try/except so duplicate-column errors are silently skipped.
+    """
+    import logging
+    _log = logging.getLogger(__name__)
+    conn = sqlite3.connect(DB_PATH)
+    migrations = [
+        # session buffer table
+        """CREATE TABLE IF NOT EXISTS session_messages (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL,
+            role        TEXT    NOT NULL,
+            content     TEXT    NOT NULL,
+            created_at  TEXT    DEFAULT (datetime('now'))
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_session_messages_user_time ON session_messages(user_id, created_at)",
+        # users table — new columns added after initial deploy
+        "ALTER TABLE users ADD COLUMN onboarding_complete INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN current_session_start TEXT DEFAULT NULL",
+        "ALTER TABLE users ADD COLUMN last_message_at TEXT DEFAULT NULL",
+        "ALTER TABLE users ADD COLUMN protocol3_active INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN protocol3_triggered_at TEXT DEFAULT NULL",
+    ]
+    for sql in migrations:
+        try:
+            conn.execute(sql)
+        except Exception as e:
+            _log.debug("MIGRATION skip: %s", e)
+    conn.commit()
+    # Backfill: mark existing users who already have a name as onboarding complete
+    # so they are never sent through the onboarding flow again.
+    conn.execute("""
+        UPDATE users
+        SET onboarding_complete = 1
+        WHERE name IS NOT NULL
+          AND name != ''
+          AND onboarding_complete = 0
+    """)
+    conn.commit()
+    conn.close()
+    _log.info("STARTUP MIGRATIONS complete")
+
+
 def init_db() -> None:
     """Create all tables and indexes. Safe to call on every startup."""
     with get_connection() as conn:
