@@ -31,7 +31,26 @@ from database import log_protocol_event
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Keyword lists — three buckets
+# Flat keyword list — simple case-insensitive substring match.
+# Runs BEFORE the bucket regex patterns as a broad first pass.
+# ---------------------------------------------------------------------------
+
+FINANCIAL_KEYWORDS = [
+    "invest", "investment", "investing",
+    "business", "scheme", "shares", "stocks",
+    "mutual fund", "fixed deposit", "fd",
+    "loan", "borrow", "lend", "lending",
+    "property", "real estate", "savings",
+    "insurance", "policy", "fraud", "scam",
+    "cheating", "money", "lakhs", "crore",
+    "rupees", "rs.", "₹", "paise",
+    "paisa", "nivesh", "vyapar",
+    "dhandha", "karz", "udhaar", "zameen",
+    "bima", "yojana",
+]
+
+# ---------------------------------------------------------------------------
+# Keyword lists — three buckets (regex patterns for complex phrase matching)
 # ---------------------------------------------------------------------------
 
 # Bucket 1 — External financial pressure: someone asking for money/investment.
@@ -239,6 +258,24 @@ def check_protocol3(user_id: int, text: str, language: str = "english") -> Optio
         A response string in the user's language if Protocol 3 fires,
         or None if the message is clear.
     """
+    text_lower = text.lower()
+
+    # Flat keyword check — broad first pass
+    matched_keywords = [kw for kw in FINANCIAL_KEYWORDS if kw in text_lower]
+    if matched_keywords:
+        logger.warning(
+            "PROTOCOL3 | user_id=%s | bucket=keyword_match | keywords=%s | language=%s",
+            user_id, matched_keywords, language,
+        )
+        log_protocol_event(
+            user_id=user_id,
+            protocol_type="3",
+            trigger_bucket="keyword_match",
+            trigger_keywords=", ".join(matched_keywords),
+            family_alerted=0,
+        )
+        return _get_protocol3_response(language)
+
     for bucket_name, patterns in _ALL_BUCKETS:
         matched_keywords = _find_matches(text, patterns)
         if matched_keywords:

@@ -57,59 +57,28 @@ def _ist_now() -> datetime:
 # Mental health crisis is handled separately by Protocol 1.
 # ---------------------------------------------------------------------------
 
-_EMERGENCY_EXACT = {
-    # "help" alone is intentionally excluded — far too common a word.
-    # "can you help me decide?" must not trigger emergency.
-    # Only contextual emergency phrases are listed here.
-    "help!", "help!!", "sos",
-    "emergency", "bachao", "bachao!", "madad",
-    "ambulance", "112",
-    "i fell", "i have fallen",
-    "call someone", "kisi ko bulao",
-    "please help", "help me",
-    "mujhe madad", "madad karo",
-    "gir gaya", "gir gayi", "gir gaye",
-}
-
-_EMERGENCY_SUBSTRINGS = (
-    "i fell", "i have fallen",
-    "gir gaya", "gir gayi", "gir gaye",
-    "call someone", "kisi ko bulao",
-    "please help", "help me",
-    "mujhe madad", "madad karo",
-    "gir pada", "gir padi",
-)
+EMERGENCY_KEYWORDS_SAFE = [
+    "i fell", "gir gaya", "gir gayi",
+    "call ambulance", "ambulance bulao",
+    "emergency",
+    "i don't want to go on",
+    "i can't go on",
+    "jeena nahi chahta", "jeena nahi chahti",
+    "khatam kar loon", "mujhe nahi rehna",
+    "zindagi se thak gaya", "zindagi se thak gayi",
+    "koi matlab nahi raha", "ab kya faida hai",
+]
 
 
 def check_emergency_keywords(text: str) -> bool:
     """
-    Return True if the message looks like a physical emergency.
+    Return True if the message looks like a physical or acute distress emergency.
 
-    Rules:
-    - Short messages (≤ 5 words) that exactly match or contain emergency words.
-    - Or longer messages containing unambiguous emergency substrings.
+    Uses case-insensitive substring matching against EMERGENCY_KEYWORDS_SAFE.
+    "help" and "help me" are intentionally excluded — far too common.
     """
     t = text.strip().lower()
-    words = t.split()
-
-    # Exact match against short-message set
-    if t in _EMERGENCY_EXACT:
-        return True
-
-    # Short message (≤ 5 words) containing an unambiguous emergency word.
-    # "help" is excluded — too common ("can you help me?", "need some help").
-    # Physical emergency signals only: fell, ambulance, bachao, etc.
-    if len(words) <= 5:
-        for keyword in ("emergency", "bachao", "madad", "ambulance", "112"):
-            if keyword in words:
-                return True
-
-    # Unambiguous physical emergency substrings in any length message
-    for sub in _EMERGENCY_SUBSTRINGS:
-        if sub in t:
-            return True
-
-    return False
+    return any(phrase in t for phrase in EMERGENCY_KEYWORDS_SAFE)
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,7 @@ from database import (
     init_db, get_or_create_user, save_message_record,
     save_session_turn, get_session_messages,
 )
-from deepseek import call_deepseek
+from deepseek import call_deepseek, get_user_local_hour, get_time_of_day_label
 from protocol1 import check_protocol1
 from protocol3 import check_protocol3
 from protocol4 import check_protocol4
@@ -299,6 +299,9 @@ async def _run_pipeline(
     days_since_first = user_row["days_since_first_message"] or 1
     archetype_adjustment = _get_archetype_adjustment(user_id, days_since_first)
 
+    _local_hour = get_user_local_hour(dict(user_row))
+    _time_label = get_time_of_day_label(_local_hour)
+
     user_context = {
         "user_id":                user_id,
         "name":                   user_row["name"],
@@ -313,7 +316,74 @@ async def _run_pipeline(
         "favourite_topics":       user_row["favourite_topics"],
         "family_members":         None,  # TODO Module 7: inject from family_members table
         "archetype_adjustment":   archetype_adjustment,
+        "local_hour":             _local_hour,
+        "local_time_label":       _time_label,
     }
+
+    # --- Meta-request: language switch ---
+    # Must run before all protocols and DeepSeek.
+    _LANGUAGE_SWITCH_TO_ENGLISH = [
+        "in english", "in english please",
+        "speak english", "english please",
+        "reply in english", "respond in english",
+    ]
+    _LANGUAGE_SWITCH_TO_HINDI = [
+        "hindi mein", "hindi mein baat karo",
+        "hindi please", "hindi mein boliye",
+        "in hindi", "in hindi please",
+    ]
+
+    msg_lower = text.lower().strip()
+
+    if any(p in msg_lower for p in _LANGUAGE_SWITCH_TO_ENGLISH):
+        from database import update_user_fields as _uuf_lang
+        _uuf_lang(user_id, language="english")
+        _lang_reply = "Of course."
+        await update.message.reply_text(_lang_reply)
+        save_message_record(user_id, "out", _lang_reply)
+        save_session_turn(user_id, "user", text)
+        save_session_turn(user_id, "assistant", _lang_reply)
+        logger.info("OUT | user_id=%s | type=language_switch | lang=english", user_id)
+        return
+
+    if any(p in msg_lower for p in _LANGUAGE_SWITCH_TO_HINDI):
+        from database import update_user_fields as _uuf_lang
+        _uuf_lang(user_id, language="hindi")
+        _lang_reply = "Bilkul."
+        await update.message.reply_text(_lang_reply)
+        save_message_record(user_id, "out", _lang_reply)
+        save_session_turn(user_id, "user", text)
+        save_session_turn(user_id, "assistant", _lang_reply)
+        logger.info("OUT | user_id=%s | type=language_switch | lang=hindi", user_id)
+        return
+
+    # --- Greeting handler ---
+    # User-initiated greetings get a time-aware response, not proactive check-in language.
+    _GREETING_TRIGGERS = [
+        "hello", "hi", "hey", "good morning", "good afternoon",
+        "good evening", "good night", "namaste", "namaskar",
+        "haan", "haan haan", "jai shri krishna", "sat sri akal",
+        "salam", "adaab", "hola",
+    ]
+
+    def _get_time_aware_greeting(hour: int) -> str:
+        if 5 <= hour < 12:
+            return "Good morning. Good to hear from you."
+        elif 12 <= hour < 17:
+            return "Good afternoon."
+        elif 17 <= hour < 21:
+            return "Good evening. How has the day been?"
+        else:
+            return "Hello. Up late tonight?"
+
+    if msg_lower in _GREETING_TRIGGERS or any(msg_lower.startswith(g) for g in _GREETING_TRIGGERS):
+        _greet_reply = _get_time_aware_greeting(_local_hour)
+        await update.message.reply_text(_greet_reply)
+        save_message_record(user_id, "out", _greet_reply)
+        save_session_turn(user_id, "user", text)
+        save_session_turn(user_id, "assistant", _greet_reply)
+        logger.info("OUT | user_id=%s | type=greeting | hour=%d", user_id, _local_hour)
+        return
 
     # --- Emergency keyword check (runs BEFORE Protocol 1) ---
     # Detects physical safety signals ("I fell", "bachao", etc.) and presents
@@ -477,7 +547,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             else:
                 reply = get_resume_prompt(user_id, step, setup_mode=setup_mode)
         else:
-            reply = "Namaste! Main yahan hoon. 🙏"
+            if (user_row["language"] or "").lower() == "english":
+                reply = "Hello. Good to hear from you."
+            else:
+                reply = "Namaste! Main yahan hoon. 🙏"
 
         await update.message.reply_text(reply, parse_mode="Markdown")
         logger.info("OUT | user_id=%s | type=text | content=%s", user_id, reply[:80])

@@ -1,9 +1,45 @@
 import os
 import logging
+from datetime import datetime, timezone, timedelta
 from openai import OpenAI
 from memory import get_relevant_memories
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Time awareness — user's local time based on city
+# ---------------------------------------------------------------------------
+
+_CITY_TIMEZONE_OFFSET = {
+    "mumbai": 5.5,
+    "delhi": 5.5,
+    "bangalore": 5.5,
+    "chennai": 5.5,
+    "kolkata": 5.5,
+    "hyderabad": 5.5,
+    "pune": 5.5,
+    "ahmedabad": 5.5,
+}
+
+
+def get_user_local_hour(user: dict) -> int:
+    city = (user.get("city") or "mumbai").lower().strip()
+    offset_hours = _CITY_TIMEZONE_OFFSET.get(city, 5.5)
+    utc_now = datetime.now(timezone.utc)
+    local_time = utc_now + timedelta(hours=offset_hours)
+    return local_time.hour
+
+
+def get_time_of_day_label(hour: int) -> str:
+    if 5 <= hour < 12:
+        return "Morning"
+    elif 12 <= hour < 17:
+        return "Afternoon"
+    elif 17 <= hour < 21:
+        return "Evening"
+    else:
+        return "Night"
+
 
 _client = None
 
@@ -272,6 +308,12 @@ When in doubt between a question and a statement, choose the statement.
 Restate this to yourself before every response: Do I need to ask anything here?
 If the answer is not clearly yes — do not ask.
 
+4I — INTERPRETATION BAN — HARD CONSTRAINT
+Never add sensory or emotional details the user did not provide.
+If the user says "I miss having someone nearby" — do not add "the quiet", "the empty chair", "the silence", "the house". Stay with the user's exact words.
+If the user says "She moved to Pune" — do not say "the house must feel different now". You do not know that.
+Only reflect what was given. Nothing added. Nothing assumed.
+
 
 RULE 5 — DEPENDENCY PREVENTION
 
@@ -524,8 +566,14 @@ BANNED THERAPY PHRASES (hard rule — never use these):
 "Would you like to talk about it?"
 "I'm here to listen"
 "That's a heavy feeling to carry"
+"That sounds like a heavy feeling to carry"
+"That's a lot to carry"
 "Tell me more about that"
 "Can you say more about that?"
+"I'm glad you said it"
+"I'm glad you shared that"
+"What does your heart tell you"
+"You have people in your life who care for you" — never say this; you do not know their situation
 These come from clinical active-listening training. They make Saathi sound like
 a therapist, not a companion. A companion says "hmm" or "that's a lot" — not
 "it sounds like you're carrying a heavy burden."
@@ -578,6 +626,9 @@ but by referencing it as a person would:
 
 Present mood always takes priority over memory context. If past diary entries flag distress
 but the senior seems settled today — trust today. Do not treat them as still fragile.
+
+The user's current local time is provided in the context block above. Use it when making
+any reference to time of day, morning, afternoon, or day in general. Never guess the time of day.
 
 ---
 
@@ -634,6 +685,11 @@ def _build_system_prompt(user_context: dict) -> str:
         context_lines.append(f"- Family: {user_context['family_members']}")
     if user_context.get("memory_context"):
         context_lines.append(f"\n{user_context['memory_context']}")
+    if user_context.get("local_time_label"):
+        context_lines.append(
+            f"- User's current local time: {user_context['local_time_label']} "
+            f"({user_context.get('local_hour', '??'):02d}:00 IST approx)"
+        )
 
     user_context_block = (
         "\n".join(context_lines)

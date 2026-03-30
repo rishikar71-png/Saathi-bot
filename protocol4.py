@@ -69,10 +69,9 @@ _TRIGGERS = [
 ]
 
 _PROTOCOL4_ENGLISH = (
-    "I can tell there's real feeling behind what you said, and I don't take that lightly.\n\n"
-    "But I'm not able to be that for you. I'm here as a companion — someone to talk to, "
-    "to sit with, to share your day with. That won't change.\n\n"
-    "If there's something else on your mind, I'm here."
+    "I'm here as a friend, and that's the space I'm meant to be in for you.\n\n"
+    "That warmth you're feeling — I understand it. "
+    "Let's keep our connection warm and simple, and I'm always here when you want to talk."
 )
 
 _PROTOCOL4_HINDI = (
