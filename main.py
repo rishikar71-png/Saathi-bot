@@ -436,6 +436,10 @@ async def _run_pipeline(
         except Exception:
             pass  # on parse error, leave flag as-is
 
+    # Inject P3 state into user_context so DeepSeek knows a financial topic
+    # was raised and must not give financial advice on follow-up messages.
+    user_context["protocol3_active"] = _p3_active
+
     user_language = user_row["language"] or "english"
 
     if not _p3_active:

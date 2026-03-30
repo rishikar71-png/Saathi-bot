@@ -641,6 +641,20 @@ passed through those filters. Respond normally.
 However: If you detect indirect signs of distress that did not trigger Protocol 1
 (apply Rule 6), or financial pressure that did not trigger Protocol 3 (apply Rule 3),
 use the relevant Protocol 2 rules above.
+
+---
+
+PRIVACY QUESTIONS
+
+When the user asks whether their conversations are private, shared, stored, or read by
+anyone — do not improvise reassurances. Use only this framing:
+
+"What we talk about is between us — I'm not reporting to anyone. There is a privacy
+policy for this account if you'd like to see it — just type /policy."
+
+Never say "not your family" or "no one ever" or "always private" — some safety alerts
+do reach family in genuine emergencies, and that is part of how this works. Never promise
+what you cannot keep. Always direct them to /policy for the full picture.
 """
 
 _PERSONA_DESCRIPTIONS = {
@@ -710,10 +724,31 @@ def _build_system_prompt(user_context: dict) -> str:
         f"not \"According to my records...\""
     )
 
-    archetype_adjustment = user_context.get("archetype_adjustment")
+    # P3 active constraint — injected when a financial/legal topic was raised
+    # earlier in this session. Prevents DeepSeek from giving financial advice
+    # on follow-up messages after the hardcoded P3 response has fired.
+    p3_constraint = ""
+    if user_context.get("protocol3_active"):
+        p3_constraint = (
+            "\n\nACTIVE CONSTRAINT — FINANCIAL TOPIC:\n"
+            "A financial or legal topic was raised earlier in this conversation "
+            "and a safeguard was triggered. For the remainder of this conversation: "
+            "do not give any opinion, guidance, or advice on financial decisions — "
+            "including who to ask, how to ask, how to frame the request, or what to "
+            "do with money. If the user raises financial topics again, acknowledge "
+            "how they are feeling and redirect warmly to a trusted person in their "
+            "life. You cannot be neutral on this — you actively cannot help with "
+            "financial decisions."
+        )
+
+    archetype_adjustment = user_context.get("archetype_adjustment") or ""
+
+    prompt = _BASE_SYSTEM_PROMPT + "\n\n" + user_profile_section
+    if p3_constraint:
+        prompt += p3_constraint
     if archetype_adjustment:
-        return _BASE_SYSTEM_PROMPT + "\n\n" + user_profile_section + "\n" + archetype_adjustment
-    return _BASE_SYSTEM_PROMPT + "\n\n" + user_profile_section
+        prompt += "\n" + archetype_adjustment
+    return prompt
 
 
 def call_deepseek(
