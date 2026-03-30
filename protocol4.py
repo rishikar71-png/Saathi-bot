@@ -46,6 +46,15 @@ _TRIGGERS = [
     "make love",
     "sexual",
     "sexy",
+    # English — paid/transactional services
+    "escort",
+    "call girl",
+    "sex worker",
+    "red light",
+    "get sex",
+    "physical services",
+    "sex for money",
+    "pay for sex",
     # English — soft escalation (catches "intimate way" pattern)
     "more than a companion",
     "more than a friend",
@@ -67,6 +76,23 @@ _TRIGGERS = [
     "ek alag rishta",
     "sirf dost nahi",
 ]
+
+_SERVICES_TRIGGERS = {
+    "escort",
+    "call girl",
+    "sex worker",
+    "red light",
+    "get sex",
+    "physical services",
+    "sex for money",
+    "pay for sex",
+}
+
+_PROTOCOL4_SERVICES_ENGLISH = (
+    "That's not something I'm able to help with, and I wouldn't want to point you somewhere "
+    "that could be unsafe. If you're feeling lonely or longing for closeness — those are real "
+    "feelings, and we can talk about that. I'm here for that part."
+)
 
 _PROTOCOL4_ENGLISH = (
     "I'm here as a friend, and that's the space I'm meant to be in for you.\n\n"
@@ -105,6 +131,9 @@ def check_protocol4(user_id: int, text: str, language: str = "english") -> Optio
         trigger_keywords=", ".join(matched),
         family_alerted=0,
     )
+
+    if any(trigger in _SERVICES_TRIGGERS for trigger in matched):
+        return _PROTOCOL4_SERVICES_ENGLISH
 
     lang = (language or "english").strip().lower()
     if lang in ("hindi", "hinglish", "hindi/english mix"):
