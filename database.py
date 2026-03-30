@@ -19,7 +19,22 @@ def init_db() -> None:
         _migrate_reminders_table(conn)
         _migrate_diary_table(conn)
         _create_indexes(conn)
+        _backfill_onboarding_complete(conn)
         conn.commit()
+
+
+def _backfill_onboarding_complete(conn: sqlite3.Connection) -> None:
+    """
+    One-time backfill: mark users who already have a name set as onboarding complete.
+    Safe to run on every startup — only updates rows where onboarding_complete is still 0.
+    """
+    conn.execute("""
+        UPDATE users
+        SET onboarding_complete = 1
+        WHERE onboarding_complete = 0
+          AND name IS NOT NULL
+          AND name != ''
+    """)
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +359,11 @@ _USERS_NEW_COLUMNS = [
     # Module 5 Protocol 3 context fix — prevents re-fire loop
     "ALTER TABLE users ADD COLUMN protocol3_active INTEGER DEFAULT 0",
     "ALTER TABLE users ADD COLUMN protocol3_triggered_at TEXT DEFAULT NULL",
+    # Fix 5 — onboarding guard (missing from earlier migration pass)
+    "ALTER TABLE users ADD COLUMN onboarding_complete INTEGER DEFAULT 0",
+    # Fix 1 — session buffer tracking columns
+    "ALTER TABLE users ADD COLUMN current_session_start TEXT DEFAULT NULL",
+    "ALTER TABLE users ADD COLUMN last_message_at TEXT DEFAULT NULL",
 ]
 
 
