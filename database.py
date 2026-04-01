@@ -722,6 +722,23 @@ def clear_session_messages(user_id: int) -> None:
         pass
 
 
+def admin_reset_user(telegram_id: int) -> str:
+    with get_connection() as conn:
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM users WHERE user_id = ?", (telegram_id,))
+        row = c.fetchone()
+        if not row:
+            return f"User {telegram_id} not found in DB."
+        user_id = row[0]
+        c.execute("DELETE FROM diary_entries WHERE user_id = ?", (user_id,))
+        c.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
+        c.execute("DELETE FROM health_logs WHERE user_id = ?", (user_id,))
+        c.execute("DELETE FROM session_log WHERE user_id = ?", (user_id,))
+        c.execute("DELETE FROM session_messages WHERE user_id = ?", (user_id,))
+        conn.commit()
+        return f"Reset complete for user {telegram_id}."
+
+
 def get_or_create_user(user_id: int) -> sqlite3.Row:
     with get_connection() as conn:
         row = conn.execute(

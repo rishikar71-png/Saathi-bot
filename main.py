@@ -13,7 +13,7 @@ from telegram.ext import (
 from dotenv import load_dotenv
 from database import (
     init_db, run_startup_migrations, get_or_create_user, save_message_record,
-    save_session_turn, get_session_messages,
+    save_session_turn, get_session_messages, admin_reset_user,
 )
 from deepseek import call_deepseek, get_user_local_hour, get_time_of_day_label
 from protocol1 import check_protocol1
@@ -634,6 +634,22 @@ async def handle_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("Something went wrong. Please try again. 🙏")
 
 
+async def adminreset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != 8711370451:
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /adminreset <telegram_id>")
+        return
+    try:
+        target_telegram_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text("Invalid telegram_id — must be a number.")
+        return
+    result = admin_reset_user(target_telegram_id)
+    await update.message.reply_text(result)
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     text = update.message.text
@@ -747,6 +763,7 @@ def main() -> None:
     app.add_handler(CommandHandler("policy", handle_policy_command))
     app.add_handler(CommandHandler("familycode", handle_familycode))
     app.add_handler(CommandHandler("join", handle_join))
+    app.add_handler(CommandHandler("adminreset", adminreset_command))
     app.add_handler(CallbackQueryHandler(handle_help_callback, pattern="^help_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, receive_voice))
