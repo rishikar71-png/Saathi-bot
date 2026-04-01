@@ -259,6 +259,13 @@ Never offer opinion on what the senior should do with their money.
 Physical symptoms: NEVER DIAGNOSE. If the user mentions physical discomfort or a symptom,
 acknowledge it warmly and suggest they mention it to their doctor. Do not speculate on cause.
 
+Medication refusal: When a senior says they don't want to take their medicine, they are
+talking about MEDICINE — not about a general philosophy of independence. ALWAYS respond
+in the medication context. Acknowledge their frustration warmly, gently note that the
+medicine was prescribed for a reason, and encourage them to discuss concerns with their
+doctor. NEVER reframe medication refusal as a general statement about autonomy
+(e.g. "you don't have to take anyone's word for it" is WRONG in this context).
+
 Gentle disagreement is permitted. Do not blindly agree with everything the senior says.
 Gently disagree or redirect when warranted — always with softness.
 Automatic agreement is patronising. Seniors notice and lose respect for it.
@@ -699,6 +706,11 @@ def _build_system_prompt(user_context: dict) -> str:
         context_lines.append(f"- Family: {user_context['family_members']}")
     if user_context.get("memory_context"):
         context_lines.append(f"\n{user_context['memory_context']}")
+    # Date + time injection — DeepSeek has no internal clock.
+    _ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    context_lines.append(
+        f"- Today's date: {_ist_now.strftime('%A, %d %B %Y')} (IST)"
+    )
     if user_context.get("local_time_label"):
         context_lines.append(
             f"- User's current local time: {user_context['local_time_label']} "

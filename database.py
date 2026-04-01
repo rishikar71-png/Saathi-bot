@@ -43,6 +43,39 @@ def run_startup_migrations() -> None:
             conn.execute(sql)
         except Exception as e:
             _log.debug("MIGRATION skip: %s", e)
+
+    # Widen protocol_log CHECK constraint to allow protocol_type '4'.
+    # SQLite has no ALTER CONSTRAINT — recreate the table with data preserved.
+    try:
+        # Only run if the old constraint blocks '4'
+        try:
+            conn.execute(
+                "INSERT INTO protocol_log (user_id, protocol_type, trigger_bucket, trigger_keywords) "
+                "VALUES (-1, '4', 'test', 'test')"
+            )
+            # If it succeeded, the constraint already allows '4' — clean up test row
+            conn.execute("DELETE FROM protocol_log WHERE user_id = -1")
+            conn.commit()
+        except Exception:
+            # Constraint blocks '4' — recreate table
+            conn.execute("""CREATE TABLE IF NOT EXISTS protocol_log_new (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id             INTEGER NOT NULL,
+                protocol_type       TEXT    NOT NULL,
+                trigger_bucket      TEXT,
+                trigger_keywords    TEXT,
+                family_alerted      INTEGER DEFAULT 0,
+                family_alert_time   TEXT,
+                created_at          TEXT    DEFAULT (datetime('now'))
+            )""")
+            conn.execute("INSERT INTO protocol_log_new SELECT * FROM protocol_log")
+            conn.execute("DROP TABLE protocol_log")
+            conn.execute("ALTER TABLE protocol_log_new RENAME TO protocol_log")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_protocol_log_user_id ON protocol_log(user_id)")
+            conn.commit()
+            _log.info("MIGRATION: protocol_log CHECK constraint widened for P4")
+    except Exception as e:
+        _log.debug("MIGRATION protocol_log widen skip: %s", e)
     conn.commit()
     # Backfill: mark existing users who already have a name as onboarding complete
     # so they are never sent through the onboarding flow again.
@@ -70,6 +103,7 @@ def init_db() -> None:
         _create_tables(conn)
         _migrate_users_table(conn)
         _migrate_reminders_table(conn)
+        _migrate_family_members_table(conn)
         _migrate_diary_table(conn)
         _create_indexes(conn)
         _backfill_onboarding_complete(conn)
@@ -278,7 +312,7 @@ def _create_tables(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS protocol_log (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id             INTEGER NOT NULL REFERENCES users(user_id),
-            protocol_type       TEXT    NOT NULL CHECK(protocol_type IN ('1', '3')),
+            protocol_type       TEXT    NOT NULL CHECK(protocol_type IN ('1', '3', '4')),
             trigger_bucket      TEXT,
             trigger_keywords    TEXT,
             family_alerted      INTEGER DEFAULT 0,
@@ -417,6 +451,8 @@ _USERS_NEW_COLUMNS = [
     # Fix 1 — session buffer tracking columns
     "ALTER TABLE users ADD COLUMN current_session_start TEXT DEFAULT NULL",
     "ALTER TABLE users ADD COLUMN last_message_at TEXT DEFAULT NULL",
+    # Module 14 — family linking code for /familycode + /join flow
+    "ALTER TABLE users ADD COLUMN family_linking_code TEXT DEFAULT NULL",
 ]
 
 
@@ -436,6 +472,20 @@ _REMINDERS_NEW_COLUMNS = [
 
 def _migrate_reminders_table(conn: sqlite3.Connection) -> None:
     for sql in _REMINDERS_NEW_COLUMNS:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+
+# Module 14 — add last_weekly_report_sent to family_members for dedup
+_FAMILY_MEMBERS_NEW_COLUMNS = [
+    "ALTER TABLE family_members ADD COLUMN last_weekly_report_sent TEXT DEFAULT NULL",
+]
+
+
+def _migrate_family_members_table(conn: sqlite3.Connection) -> None:
+    for sql in _FAMILY_MEMBERS_NEW_COLUMNS:
         try:
             conn.execute(sql)
         except sqlite3.OperationalError:

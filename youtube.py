@@ -95,6 +95,24 @@ _MUSIC_SIGNALS = [
 
 _SIGNAL_RE = [re.compile(p, re.IGNORECASE) for p in _MUSIC_SIGNALS]
 
+# Exclusion patterns — conversational uses of "listen" / "suno" that are NOT
+# music requests.  If ANY exclusion matches, detect_music_request returns None.
+_EXCLUSION_PATTERNS = [
+    r"they?\s+don'?t\s+listen",
+    r"nobody\s+listen",
+    r"no\s*one\s+listen",
+    r"won'?t\s+listen",
+    r"doesn'?t\s+listen",
+    r"don'?t\s+listen\s+to\s+me",
+    r"not\s+listen",
+    r"never\s+listen",
+    r"listen\s+to\s+me",       # "please listen to me" (plea, not music)
+    r"koi\s+(nahi\s+)?sun(ta|ti)",   # "koi nahi sunta/sunti"
+    r"sun(o|iye)\s+meri\s+baat",     # "suno meri baat" / "suniye meri baat"
+    r"koi\s+nahi\s+sun",
+]
+_EXCLUSION_RE = [re.compile(p, re.IGNORECASE) for p in _EXCLUSION_PATTERNS]
+
 # Command words to strip from the front when extracting the search query
 _STRIP_PREFIX_RE = re.compile(
     r"^(please\s+)?"
@@ -138,6 +156,10 @@ def detect_music_request(text: str, music_preferences: str = "") -> str | None:
     """
     # Must match at least one signal
     if not any(sig.search(text) for sig in _SIGNAL_RE):
+        return None
+
+    # Exclude conversational uses of "listen" / "suno" that are NOT music requests
+    if any(exc.search(text) for exc in _EXCLUSION_RE):
         return None
 
     # Vague request — use user's preferences if available, else a warm default

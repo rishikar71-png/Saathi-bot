@@ -46,6 +46,11 @@ _TRIGGERS = [
     "make love",
     "sexual",
     "sexy",
+    "sexxy",
+    "put out",
+    "a little more than friends",
+    "intimate",
+    "naughty",
     # English — paid/transactional services
     "escort",
     "call girl",

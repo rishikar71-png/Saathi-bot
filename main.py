@@ -56,6 +56,13 @@ from end_of_life import (
     is_eulogy_yes,
     build_eulogy_prompt,
 )
+from family import (
+    get_or_create_linking_code,
+    join_by_code,
+    relay_message_to_senior,
+    build_relay_confirmation,
+    check_and_send_weekly_report,
+)
 from policy import POLICY_COMMAND_RESPONSE, USER_POLICY_DOCUMENT
 
 load_dotenv()
@@ -128,6 +135,7 @@ async def _run_pipeline(
     user_row,
     update: Update,
     input_type: str = "text",
+    context: ContextTypes.DEFAULT_TYPE = None,
 ) -> None:
     """
     Run the full message pipeline for a single user turn.
@@ -180,6 +188,23 @@ async def _run_pipeline(
                         "Please try again in a little while."
                     )
             return  # Family messages beyond this point are not processed normally
+
+        # --- Family bridge relay (active senior, registered family member) ---
+        # Relay the message warmly to the senior.  One-way: family → senior.
+        if senior_status == "active":
+            sent = await relay_message_to_senior(
+                senior_id_for_family, user_id, text, context.bot,
+            )
+            if sent:
+                senior_name = senior_row["name"] if senior_row else "your family member"
+                senior_lang = senior_row["language"] if senior_row else "hindi"
+                confirm = build_relay_confirmation(senior_name, senior_lang)
+                await update.message.reply_text(confirm, parse_mode="Markdown")
+            else:
+                await update.message.reply_text(
+                    "Something went wrong delivering your message. Please try again. 🙏"
+                )
+            return
 
     # --- Full policy request ---
     if text.strip().lower() in ("full policy", "full policy.", "puri policy"):
@@ -563,13 +588,59 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         raise
 
 
+async def handle_familycode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/familycode — senior requests a linking code to share with family."""
+    user_id = update.effective_user.id
+    logger.info("IN  | user_id=%s | type=command | content=/familycode", user_id)
+    try:
+        user_row = get_or_create_user(user_id)
+        if not user_row["onboarding_complete"]:
+            await update.message.reply_text(
+                "Please complete setup first — then you can share a family code. 🙏"
+            )
+            return
+
+        code = get_or_create_linking_code(user_id)
+        senior_name = user_row["name"] or "aap"
+        reply = (
+            f"Your family code is:  *{code}*\n\n"
+            f"Share this with your family member. They should message this bot "
+            f"with:\n/join {code}\n\n"
+            f"Once they join, they can send you messages through me, and they'll "
+            f"receive a brief weekly update on how you're doing. 🙏"
+        )
+        await update.message.reply_text(reply, parse_mode="Markdown")
+        logger.info("OUT | user_id=%s | type=familycode | code=%s", user_id, code)
+    except Exception as e:
+        logger.error("ERR | user_id=%s | /familycode error: %s", user_id, e)
+        await update.message.reply_text("Something went wrong. Please try again. 🙏")
+
+
+async def handle_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/join [CODE] — family member links to a senior's profile."""
+    user_id = update.effective_user.id
+    logger.info("IN  | user_id=%s | type=command | content=/join", user_id)
+    try:
+        args = context.args
+        code = args[0] if args else ""
+        success, reply = join_by_code(code, user_id)
+        await update.message.reply_text(reply, parse_mode="Markdown")
+        logger.info(
+            "OUT | user_id=%s | type=join | code=%s | success=%s",
+            user_id, code, success,
+        )
+    except Exception as e:
+        logger.error("ERR | user_id=%s | /join error: %s", user_id, e)
+        await update.message.reply_text("Something went wrong. Please try again. 🙏")
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     text = update.message.text
     logger.info("IN  | user_id=%s | type=text | content=%s", user_id, text)
     try:
         user_row = get_or_create_user(user_id)
-        await _run_pipeline(user_id, text, user_row, update, input_type="text")
+        await _run_pipeline(user_id, text, user_row, update, input_type="text", context=context)
     except Exception as e:
         logger.error("ERR | user_id=%s | error=%s", user_id, e)
         await update.message.reply_text(
@@ -615,7 +686,7 @@ async def receive_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             return
 
         # Pass transcribed text through the full pipeline — identical to text messages
-        await _run_pipeline(user_id, text, user_row, update, input_type="voice")
+        await _run_pipeline(user_id, text, user_row, update, input_type="voice", context=context)
 
     except Exception as e:
         logger.error("ERR | user_id=%s | error=%s", user_id, e)
@@ -653,6 +724,14 @@ async def safety_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("SCHEDULER | safety_job failed: %s", e)
 
 
+async def weekly_report_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Called every minute. Sends weekly family reports on Sundays 10am IST (self-gated)."""
+    try:
+        await check_and_send_weekly_report(context.bot)
+    except Exception as e:
+        logger.error("SCHEDULER | weekly_report_job failed: %s", e)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -666,6 +745,8 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", handle_help_command))
     app.add_handler(CommandHandler("policy", handle_policy_command))
+    app.add_handler(CommandHandler("familycode", handle_familycode))
+    app.add_handler(CommandHandler("join", handle_join))
     app.add_handler(CallbackQueryHandler(handle_help_callback, pattern="^help_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, receive_voice))
@@ -681,6 +762,10 @@ def main() -> None:
     # Register the safety scheduler — runs every minute, self-gated to hourly
     app.job_queue.run_repeating(safety_job, interval=60, first=30)
     logger.info("Safety scheduler registered (interval=60s, hourly inactivity check)")
+
+    # Register the weekly family report scheduler — runs every minute, self-gated to Sunday 10am IST
+    app.job_queue.run_repeating(weekly_report_job, interval=60, first=45)
+    logger.info("Weekly report scheduler registered (interval=60s, Sunday 10am IST)")
 
     if WEBHOOK_URL:
         logger.info("Starting webhook mode on port %s", PORT)
