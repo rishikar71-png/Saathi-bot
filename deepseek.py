@@ -868,10 +868,24 @@ def call_deepseek(
         len(session_messages) if session_messages else 0,
     )
 
+    # Detect mid-session return greeting — short greeting after prior session content.
+    # If detected, inject a reminder so DeepSeek honours the story thread instead of
+    # giving a generic greeting response.
+    _GREETING_PATTERNS = {
+        "hello", "hello again", "hi", "hi again", "i'm back", "im back",
+        "back again", "namaste", "haan", "haan ji", "okay", "ok", "yes",
+    }
+    is_return_greeting = (
+        session_messages
+        and len(session_messages) >= 2
+        and user_message.strip().lower().rstrip("!. ") in _GREETING_PATTERNS
+    )
+
     # Build message list:
     # 1. System prompt + language priming (always first)
     # 2. Prior turns from this session (gives DeepSeek live conversation context)
-    # 3. Current user message (always last)
+    # 3. Optional mid-session reminder (injected when return greeting detected)
+    # 4. Current user message (always last)
     messages = [
         {"role": "system",    "content": system_prompt},
         {"role": "assistant", "content": "I will always respond in English."},
@@ -880,6 +894,17 @@ def call_deepseek(
     ]
     if session_messages:
         messages.extend(session_messages)
+    if is_return_greeting:
+        messages.append({
+            "role": "system",
+            "content": (
+                "IMPORTANT: The user has just returned mid-session with a greeting. "
+                "Do NOT give a generic greeting response. "
+                "Check the conversation history above for any unfinished story, topic, or forward-anchor you made. "
+                "If one exists, reference it warmly: 'Welcome back — you were just about to tell me about Bombay.' "
+                "Only give a plain greeting if the session history contains nothing worth referencing."
+            ),
+        })
     messages.append({"role": "user", "content": user_message})
 
     response = _get_client().chat.completions.create(
