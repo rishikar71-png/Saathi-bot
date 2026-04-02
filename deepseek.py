@@ -868,24 +868,13 @@ def call_deepseek(
         len(session_messages) if session_messages else 0,
     )
 
-    # Detect mid-session return greeting — short greeting after prior session content.
-    # If detected, inject a reminder so DeepSeek honours the story thread instead of
-    # giving a generic greeting response.
-    _GREETING_PATTERNS = {
-        "hello", "hello again", "hi", "hi again", "i'm back", "im back",
-        "back again", "namaste", "haan", "haan ji", "okay", "ok", "yes",
-    }
-    is_return_greeting = (
-        session_messages
-        and len(session_messages) >= 2
-        and user_message.strip().lower().rstrip("!. ") in _GREETING_PATTERNS
-    )
-
     # Build message list:
     # 1. System prompt + language priming (always first)
     # 2. Prior turns from this session (gives DeepSeek live conversation context)
-    # 3. Optional mid-session reminder (injected when return greeting detected)
-    # 4. Current user message (always last)
+    # 3. Current user message (always last)
+    # Note: mid-session return greeting interception is handled in main.py _run_pipeline
+    # before this function is called — _session_history is cleared and text is replaced
+    # with a targeted prompt when a return greeting is detected.
     messages = [
         {"role": "system",    "content": system_prompt},
         {"role": "assistant", "content": "I will always respond in English."},
@@ -894,24 +883,7 @@ def call_deepseek(
     ]
     if session_messages:
         messages.extend(session_messages)
-
-    # If a return greeting is detected mid-session, append a context note directly
-    # to the user message — this is more reliably processed than a mid-conv system message.
-    if is_return_greeting:
-        # Extract the last assistant forward-anchor if present
-        last_assistant = next(
-            (m["content"] for m in reversed(session_messages) if m["role"] == "assistant"),
-            None,
-        )
-        anchor_hint = f' You previously said: "{last_assistant}".' if last_assistant else ""
-        context_note = (
-            f"\n\n[Note to Saathi: Do not respond with a generic greeting. "
-            f"Check the conversation above for any unfinished story or topic.{anchor_hint} "
-            f"Reference it warmly instead of saying 'Good evening. How has the day been?']"
-        )
-        messages.append({"role": "user", "content": user_message + context_note})
-    else:
-        messages.append({"role": "user", "content": user_message})
+    messages.append({"role": "user", "content": user_message})
 
     response = _get_client().chat.completions.create(
         model="deepseek-chat",

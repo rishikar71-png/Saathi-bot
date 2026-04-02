@@ -507,6 +507,33 @@ async def _run_pipeline(
             )
         return
 
+    # --- Mid-session return greeting intercept ---
+    # When the senior returns with a bare greeting mid-session, build a targeted
+    # prompt that explicitly includes the recent thread so DeepSeek references it
+    # instead of defaulting to "Good evening. How has the day been?"
+    _GREETING_WORDS = {
+        "hello", "hello again", "hi", "hi again", "i'm back", "im back",
+        "back again", "namaste", "haan", "haan ji",
+    }
+    _is_mid_session_greeting = (
+        len(_session_history) >= 4
+        and text.strip().lower().rstrip("!. ") in _GREETING_WORDS
+    )
+    if _is_mid_session_greeting:
+        _recent = _session_history[-6:]
+        _ctx = "\n".join(
+            f"{'User' if m['role'] == 'user' else 'Saathi'}: {m['content']}"
+            for m in _recent
+        )
+        text = (
+            f"The user just returned mid-session with a greeting ('{text.strip()}').\n\n"
+            f"Recent conversation:\n{_ctx}\n\n"
+            f"Respond in 1-2 warm sentences. If there is an unfinished story or topic above, "
+            f"reference it warmly — e.g. 'Welcome back — you were just about to tell me about Bombay.' "
+            f"Do NOT say 'Good evening. How has the day been?' or any generic time-of-day greeting."
+        )
+        _session_history = []  # History already embedded in prompt — don't double-inject
+
     # --- DeepSeek ---
     # Pass _session_history so DeepSeek has full in-session conversation context.
     reply = call_deepseek(text, user_context, session_messages=_session_history)
