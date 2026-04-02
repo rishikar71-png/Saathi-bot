@@ -43,7 +43,7 @@ FINANCIAL_KEYWORDS = [
     "property", "real estate", "savings",
     "insurance", "policy", "fraud", "scam",
     "cheating", "money", "lakhs", "crore",
-    "rupees", "rs.", "₹", "paise",
+    "rupees", "₹", "paise",
     "paisa", "nivesh", "vyapar",
     "dhandha", "karz", "udhaar", "zameen",
     "bima", "yojana",
@@ -90,6 +90,7 @@ _BUCKET1_PATTERNS = [
     r"thoda paisa de do",
     r"ek baar paisa de do",
     # English
+    r"\brs\.",          # "Rs." currency abbreviation — word-boundary prevents matching "hours."
     r"lend (me|us|him|her|them)",
     r"borrow(ing)? (money|from you|some)",
     r"asking (me|us) for money",
