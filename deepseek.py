@@ -894,18 +894,24 @@ def call_deepseek(
     ]
     if session_messages:
         messages.extend(session_messages)
+
+    # If a return greeting is detected mid-session, append a context note directly
+    # to the user message — this is more reliably processed than a mid-conv system message.
     if is_return_greeting:
-        messages.append({
-            "role": "system",
-            "content": (
-                "IMPORTANT: The user has just returned mid-session with a greeting. "
-                "Do NOT give a generic greeting response. "
-                "Check the conversation history above for any unfinished story, topic, or forward-anchor you made. "
-                "If one exists, reference it warmly: 'Welcome back — you were just about to tell me about Bombay.' "
-                "Only give a plain greeting if the session history contains nothing worth referencing."
-            ),
-        })
-    messages.append({"role": "user", "content": user_message})
+        # Extract the last assistant forward-anchor if present
+        last_assistant = next(
+            (m["content"] for m in reversed(session_messages) if m["role"] == "assistant"),
+            None,
+        )
+        anchor_hint = f' You previously said: "{last_assistant}".' if last_assistant else ""
+        context_note = (
+            f"\n\n[Note to Saathi: Do not respond with a generic greeting. "
+            f"Check the conversation above for any unfinished story or topic.{anchor_hint} "
+            f"Reference it warmly instead of saying 'Good evening. How has the day been?']"
+        )
+        messages.append({"role": "user", "content": user_message + context_note})
+    else:
+        messages.append({"role": "user", "content": user_message})
 
     response = _get_client().chat.completions.create(
         model="deepseek-chat",
