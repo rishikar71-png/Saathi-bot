@@ -401,7 +401,14 @@ async def _run_pipeline(
         else:
             return "Hello. Up late tonight?"
 
-    if msg_lower in _GREETING_TRIGGERS or any(msg_lower.startswith(g) for g in _GREETING_TRIGGERS):
+    # Only fire the greeting handler if we are NOT mid-session.
+    # If there is substantial session history (>= 4 turns), the senior is returning
+    # mid-conversation — let the message fall through to the mid-session intercept below.
+    _is_fresh_greeting = (
+        (msg_lower in _GREETING_TRIGGERS or any(msg_lower.startswith(g) for g in _GREETING_TRIGGERS))
+        and len(_session_history) < 4
+    )
+    if _is_fresh_greeting:
         _greet_reply = _get_time_aware_greeting(_local_hour)
         await update.message.reply_text(_greet_reply)
         save_message_record(user_id, "out", _greet_reply)
@@ -519,6 +526,7 @@ async def _run_pipeline(
         len(_session_history) >= 4
         and text.strip().lower().rstrip("!. ") in _GREETING_WORDS
     )
+    _original_text = text  # preserve for session saving
     if _is_mid_session_greeting:
         _recent = _session_history[-6:]
         _ctx = "\n".join(
@@ -526,7 +534,7 @@ async def _run_pipeline(
             for m in _recent
         )
         text = (
-            f"The user just returned mid-session with a greeting ('{text.strip()}').\n\n"
+            f"The user just returned mid-session with a greeting ('{_original_text.strip()}').\n\n"
             f"Recent conversation:\n{_ctx}\n\n"
             f"Respond in 1-2 warm sentences. If there is an unfinished story or topic above, "
             f"reference it warmly — e.g. 'Welcome back — you were just about to tell me about Bombay.' "
@@ -541,8 +549,9 @@ async def _run_pipeline(
     # Send text first — user gets the response immediately regardless of TTS
     await update.message.reply_text(reply)
     save_message_record(user_id, "out", reply)
-    # Save this exchange to session buffer for the next DeepSeek call
-    save_session_turn(user_id, "user", text)
+    # Save this exchange to session buffer for the next DeepSeek call.
+    # Use _original_text (not text) so the targeted prompt is never saved to session history.
+    save_session_turn(user_id, "user", _original_text)
     save_session_turn(user_id, "assistant", reply)
     logger.info("OUT | user_id=%s | type=%s | content=%s", user_id, input_type, reply[:80])
 
