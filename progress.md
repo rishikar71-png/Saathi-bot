@@ -242,17 +242,25 @@ Current phase: Module 14 — Family Integration
 
 ---
 
-### ⬜ Module 14 — Family Integration
-- [ ] Family bridge: family messages bot → relayed warmly to senior
-- [ ] Weekly health report: every Sunday → mood trends + health complaints + medication adherence to family contact
+### ✅ Module 14 — Family Integration
+- [x] Family bridge: `/familycode` + `/join` commands; family messages relayed warmly to senior
+- [x] Weekly health report: self-gated to Sunday 10am IST; mood trends + health complaints + medication adherence sent to registered family contacts
+- [x] database.py: family_linking_code (users), last_weekly_report_sent (family_members) added
+- [x] protocol_log CHECK constraint widened via table-recreation migration (SQLite limitation)
 
 ---
 
-### ⬜ Module 15 — Engagement Design Polish
-- [ ] Warm follow-up question default tested across conversation types
-- [ ] Signal-reading graceful exit tested (two short replies / silence detection)
-- [ ] Human relationship tending nudges tested
-- [ ] Purpose loops (all 5) tested end-to-end
+### ✅ Module 15 — Engagement Design Polish
+- [x] Full 16-group test suite run (module_15_test_protocol.md)
+- [x] Groups 1–13: all PASS (Group 13 required fix — greeting handler intercepted mid-session returns)
+- [x] Group 13 fix: `len(_session_history) < 4` guard added to greeting handler; `_original_text` prevents targeted prompt saving to history
+- [x] Group 14: skipped — evening ritual requires waiting for scheduled time; verify during pilot
+- [x] Group 15 (high-engagement containment): PASS
+- [x] Group 16 (vulnerability — warm without probing): fix committed — language-lock-during-emotional-moments rule + Rule 4B-i (no excavation on vulnerability disclosure); re-test pending Railway redeploy
+- **Bugs found and fixed during testing:**
+- [x] Language priming escape hatch removed: "unless you write in another language first" → now absolute for English users
+- [x] Explicit language-lock rule added to system prompt: never switch language based on emotional content
+- [x] Rule 4B-i added: vulnerability disclosure → one plain acknowledgement, no multi-part probe
 
 ---
 
