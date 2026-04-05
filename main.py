@@ -542,6 +542,42 @@ async def _run_pipeline(
         )
         _session_history = []  # History already embedded in prompt — don't double-inject
 
+    # --- Vulnerability pre-processor ---
+    # DeepSeek ignores system-prompt language-lock and no-excavation rules during
+    # emotional content. Hard override: wrap the message with explicit instructions
+    # before it reaches DeepSeek. _original_text is preserved so session history
+    # is never polluted with the injected wrapper.
+    _VULNERABILITY_SIGNALS = [
+        # English
+        "nobody needs me", "no one needs me", "feel like nobody",
+        "feel invisible", "nobody cares", "no one cares",
+        "feel useless", "feel alone", "feel lonely", "feel like a burden",
+        "nobody listens", "no one listens", "i am a burden", "i'm a burden",
+        "nobody wants me", "no one wants me", "don't belong",
+        "feel left out", "feel forgotten", "nobody remembers",
+        # Hindi / Hinglish
+        "koi zaroorat nahi", "koi nahi chahta", "akela feel",
+        "akela hoon", "akele hoon", "koi nahi sunata", "koi nahi sunta",
+        "kisi ko zaroorat nahi", "bekar lagta", "bekar lag raha",
+        "bojh lag raha", "bojh lagta", "koi yaad nahi karta",
+    ]
+    _text_lower = text.lower()
+    _is_vulnerability = any(sig in _text_lower for sig in _VULNERABILITY_SIGNALS)
+    if _is_vulnerability:
+        _original_text = text  # ensure original is preserved (may already be set above)
+        _lang = (user_context.get("language") or "english").lower()
+        _lang_label = {"hindi": "Hindi", "hinglish": "Hinglish"}.get(_lang, "English")
+        text = (
+            f"[HARD OVERRIDE — apply before anything else:\n"
+            f"1. Respond in {_lang_label} only. Do not switch language for any reason.\n"
+            f"2. One plain sentence of acknowledgement. Stop there.\n"
+            f"3. Ask nothing. Not what happened. Not how long. Not anything.\n"
+            f"4. Do not invite the user to say more.\n"
+            f"The senior has shared something vulnerable. Hold the space. Do not fill it.]\n\n"
+            f"Senior's message: {_original_text}"
+        )
+        logger.info("PIPELINE | user_id=%s | vulnerability_pre_processor triggered", user_id)
+
     # --- DeepSeek ---
     # Pass _session_history so DeepSeek has full in-session conversation context.
     reply = call_deepseek(text, user_context, session_messages=_session_history)
