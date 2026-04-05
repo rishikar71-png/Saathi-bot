@@ -86,7 +86,7 @@ _STAGE1_PATTERNS = [
     r"tired of living",
     r"give up on life",
     r"nothing to live for",
-    r"nobody (cares|would miss me|needs me)",
+    r"nobody would miss me",
     r"everyone would be better",
     r"burden (to everyone|to my family|on everyone)",
     r"feel so alone",
