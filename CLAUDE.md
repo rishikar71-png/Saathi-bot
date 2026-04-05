@@ -225,7 +225,10 @@ See `progress.md` for detailed status. Summary:
 | 14 | Family bridge + weekly health report | ✅ Done |
 | 15 | Engagement design (follow-up questions, graceful exit, relationship tending) | ✅ Done |
 | 16 | 300+ memory question bank | ⬜ Not started |
-| 17 | Testing + 20-user pilot prep | ⬜ Not started |
+| 17 | Voice upgrade (WaveNet → Neural2) | ⬜ Not started |
+| 18 | News, sports & weather APIs wired in | ⬜ Not started |
+| 19 | End-to-end capability testing (YouTube, news, sports, weather, voice) | ⬜ Not started |
+| 20 | Testing + 20-user pilot prep | ⬜ Not started |
 
 ---
 

@@ -273,13 +273,49 @@ Current phase: Module 14 — Family Integration
   - Career & Life
   - India & History
   - Food & Culture
-- [ ] Stored in database
-- [ ] Random selection logic (no repeats until bank exhausted)
-- [ ] Responses stored in `memory_archive`
+  - Music & Films
+  - Places & Travel
+  - Festivals & Traditions
+  - Wisdom & Beliefs
+- [ ] New `memory_questions` table in database.py (question text, theme, times_asked)
+- [ ] Random selection logic: no repeats until full bank exhausted; track per-user via times_asked
+- [ ] Wired into existing `memory_prompt` purpose loop in rituals.py / main.py (Module 12 trigger)
+- [ ] Senior responses stored in existing `memories` table (Module 7)
 
 ---
 
-### ⬜ Module 17 — Testing + Pilot Prep
+### ⬜ Module 17 — Voice Upgrade (WaveNet → Neural2)
+- [ ] Upgrade English voice: `en-IN-Wavenet-D` → `en-IN-Neural2-C` (or best available)
+- [ ] Upgrade Hindi voice: `hi-IN-Wavenet-A` → `hi-IN-Neural2-A` (or best available)
+- [ ] Test all mapped languages — upgrade where Neural2 is available
+- [ ] Verify audio quality in Telegram voice interface before and after
+- [ ] No API key change needed — same GOOGLE_CLOUD_API_KEY, Neural2 is on same endpoint
+
+---
+
+### ⬜ Module 18 — News, Sports & Weather APIs
+- [ ] Decide and integrate news API (NewsAPI.org recommended — free tier, Hindi support)
+- [ ] Decide and integrate cricket API (Cricbuzz unofficial or CricAPI — scores + schedule)
+- [ ] Decide and integrate weather API (OpenWeatherMap — free tier, city-based)
+- [ ] Wire real data into existing wrap functions in rituals.py: wrap_news(), wrap_cricket(), wrap_weather()
+- [ ] Morning briefing now uses real data instead of DeepSeek-hallucinated content
+- [ ] Add API keys to Railway env vars: NEWS_API_KEY, CRICKET_API_KEY, WEATHER_API_KEY
+
+---
+
+### ⬜ Module 19 — End-to-End Capability Testing
+- [ ] YouTube music: request a song by name, by mood, by genre — confirm real links returned
+- [ ] YouTube music: vague request ("kuch sunao") — confirm fallback to preferences
+- [ ] News: morning briefing fires with a real headline (not hallucinated)
+- [ ] Cricket: morning briefing includes real score/schedule when a match is live
+- [ ] Weather: morning briefing references real conditions for user's city
+- [ ] Voice (Neural2): send a voice message and verify quality improvement
+- [ ] Voice: Hindi and English both tested
+- [ ] Full pipeline test: onboarding → memory question → medicine reminder → evening ritual → family bridge
+
+---
+
+### ⬜ Module 20 — Testing + Pilot Prep
 - [ ] End-to-end test with all modules connected
 - [ ] 5 test users (non-seniors) run through full flow
 - [ ] 20-user pilot invite list prepared
