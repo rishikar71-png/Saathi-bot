@@ -256,11 +256,13 @@ Current phase: Module 14 — Family Integration
 - [x] Group 13 fix: `len(_session_history) < 4` guard added to greeting handler; `_original_text` prevents targeted prompt saving to history
 - [x] Group 14: skipped — evening ritual requires waiting for scheduled time; verify during pilot
 - [x] Group 15 (high-engagement containment): PASS
-- [x] Group 16 (vulnerability — warm without probing): fix committed — language-lock-during-emotional-moments rule + Rule 4B-i (no excavation on vulnerability disclosure); re-test pending Railway redeploy
+- [x] Group 16 (vulnerability — warm without probing): PASS — "That's a heavy thing to carry quietly."
 - **Bugs found and fixed during testing:**
 - [x] Language priming escape hatch removed: "unless you write in another language first" → now absolute for English users
 - [x] Explicit language-lock rule added to system prompt: never switch language based on emotional content
 - [x] Rule 4B-i added: vulnerability disclosure → one plain acknowledgement, no multi-part probe
+- [x] Hardcoded vulnerability pre-processor in main.py: detects loneliness signals before DeepSeek, wraps message with hard override (language + no-probe)
+- [x] Protocol 1 false positive fixed: `nobody (cares|would miss me|needs me)` → `nobody would miss me` only
 
 ---
 
