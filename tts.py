@@ -1,12 +1,13 @@
 """
 Module 9 — Voice Output (Google Cloud Text-to-Speech)
+Module 17 update — WaveNet → Neural2 for Hindi and English (India).
 
 Public interface:
     text_to_speech(text, user_language) -> bytes
 
 Returns OGG_OPUS audio bytes ready to send as a Telegram voice message.
 Uses the Google Cloud TTS REST API with GOOGLE_CLOUD_API_KEY — no service
-account needed.
+account needed. Same endpoint and API key — Neural2 is a drop-in upgrade.
 
 Speaking rate is set to 0.9 (slightly slower than normal) for clarity with
 elderly users.
@@ -28,13 +29,22 @@ _TTS_URL = "https://texttospeech.googleapis.com/v1/text:synthesize"
 
 # ---------------------------------------------------------------------------
 # Voice map — (languageCode, voiceName) per Saathi language code.
-# WaveNet voices are used where available; Standard for the rest.
-# All voices tested to be available as of build date.
+#
+# Module 17 upgrade:
+#   Hindi and English (India) now use Neural2 — noticeably more natural,
+#   better prosody, closer to a real human voice than WaveNet.
+#   Same API endpoint, same key, no pricing change for these tiers.
+#
+#   Neural2 is only available for hi-IN and en-IN among Indian languages
+#   as of this build. All other regional languages remain on WaveNet,
+#   which is the best quality tier available for them.
 # ---------------------------------------------------------------------------
 _VOICE_MAP: dict[str, tuple[str, str]] = {
-    "hindi":     ("hi-IN", "hi-IN-Wavenet-A"),   # female, warm
-    "hinglish":  ("hi-IN", "hi-IN-Wavenet-A"),
-    "english":   ("en-IN", "en-IN-Wavenet-D"),   # male, natural
+    # Neural2 — upgraded (Module 17)
+    "hindi":     ("hi-IN", "hi-IN-Neural2-A"),   # female, warm — was Wavenet-A
+    "hinglish":  ("hi-IN", "hi-IN-Neural2-A"),
+    "english":   ("en-IN", "en-IN-Neural2-D"),   # male, natural — was Wavenet-D
+    # WaveNet — best available for these languages (Neural2 not yet released)
     "tamil":     ("ta-IN", "ta-IN-Wavenet-A"),
     "bengali":   ("bn-IN", "bn-IN-Wavenet-A"),
     "marathi":   ("mr-IN", "mr-IN-Wavenet-A"),
@@ -44,7 +54,7 @@ _VOICE_MAP: dict[str, tuple[str, str]] = {
     # Telugu and Punjabi WaveNet not available — fall through to default
 }
 
-_DEFAULT_VOICE = ("en-IN", "en-IN-Wavenet-D")
+_DEFAULT_VOICE = ("en-IN", "en-IN-Neural2-D")
 
 # Markdown patterns to strip before TTS so symbols aren't read aloud
 _MARKDOWN_RE = re.compile(r"[*_`#\[\]()~>|]")

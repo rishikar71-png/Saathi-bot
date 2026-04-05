@@ -294,12 +294,15 @@ Current phase: Module 14 — Family Integration
 
 ---
 
-### ⬜ Module 17 — Voice Upgrade (WaveNet → Neural2)
-- [ ] Upgrade English voice: `en-IN-Wavenet-D` → `en-IN-Neural2-C` (or best available)
-- [ ] Upgrade Hindi voice: `hi-IN-Wavenet-A` → `hi-IN-Neural2-A` (or best available)
-- [ ] Test all mapped languages — upgrade where Neural2 is available
-- [ ] Verify audio quality in Telegram voice interface before and after
-- [ ] No API key change needed — same GOOGLE_CLOUD_API_KEY, Neural2 is on same endpoint
+### ✅ Module 17 — Voice Upgrade (WaveNet → Neural2)
+- [x] Upgrade English voice: `en-IN-Wavenet-D` → `en-IN-Neural2-D` (same gender — male, natural)
+- [x] Upgrade Hindi voice: `hi-IN-Wavenet-A` → `hi-IN-Neural2-A` (same gender — female, warm)
+- [x] Hinglish also upgraded: shares hi-IN-Neural2-A with Hindi
+- [x] _DEFAULT_VOICE updated to en-IN-Neural2-D
+- [x] All other regional languages audited — Neural2 not available for ta-IN, bn-IN, mr-IN, gu-IN, kn-IN, ml-IN; remain on WaveNet (best tier available for them)
+- [x] No API key change needed — same GOOGLE_CLOUD_API_KEY, Neural2 is on same endpoint
+- [x] Syntax verified — py_compile passed
+- Note: Audio quality testing against live Telegram TTS to be done in Module 19 (end-to-end capability testing)
 
 ---
 
