@@ -616,6 +616,14 @@ async def check_and_send_rituals(bot) -> None:
                     row["user_id"], ritual_type, e,
                 )
 
+    # Memory question prompts — Wednesday and Sunday only, at morning check-in time.
+    # check_and_send_memory_prompts() handles its own day-of-week guard internally.
+    try:
+        from memory_questions import check_and_send_memory_prompts
+        await check_and_send_memory_prompts(bot)
+    except Exception as mem_q_err:
+        logger.error("RITUALS | memory prompt dispatch failed: %s", mem_q_err)
+
     # Nightly jobs — run once per day at 00:05 IST
     if now_hhmm == "00:05":
         _run_adaptation_pass()

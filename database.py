@@ -392,6 +392,49 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             ON session_messages(user_id, created_at)
     """)
 
+    # ------------------------------------------------------------------
+    # memory_questions — global bank of 300+ evocative life-story questions.
+    # Seeded once on startup by memory_questions.py if the table is empty.
+    # Not per-user — every user draws from the same bank.
+    # ------------------------------------------------------------------
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS memory_questions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            question_text TEXT    NOT NULL,
+            theme         TEXT    NOT NULL,
+            created_at    TEXT    DEFAULT (datetime('now'))
+        )
+    """)
+
+    # ------------------------------------------------------------------
+    # user_question_tracking — records which questions have been asked to
+    # which senior, so no question repeats until the full bank is exhausted.
+    # Reset (all rows for a user deleted) when the bank cycles.
+    # ------------------------------------------------------------------
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_question_tracking (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL REFERENCES users(user_id),
+            question_id INTEGER NOT NULL REFERENCES memory_questions(id),
+            asked_at    TEXT    DEFAULT (datetime('now')),
+            UNIQUE(user_id, question_id)
+        )
+    """)
+
+    # ------------------------------------------------------------------
+    # memory_prompt_log — prevents sending more than one memory question
+    # per day per user. UNIQUE(user_id, sent_date) is the guard.
+    # ------------------------------------------------------------------
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS memory_prompt_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL REFERENCES users(user_id),
+            question_id INTEGER NOT NULL REFERENCES memory_questions(id),
+            sent_date   TEXT    NOT NULL,
+            UNIQUE(user_id, sent_date)
+        )
+    """)
+
 
 # ---------------------------------------------------------------------------
 # Migration — add new columns to the existing users table without data loss.
@@ -453,6 +496,10 @@ _USERS_NEW_COLUMNS = [
     "ALTER TABLE users ADD COLUMN last_message_at TEXT DEFAULT NULL",
     # Module 14 — family linking code for /familycode + /join flow
     "ALTER TABLE users ADD COLUMN family_linking_code TEXT DEFAULT NULL",
+    # Module 16 — pending memory question (cleared after senior responds)
+    "ALTER TABLE users ADD COLUMN pending_memory_question_id INTEGER DEFAULT NULL",
+    "ALTER TABLE users ADD COLUMN pending_memory_question_text TEXT DEFAULT NULL",
+    "ALTER TABLE users ADD COLUMN pending_memory_question_theme TEXT DEFAULT NULL",
 ]
 
 
@@ -527,6 +574,9 @@ def _create_indexes(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_activity_patterns_user_id      ON user_activity_patterns(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_activity_patterns_date         ON user_activity_patterns(user_id, activity_date)",
         "CREATE INDEX IF NOT EXISTS idx_ritual_log_user_id             ON ritual_log(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_user_question_tracking_user     ON user_question_tracking(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_memory_prompt_log_user          ON memory_prompt_log(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_memory_questions_theme          ON memory_questions(theme)",
     ]
     for sql in indexes:
         conn.execute(sql)

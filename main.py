@@ -229,6 +229,30 @@ async def _run_pipeline(
             logger.info("OUT | user_id=%s | type=reminder_ack", user_id)
             return
 
+    # --- Memory question response capture ---
+    # If this user was sent a memory question and has not yet responded, capture
+    # their next message as the response. Save it to the memories table with full
+    # metadata (question_id, question_text, theme) so the memoir is properly linked.
+    # This runs after reminder ack (so 👍 doesn't accidentally close a question)
+    # but before onboarding gate and all other pipeline stages.
+    if user_row["onboarding_complete"]:
+        from memory_questions import get_pending_memory_question, save_memory_response
+        _pending_qid, _pending_qtext, _pending_qtheme = get_pending_memory_question(user_row)
+        if _pending_qid is not None:
+            save_memory_response(
+                user_id,
+                response_text=text,
+                question_id=_pending_qid,
+                question_text=_pending_qtext,
+                theme=_pending_qtheme,
+            )
+            logger.info(
+                "MEMORY_Q | response captured | user_id=%s | question_id=%s | theme=%s",
+                user_id, _pending_qid, _pending_qtheme,
+            )
+            # Do NOT return — let the message continue through the full pipeline
+            # so DeepSeek can respond warmly to what the senior just shared.
+
     # --- Onboarding gate ---
     if not user_row["onboarding_complete"]:
         setup_mode = user_row["setup_mode"] if "setup_mode" in user_row.keys() else None
@@ -828,6 +852,12 @@ def main() -> None:
     run_startup_migrations()
     init_db()
     logger.info("Database initialised")
+
+    # Seed the memory question bank — inserts 300+ questions if the table is empty.
+    # Safe to call on every startup — silently skips if already seeded.
+    from memory_questions import seed_memory_questions
+    seed_memory_questions()
+    logger.info("Memory question bank ready")
 
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))

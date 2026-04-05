@@ -266,21 +266,31 @@ Current phase: Module 14 — Family Integration
 
 ---
 
-### ⬜ Module 16 — 300+ Memory Question Bank
-- [ ] Questions written/compiled across all themes:
-  - Childhood & School
-  - Family & Relationships
-  - Career & Life
-  - India & History
-  - Food & Culture
-  - Music & Films
-  - Places & Travel
-  - Festivals & Traditions
-  - Wisdom & Beliefs
-- [ ] New `memory_questions` table in database.py (question text, theme, times_asked)
-- [ ] Random selection logic: no repeats until full bank exhausted; track per-user via times_asked
-- [ ] Wired into existing `memory_prompt` purpose loop in rituals.py / main.py (Module 12 trigger)
-- [ ] Senior responses stored in existing `memories` table (Module 7)
+### ✅ Module 16 — 300+ Memory Question Bank
+- [x] 316 questions written across 9 themes (35 per theme, 36 for Wisdom & Beliefs):
+  - Childhood & School (35)
+  - Family & Relationships (35)
+  - Career & Life (35)
+  - India & History (35)
+  - Food & Culture (35)
+  - Music & Films (35)
+  - Places & Travel (35)
+  - Festivals & Traditions (35)
+  - Wisdom & Beliefs (36)
+- [x] `memory_questions` table in database.py (question text, theme — global bank)
+- [x] `user_question_tracking` table — per-user no-repeat record; reset when bank exhausted
+- [x] `memory_prompt_log` table — UNIQUE(user_id, sent_date) prevents double-send
+- [x] `pending_memory_question_id`, `pending_memory_question_text`, `pending_memory_question_theme` columns added to users table via migration
+- [x] `seed_memory_questions()` — populates DB on startup, skips if already seeded
+- [x] `get_next_memory_question(user_id)` — random unasked question; auto-resets cycle when exhausted
+- [x] `send_memory_prompt(bot, user_id)` — sends question as text + TTS, records in both tracking tables, sets pending flag
+- [x] `check_and_send_memory_prompts(bot)` — Wednesday + Sunday only, at morning_checkin_time
+- [x] Wired into `check_and_send_rituals()` in rituals.py (after morning/afternoon/evening block)
+- [x] `seed_memory_questions()` called from `main()` on startup
+- [x] Response capture block in `_run_pipeline()` in main.py: pending question detected → save_memory_response() → memories table fully linked → message continues to DeepSeek (no early return)
+- [x] Senior responses stored in existing `memories` table (Module 7) — question_id, question_text, and theme now all populated (previously always NULL)
+- [x] All syntax checks passed; schema verified in test DB; seed + selection verified end-to-end
+- Note: 316 questions = ~3 years of non-repeating weekly prompts per user. Cycle resets automatically.
 
 ---
 
