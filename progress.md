@@ -306,13 +306,21 @@ Current phase: Module 14 — Family Integration
 
 ---
 
-### ⬜ Module 18 — News, Sports & Weather APIs
-- [ ] Decide and integrate news API (NewsAPI.org recommended — free tier, Hindi support)
-- [ ] Decide and integrate cricket API (Cricbuzz unofficial or CricAPI — scores + schedule)
-- [ ] Decide and integrate weather API (OpenWeatherMap — free tier, city-based)
-- [ ] Wire real data into existing wrap functions in rituals.py: wrap_news(), wrap_cricket(), wrap_weather()
-- [ ] Morning briefing now uses real data instead of DeepSeek-hallucinated content
-- [ ] Add API keys to Railway env vars: NEWS_API_KEY, CRICKET_API_KEY, WEATHER_API_KEY
+### ✅ Module 18 — News, Sports & Weather APIs
+- [x] Weather: OpenWeatherMap (`/data/2.5/weather`, metric units, city from user profile)
+- [x] Cricket: CricAPI (`/v1/currentMatches`, filtered for India matches, score + status + venue)
+- [x] News: NewsAPI.org (`/v2/top-headlines`, country=in, filtered by user's news_interests keyword; category map for common topics; [Removed] articles skipped)
+- [x] apis.py created: `fetch_weather(city)`, `fetch_cricket()`, `fetch_news(interests)` — each returns plain-text string or None
+- [x] All three fetches are independently optional: if key not in env, returns None — no crash, morning briefing continues with DeepSeek-generated content
+- [x] 30-minute in-memory cache (`_CACHE` dict with TTL) prevents hammering APIs when many users share same check-in time
+- [x] `_build_morning_instruction()` updated: calls all three fetches, wraps via existing `wrap_weather/news/cricket` DeepSeek wrappers, injects pre-wrapped sentences into morning prompt
+- [x] `_get_users_due_for_ritual()` query updated to select `news_interests` column
+- [x] Cricket: only included in morning briefing when an India match is live/recent — not forced every day
+- [x] All syntax checks passed; 5-test smoke suite passed (None-on-missing-key, cache, match detection, no-India-match, [Removed] skip)
+- **New Railway env vars to add:**
+  - `WEATHER_API_KEY` — openweathermap.org (free tier)
+  - `CRICKET_API_KEY` — api.cricapi.com (free tier, 100 calls/day)
+  - `NEWS_API_KEY` — newsapi.org (free tier, 100 calls/day)
 
 ---
 

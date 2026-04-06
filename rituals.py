@@ -319,6 +319,7 @@ def _get_users_due_for_ritual(ritual_type: str, now_hhmm: str, today: str) -> li
                    u.bot_name, u.religion, u.favourite_topics,
                    u.music_preferences, u.city, u.morning_checkin_time,
                    u.afternoon_checkin_time, u.evening_checkin_time,
+                   u.news_interests,
                    COALESCE(u.days_since_first_message, 1) AS days_since_first_message
             FROM users u
             WHERE u.onboarding_complete = 1
@@ -373,6 +374,7 @@ def _build_morning_instruction(user_row) -> str:
     name = _address(user_row["name"], user_row["preferred_salutation"])
     religion = user_row["religion"] or ""
     topics = user_row["favourite_topics"] or ""
+    news_interests = user_row["news_interests"] or "" if "news_interests" in user_row.keys() else ""
     city = user_row["city"] or ""
     ist = _ist_now()
     day_name = ist.strftime("%A")
@@ -389,6 +391,36 @@ def _build_morning_instruction(user_row) -> str:
         f"Tone posture: {arc['saathi_posture']}",
     ]
 
+    # --- Real API data (Module 18) ---
+    # Each fetch is wrapped by DeepSeek before injection. If an API key is
+    # missing or the call fails, the fetch returns None and we skip that element
+    # gracefully — no crash, no change in behaviour from the senior's perspective.
+    try:
+        from apis import fetch_weather, fetch_cricket, fetch_news
+
+        if city:
+            raw_weather = fetch_weather(city)
+            if raw_weather:
+                weather_sentence = wrap_weather(city, raw_weather)
+                if weather_sentence:
+                    sections.append(f"Weather (already wrapped, use as-is): {weather_sentence}")
+
+        raw_news = fetch_news(news_interests or topics)
+        if raw_news:
+            news_sentence = wrap_news(raw_news)
+            if news_sentence:
+                sections.append(f"News (already wrapped, use as-is): {news_sentence}")
+
+        raw_cricket = fetch_cricket()
+        if raw_cricket:
+            cricket_sentence = wrap_cricket(raw_cricket)
+            if cricket_sentence:
+                sections.append(f"Cricket update (already wrapped, use as-is): {cricket_sentence}")
+
+    except Exception as api_err:
+        logger.warning("RITUALS | morning API fetch failed: %s", api_err)
+        # Fall through — morning briefing continues without real data
+
     if religion:
         sections.append(f"Faith context (for thought of the day): {religion}")
 
@@ -404,7 +436,8 @@ def _build_morning_instruction(user_row) -> str:
         "Rules:",
         "- Maximum 4-5 sentences total. Seniors should not need to scroll.",
         "- Warmth first, information second.",
-        "- Never raw data. Always wrap in care.",
+        "- The weather, news, and cricket lines above are already wrapped — weave them in naturally, do not rewrite them.",
+        "- If no weather/news/cricket lines are present above, generate warm contextual content instead.",
         "- Follow the senior's lead on depth — Rule 8 of Protocol 2 governs this.",
     ]
 
