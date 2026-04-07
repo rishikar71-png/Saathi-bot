@@ -854,6 +854,12 @@ def _build_system_prompt(user_context: dict) -> str:
     prompt = language_lock + _BASE_SYSTEM_PROMPT + "\n\n" + user_profile_section
     if p3_constraint:
         prompt += p3_constraint
+    # Live data block — injected when the user's message was a news/cricket/weather query.
+    # Contains either real API data or an honest "no live data available" instruction.
+    # Prevents DeepSeek from hallucinating current events.
+    live_data = user_context.get("live_data_context") or ""
+    if live_data:
+        prompt += f"\n\n{live_data}"
     if archetype_adjustment:
         prompt += "\n" + archetype_adjustment
     return prompt

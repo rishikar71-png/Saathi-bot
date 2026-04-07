@@ -1,5 +1,6 @@
 import io
 import os
+import re
 import logging
 from telegram import Update
 from telegram.ext import (
@@ -224,6 +225,105 @@ def _update_language_learning(user_id: int, stored_language: str, detected_langu
 
     # Use detected language for this response even before the DB update
     return detected_language
+
+
+# ---------------------------------------------------------------------------
+# Live data injection — news / cricket / weather queries in conversation
+# ---------------------------------------------------------------------------
+
+_NEWS_QUERY_SIGNALS = re.compile(
+    r"\b(news|headlines?|current events?|khabar|khabaren|aaj ki khabar|"
+    r"what.?s happening|kya ho raha|aaj kya hua|duniya mein kya|india mein kya|"
+    r"latest (news|updates?)|tell me (the )?news|koi khabar|kuch naya)\b",
+    re.IGNORECASE,
+)
+_CRICKET_QUERY_SIGNALS = re.compile(
+    r"\b(cricket|score|match|india (won|lost|playing)|test match|"
+    r"ipl|odi|t20|kya hua match mein|cricket mein kya)\b",
+    re.IGNORECASE,
+)
+_WEATHER_QUERY_SIGNALS = re.compile(
+    r"\b(weather|temperature|mausam|garmi|sardi|barish|kitni garmi|"
+    r"how.?s the weather|aaj mausam|what.?s the temp)\b",
+    re.IGNORECASE,
+)
+
+
+def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
+    """
+    If the user's message is a news, cricket, or weather query, fetch live data
+    and return an injection block for the DeepSeek system prompt.
+
+    Returns None if the message is not a live-data query.
+    Returns a string instruction block if it is (whether or not API data was available).
+    The block either contains real data or explicitly tells DeepSeek not to hallucinate.
+    """
+    is_news    = bool(_NEWS_QUERY_SIGNALS.search(text))
+    is_cricket = bool(_CRICKET_QUERY_SIGNALS.search(text))
+    is_weather = bool(_WEATHER_QUERY_SIGNALS.search(text))
+
+    if not (is_news or is_cricket or is_weather):
+        return None
+
+    try:
+        from apis import fetch_news, fetch_cricket, fetch_weather
+        from rituals import wrap_news, wrap_cricket, wrap_weather
+    except ImportError:
+        return None
+
+    parts = []
+
+    if is_weather or is_news or is_cricket:
+        parts.append(
+            "LIVE DATA CONTEXT — USE THIS ONLY, DO NOT ADD INFORMATION FROM YOUR TRAINING:\n"
+            "The user is asking about current events / live information. "
+            "Use only what is provided below. If nothing is provided, say honestly that "
+            "you don't have live updates today and offer to talk about something else."
+        )
+
+    city = user_context.get("city") or ""
+
+    if is_weather and city:
+        try:
+            raw = fetch_weather(city)
+            if raw:
+                parts.append(f"Weather ({city}): {wrap_weather(city, raw)}")
+            else:
+                parts.append(f"Weather: No live weather data available right now.")
+        except Exception:
+            parts.append("Weather: Not available right now.")
+
+    if is_cricket:
+        try:
+            raw = fetch_cricket()
+            if raw:
+                parts.append(f"Cricket: {wrap_cricket(raw)}")
+            else:
+                parts.append("Cricket: No live match data right now.")
+        except Exception:
+            parts.append("Cricket: Not available right now.")
+
+    if is_news:
+        news_interests = user_context.get("news_interests") or user_context.get("favourite_topics") or ""
+        try:
+            raw = fetch_news(news_interests)
+            if raw:
+                parts.append(f"News: {wrap_news(raw)}")
+            else:
+                parts.append("News: No live headlines available right now.")
+        except Exception:
+            parts.append("News: Not available right now.")
+
+    if len(parts) <= 1:
+        # Only the header, no actual data
+        return (
+            "LIVE DATA CONTEXT:\n"
+            "The user is asking about live news or events. You do not have access to live data "
+            "right now. Tell them honestly and warmly — do not guess, do not give cricket or "
+            "sports results unless confirmed above, and do not repeat old information."
+        )
+
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -475,14 +575,24 @@ async def _run_pipeline(
     # Runs after user_context is built. Detects the actual language of the current
     # message and adjusts user_context["language"] for this call.
     # If 5+ consecutive messages differ from the stored preference, the DB is updated.
+    #
+    # SHORT MESSAGE GUARD: Messages ≤3 words are unreliable language signals.
+    # A single Hindi word ("Haan"), a voice note that transcribes to one word,
+    # or a short English ack ("okay") should never override the stored preference.
     _stored_lang = user_context.get("language") or "english"
-    _detected_lang = _detect_message_language(text)
-    _effective_lang = _update_language_learning(user_id, _stored_lang, _detected_lang)
-    if _effective_lang != _stored_lang:
-        logger.info(
-            "LANG | user_id=%s | override: stored=%s detected=%s effective=%s",
-            user_id, _stored_lang, _detected_lang, _effective_lang,
-        )
+    _short_message = len(text.strip().split()) <= 3
+    if _short_message:
+        # Trust stored preference — don't learn from this, don't override for this call.
+        _effective_lang = _stored_lang
+        logger.debug("LANG | user_id=%s | short message, using stored=%s", user_id, _stored_lang)
+    else:
+        _detected_lang = _detect_message_language(text)
+        _effective_lang = _update_language_learning(user_id, _stored_lang, _detected_lang)
+        if _effective_lang != _stored_lang:
+            logger.info(
+                "LANG | user_id=%s | override: stored=%s detected=%s effective=%s",
+                user_id, _stored_lang, _detected_lang, _effective_lang,
+            )
     user_context["language"] = _effective_lang
 
     # --- Meta-request: language switch ---
@@ -707,6 +817,17 @@ async def _run_pipeline(
                 "Thodi der mein dobara try karein! 🙏"
             )
         return
+
+    # --- Live data injection for news / cricket / weather queries ---
+    # The news/cricket/weather APIs are wired into the morning ritual but NOT into
+    # ad-hoc conversation. Without this block, "tell me the news" goes to DeepSeek
+    # which hallucinates stale content. Here we detect intent, call the APIs, and
+    # inject real data (or an honest "I don't have live news") into the DeepSeek
+    # system prompt as a context block.
+    _live_data_injected = _inject_live_data_if_needed(text, user_context)
+    if _live_data_injected:
+        user_context["live_data_context"] = _live_data_injected
+        logger.info("LIVE_DATA | user_id=%s | injected: %r", user_id, _live_data_injected[:80])
 
     # --- Mid-session return greeting intercept ---
     # When the senior returns with a bare greeting mid-session, build a targeted
@@ -1055,6 +1176,21 @@ async def receive_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await update.message.reply_text(
                 "I heard something but couldn't make it out. Could you type it? 🙏"
             )
+            return
+
+        # Short transcription guard — if Whisper only caught 1–2 words, the recording
+        # was likely unclear (not the user disengaging). Ask to resend rather than
+        # sending a flat response like "Alright." via the disengagement path.
+        if len(text.strip().split()) <= 2:
+            user_lang = (user_row["language"] or "hindi") if user_row else "hindi"
+            if user_lang in ("hindi", "hinglish"):
+                await update.message.reply_text(
+                    "Sahi se sun nahi paaya — zara dobara bhejein? 🙏"
+                )
+            else:
+                await update.message.reply_text(
+                    "Sorry, couldn't catch that clearly — could you send it again? 🙏"
+                )
             return
 
         # Pass transcribed text through the full pipeline — identical to text messages

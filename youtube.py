@@ -195,6 +195,11 @@ def find_music(query: str) -> tuple[str, str]:
     """
     Search YouTube Data API v3 for the top video matching query.
 
+    Three-attempt fallback chain so we never show a failure message:
+      1. Original query as-is
+      2. Query with noise adjectives stripped ("an old", "a", "purana", etc.)
+      3. Artist/key-noun only (first 2–3 meaningful words)
+
     Args:
         query: Search string.
 
@@ -202,34 +207,74 @@ def find_music(query: str) -> tuple[str, str]:
         (video_title, youtube_url)
 
     Raises:
-        ValueError if no results found.
+        ValueError if all three attempts return no results.
         requests.RequestException on network failure.
     """
     api_key = os.environ["GOOGLE_CLOUD_API_KEY"]
 
-    params = {
-        "part":             "snippet",
-        "q":                query,
-        "type":             "video",
-        "maxResults":       1,
-        "regionCode":       "IN",
-        "relevanceLanguage":"hi",
-        "key":              api_key,
-    }
+    def _search(q: str) -> tuple[str, str] | None:
+        """Single search attempt. Returns (title, url) or None."""
+        params = {
+            "part":              "snippet",
+            "q":                 q,
+            "type":              "video",
+            "maxResults":        1,
+            "regionCode":        "IN",
+            "relevanceLanguage": "hi",
+            "key":               api_key,
+        }
+        resp = requests.get(_SEARCH_URL, params=params, timeout=10)
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
+        if not items:
+            return None
+        video_id = items[0]["id"]["videoId"]
+        title    = items[0]["snippet"]["title"]
+        url      = f"https://www.youtube.com/watch?v={video_id}"
+        logger.info("YOUTUBE | query=%r | title=%r | url=%s", q, title, url)
+        return title, url
 
-    response = requests.get(_SEARCH_URL, params=params, timeout=10)
-    response.raise_for_status()
+    def _stripped_query(q: str) -> str:
+        """Remove common noise adjectives/articles from the front of the query."""
+        noise = re.compile(
+            r"^(an?\s+)?(the\s+)?"
+            r"(old|new|purana|purani|classic|latest|best|popular|favourite|favorite|"
+            r"beautiful|sweet|soft|slow|fast|great|good|famous|hit|super|some|"
+            r"ek\s+|koi\s+|kuch\s+)",
+            re.IGNORECASE,
+        )
+        cleaned = noise.sub("", q).strip()
+        return cleaned if len(cleaned) >= 3 else q
 
-    items = response.json().get("items", [])
-    if not items:
-        raise ValueError(f"No YouTube results for: {query!r}")
+    def _short_query(q: str) -> str:
+        """Take the first 2–3 meaningful words (artist + genre, drop 'song/songs/Indian')."""
+        stop_words = {"song", "songs", "gana", "gaana", "gaane", "music", "indian",
+                      "hindi", "bollywood", "hit", "hits", "old", "new", "purana"}
+        words = [w for w in q.split() if w.lower() not in stop_words]
+        return " ".join(words[:3]) if words else q
 
-    video_id = items[0]["id"]["videoId"]
-    title    = items[0]["snippet"]["title"]
-    url      = f"https://www.youtube.com/watch?v={video_id}"
+    # Attempt 1 — original query
+    result = _search(query)
+    if result:
+        return result
 
-    logger.info("YOUTUBE | query=%r | title=%r | url=%s", query, title, url)
-    return title, url
+    # Attempt 2 — strip noise adjectives
+    query2 = _stripped_query(query)
+    if query2 != query:
+        logger.info("YOUTUBE | retry stripped: %r", query2)
+        result = _search(query2)
+        if result:
+            return result
+
+    # Attempt 3 — artist/key noun only
+    query3 = _short_query(query)
+    if query3 != query2:
+        logger.info("YOUTUBE | retry short: %r", query3)
+        result = _search(query3)
+        if result:
+            return result
+
+    raise ValueError(f"No YouTube results after 3 attempts for: {query!r}")
 
 
 # ---------------------------------------------------------------------------

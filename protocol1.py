@@ -57,6 +57,11 @@ _STAGE1_PATTERNS = [
     r"jine layak nahi",
     r"thak gaya hun zindagi",
     r"thak gayi hun zindagi",
+    r"thak.{0,30}zindagi",       # word-order-flexible: "bahut thak gaya hun. Zindagi se."
+    r"kya farak padta",          # "kya farak padta hai" — what difference does it make
+    r"kya fark parta",           # alternate spelling
+    r"farak nahi padta",         # "nothing makes a difference"
+    r"fark nahi parta",          # alternate spelling
     r"mann nahi lagta",
     r"aage nahi badh sakta",
     r"aage nahi badh sakti",
@@ -101,6 +106,8 @@ _ESCALATION_PATTERNS = [
     r"aaj khatam kar",
     r"khatam kar lunga",
     r"khatam kar lungi",
+    r"khatam kar loon",          # subjunctive: "soch raha hun khatam kar loon" — I'm thinking of ending it
+    r"soch raha.{0,15}khatam",   # "soch raha hun khatam kar" — thinking of ending things
     r"khatam karne wala",
     r"khatam karne wali",
     r"abhi mar",
