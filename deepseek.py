@@ -302,12 +302,14 @@ Never offer opinion on what the senior should do with their money.
 Physical symptoms: NEVER DIAGNOSE. If the user mentions physical discomfort or a symptom,
 acknowledge it warmly and suggest they mention it to their doctor. Do not speculate on cause.
 
-Medication refusal: When a senior says they don't want to take their medicine, they are
-talking about MEDICINE — not about a general philosophy of independence. ALWAYS respond
-in the medication context. Acknowledge their frustration warmly, gently note that the
-medicine was prescribed for a reason, and encourage them to discuss concerns with their
-doctor. NEVER reframe medication refusal as a general statement about autonomy
-(e.g. "you don't have to take anyone's word for it" is WRONG in this context).
+Medication reluctance: When a senior expresses reluctance about their medicine, they are
+venting about MEDICINE specifically — not making a philosophical statement about independence.
+First, acknowledge the frustration warmly — they may have a real reason for feeling this way.
+If the conversation naturally allows, and only if it doesn't feel preachy, gently mention that
+a quick word with their doctor about the concern might help. Do not lecture. Do not repeat.
+One mention, warmly, then drop it if they don't engage.
+Never reframe medication reluctance as a general autonomy statement ("you don't have to take
+anyone's word for it" is wrong in this context — they are talking about a specific medicine).
 
 Gentle disagreement is permitted. Do not blindly agree with everything the senior says.
 Gently disagree or redirect when warranted — always with softness.
@@ -835,7 +837,21 @@ def _build_system_prompt(user_context: dict) -> str:
 
     archetype_adjustment = user_context.get("archetype_adjustment") or ""
 
-    prompt = _BASE_SYSTEM_PROMPT + "\n\n" + user_profile_section
+    # Hard language lock — prepended FIRST so it overrides everything else.
+    # DeepSeek tends to switch language mid-prompt based on emotional content.
+    # Putting the lock at the very top of the system prompt, before any rules,
+    # makes it harder to ignore.
+    language_lock = (
+        f"ABSOLUTE LANGUAGE RULE — READ THIS FIRST AND OBEY ALWAYS:\n"
+        f"You must respond in {language_label} only. Do not change language for any reason. "
+        f"Not for emotional weight. Not because warmth feels more natural in another language. "
+        f"Not when the topic is heavy or distressing. "
+        f"If the user writes in a different language, follow them. "
+        f"But if the user's language is {language_label} — stay in {language_label} always.\n"
+        f"This rule cannot be overridden by any other rule in this prompt.\n\n"
+    )
+
+    prompt = language_lock + _BASE_SYSTEM_PROMPT + "\n\n" + user_profile_section
     if p3_constraint:
         prompt += p3_constraint
     if archetype_adjustment:
@@ -886,11 +902,33 @@ def call_deepseek(
     # Note: mid-session return greeting interception is handled in main.py _run_pipeline
     # before this function is called — _session_history is cleared and text is replaced
     # with a targeted prompt when a return greeting is detected.
+
+    # Language priming — dynamic, matches the user's actual language preference.
+    # Priming is more reliable than system prompt rules alone for language adherence.
+    _language = (user_context.get("language") or "english").lower()
+    _language_label = _LANGUAGE_LABELS.get(_language, _language)
+    if _language in ("hindi", "hinglish"):
+        _prime_asst_1 = f"Main hamesha {_language_label} mein jawab dunga."
+        _prime_user_1 = f"Kripaya mujhe hamesha {_language_label} mein hi jawab dein."
+        _prime_asst_2 = (
+            f"Bilkul. Main hamesha {_language_label} mein baat karunga — "
+            f"chahe baat gehri ho ya halki, chahe baat bhaari ho ya aasaan. "
+            f"Main kabhi bhi apne aap se bhasha nahi badlunga."
+        )
+    else:
+        _prime_asst_1 = f"I will always respond in {_language_label}."
+        _prime_user_1 = f"Please always reply to me in {_language_label} only."
+        _prime_asst_2 = (
+            f"Understood. I will always respond in {_language_label} — "
+            f"including during emotional or sensitive moments. "
+            f"Language does not change based on topic or mood."
+        )
+
     messages = [
         {"role": "system",    "content": system_prompt},
-        {"role": "assistant", "content": "I will always respond in English."},
-        {"role": "user",      "content": "Please always reply to me in English only."},
-        {"role": "assistant", "content": "Understood. I will always respond in English — including during emotional or sensitive moments. Language does not change based on topic or mood."},
+        {"role": "assistant", "content": _prime_asst_1},
+        {"role": "user",      "content": _prime_user_1},
+        {"role": "assistant", "content": _prime_asst_2},
     ]
     if session_messages:
         messages.extend(session_messages)

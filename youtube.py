@@ -16,6 +16,7 @@ Note: ensure YouTube Data API v3 is enabled in the Google Cloud project
 for this key.
 """
 
+import hashlib
 import logging
 import os
 import re
@@ -235,10 +236,36 @@ def find_music(query: str) -> tuple[str, str]:
 # Response builder
 # ---------------------------------------------------------------------------
 
-def build_music_message(title: str, url: str) -> str:
+def build_music_message(title: str, url: str, language: str = "english") -> str:
+    """
+    Build a warm, varied music response.
+    Rotates across several preambles so it never feels templated.
+    Uses a hash of the title to pick a variant deterministically —
+    same song → same preamble (feels natural; not random on retry).
+    """
+    _hash = int(hashlib.md5(title.encode()).hexdigest(), 16)
+    _variant = _hash % 5
+
+    if language in ("hindi", "hinglish"):
+        _preambles = [
+            "Yeh lijiye 🎵",
+            "Mil gaya —",
+            "Yeh suniye —",
+            "Aapke liye 🎶",
+            "Laa diya —",
+        ]
+    else:
+        _preambles = [
+            "Here you go 🎵",
+            "Found it —",
+            "This one's for you 🎶",
+            "Here it is —",
+            "Coming right up 🎵",
+        ]
+
+    preamble = _preambles[_variant]
     return (
-        f"🎵 Yeh lijiye!\n\n"
+        f"{preamble}\n\n"
         f"*{title}*\n"
-        f"{url}\n\n"
-        f"Tap the link to open in YouTube. Enjoy! 😊"
+        f"{url}"
     )

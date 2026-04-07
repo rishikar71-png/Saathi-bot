@@ -58,24 +58,27 @@ def _ist_now() -> datetime:
 # ---------------------------------------------------------------------------
 
 EMERGENCY_KEYWORDS_SAFE = [
+    # Physical emergency signals only.
+    # Mental health / suicidal-ideation phrases are intentionally excluded —
+    # they are handled exclusively by Protocol 1 (protocol1.py).
+    # Mixing them here would route them to the wrong handler.
     "i fell", "gir gaya", "gir gayi",
-    "call ambulance", "ambulance bulao",
-    "emergency",
-    "i don't want to go on",
-    "i can't go on",
-    "jeena nahi chahta", "jeena nahi chahti",
-    "khatam kar loon", "mujhe nahi rehna",
-    "zindagi se thak gaya", "zindagi se thak gayi",
-    "koi matlab nahi raha", "ab kya faida hai",
+    "i have fallen", "main gir gaya", "main gir gayi",
+    "call ambulance", "ambulance bulao", "ambulance chahiye",
+    "i need help urgently", "mujhe madad chahiye", "bachao",
+    "chest pain", "seene mein dard",
+    "can't breathe", "saans nahi aa rahi",
+    "bleeding", "khoon aa raha",
 ]
 
 
 def check_emergency_keywords(text: str) -> bool:
     """
-    Return True if the message looks like a physical or acute distress emergency.
+    Return True if the message looks like a PHYSICAL emergency.
 
     Uses case-insensitive substring matching against EMERGENCY_KEYWORDS_SAFE.
-    "help" and "help me" are intentionally excluded — far too common.
+    Mental health crisis phrases are NOT here — those go to Protocol 1 only.
+    "help" and "help me" are intentionally excluded — far too common in non-emergency use.
     """
     t = text.strip().lower()
     return any(phrase in t for phrase in EMERGENCY_KEYWORDS_SAFE)
@@ -230,13 +233,35 @@ async def handle_help_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 # ---------------------------------------------------------------------------
 
 async def send_help_prompt(update: Update) -> None:
-    """Send the /help inline keyboard in response to a detected emergency keyword."""
+    """
+    Respond to a detected physical emergency keyword.
+
+    Sends an immediate reassuring text with the emergency number first —
+    so the senior has actionable help even before tapping any button.
+    Then sends the keyboard so they can confirm whether they need help
+    or cancel if it was a false alarm.
+
+    Design principles:
+    - Never make the senior wait for a button press to get help.
+    - Always display 112 as a fallback — bot cannot make calls.
+    - "I'm okay" button lets them cancel if they typed something like
+      "I fell for the trick" or "I fell asleep".
+    """
+    # Immediate text — actionable, no button required
+    await update.message.reply_text(
+        "I hear you. Please stay where you are.\n\n"
+        "If you need immediate help, call *112* now — "
+        "that is India's emergency number and they will come to you.\n\n"
+        "I am letting your family know. 🙏",
+        parse_mode="Markdown",
+    )
+    # Keyboard to confirm or cancel
     keyboard = [
-        [InlineKeyboardButton("I'm okay, just checking 🙏", callback_data="help_ok")],
-        [InlineKeyboardButton("I need help right now", callback_data="help_needed")],
+        [InlineKeyboardButton("I'm okay — it was a mistake 🙏", callback_data="help_ok")],
+        [InlineKeyboardButton("Yes, I need help right now", callback_data="help_needed")],
     ]
     await update.message.reply_text(
-        "I'm here. Do you need help right now? 🙏",
+        "Are you okay?",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 

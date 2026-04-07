@@ -204,31 +204,21 @@ _ALL_BUCKETS = [
 # ---------------------------------------------------------------------------
 
 _PROTOCOL3_ENGLISH_RESPONSE = (
-    "Thank you for sharing that with me — it sounds like this has been sitting with you "
-    "for a while, and that kind of weight is real.\n\n"
-    "I want to be honest: this is not something I can help you decide, and I would be "
-    "worried if I tried. Money and loans — even with close friends or family — deserve "
-    "someone who truly knows your full situation. A CA, a trusted family member, or a "
-    "good lawyer would be the right person to talk to.\n\n"
-    "But if you want to talk about how this is sitting with you — not the decision "
-    "itself, just how it feels — I'm here for that."
+    "That sounds like it's been weighing on you for a while.\n\n"
+    "I have to be honest — this is not something I should help you decide. "
+    "Money decisions, even with family, need someone who truly knows your situation: "
+    "a CA, a trusted relative, or a lawyer.\n\n"
+    "If you just want to talk about how it feels — not the decision itself — I'm here for that."
 )
 
 _PROTOCOL3_HINDI_RESPONSE = (
-    "Shukriya ki aapne mujhse share kiya. Yeh sab sunke lagta hai ki "
-    "yeh kuch waqt se aapke mann mein chal raha hai — aur yeh baat bhaari hoti hai, "
-    "jab aapko andar se pata ho ki kuch important decide karna hai.\n\n"
-    "Main aapka saathi hoon — lekin yeh ek aisi jagah hai jahan main aapki "
-    "madad karna chahta toh hoon, par mujhe dar hai ki agar main kuch "
-    "keh doon toh woh aapke liye sahi nahi hoga. "
-    "Paise aur property ke mamle mein — chahe parivaar ka ho ya bahar ka — "
-    "yeh faisla sirf aapka hai, aur iske liye sahi insaan chahiye.\n\n"
-    "Kya aapke koi bharose ke insaan hain — ek CA, ek vakeel, ya parivaar mein "
-    "koi bada bhai, behen, ya koi aur — jisse aap pehle baat kar sakein? "
-    "Woh aapki poori baat sunenge aur aapke interest mein sochenge.\n\n"
-    "Agar sirf yeh batana chahein ki yeh sab feel kaise ho raha hai — "
-    "andar se kaisa lag raha hai, bina faisle ki baat kiye — "
-    "toh main yahan hoon. Woh baat main zaroor sun sakta hoon."
+    "Lagta hai yeh kuch waqt se aapke mann mein chal raha hai.\n\n"
+    "Main seedha baat karta hoon — paise aur sampatti ke mamle mein main aapki "
+    "madad karne ki sthiti mein nahi hoon. Yeh faisla sirf aapka hai, aur iske liye "
+    "kisi aisa chahiye jo aapki poori situation jaanta ho — ek CA, ek vakeel, "
+    "ya parivaar mein koi bharose ka insaan.\n\n"
+    "Agar sirf yeh batana chahein ki andar se kaisa lag raha hai — "
+    "faisle ki baat nahi, bas feel ki baat — main yahan hoon."
 )
 
 

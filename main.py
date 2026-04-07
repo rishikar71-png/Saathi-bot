@@ -86,6 +86,12 @@ _protocol1_session_counts: dict[int, int] = {}
 # Resets on bot restart — recalculates from messages if needed.
 _archetype_cache: dict[int, str] = {}
 
+# Language learning loop — tracks consecutive detections of a language
+# different from the user's stored preference.
+# Structure: {user_id: {"detected": "hindi", "streak": 3}}
+# When streak reaches 5, users.language is updated in the DB.
+_language_learning: dict[int, dict] = {}
+
 
 def _get_archetype_adjustment(user_id: int, days_since_first_message: int) -> str | None:
     """
@@ -122,6 +128,102 @@ def _get_archetype_adjustment(user_id: int, days_since_first_message: int) -> st
         logger.warning("ARCHETYPE | lookup failed | user_id=%s | %s", user_id, e)
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Language detection helpers
+# ---------------------------------------------------------------------------
+
+def _detect_message_language(text: str) -> str:
+    """
+    Detect the dominant language of a message.
+
+    Returns: 'hindi', 'hinglish', or 'english'.
+
+    Rules:
+    - If the message contains significant Devanagari script → 'hindi'
+    - If the message contains common Hindi/Urdu words in Roman script
+      (at least 2 known words) → 'hinglish'
+    - Otherwise → 'english'
+
+    This is intentionally simple — false positives are fine.
+    The goal is to catch clear cases, not edge cases.
+    """
+    import unicodedata
+
+    # Count Devanagari characters
+    devanagari_count = sum(
+        1 for ch in text
+        if '\u0900' <= ch <= '\u097F'  # Devanagari Unicode block
+    )
+    # If more than 3 Devanagari chars, it's Hindi
+    if devanagari_count > 3:
+        return "hindi"
+
+    # Check for common Hindi/Urdu words written in Roman script
+    _HINGLISH_MARKERS = [
+        "hoon", "hun", "hai", "hain", "tha", "thi", "the",
+        "kya", "nahi", "nhi", "acha", "achha", "theek", "thik",
+        "bilkul", "haan", "naa", "bhi", "aur", "lekin", "par",
+        "mujhe", "mera", "meri", "mere", "aap", "tum", "main",
+        "kuch", "bahut", "thoda", "zyada", "bohot",
+        "abhi", "aaj", "kal", "phir", "dobara",
+        "ghar", "khana", "pani", "beta", "beti",
+        "ji", "yaar", "bhai", "didi",
+    ]
+    text_lower = text.lower()
+    # Word-boundary aware match: split on spaces and punctuation
+    words = set(text_lower.replace(",", " ").replace(".", " ").split())
+    hinglish_hits = sum(1 for w in _HINGLISH_MARKERS if w in words)
+    if hinglish_hits >= 2:
+        return "hinglish"
+
+    return "english"
+
+
+def _update_language_learning(user_id: int, stored_language: str, detected_language: str) -> str:
+    """
+    Maintain a rolling streak of detected language signals.
+    If 5 consecutive messages are detected as a different language than stored,
+    update the DB preference and return the new language.
+    Returns the language that should be used for this response.
+    """
+    # Treat hindi and hinglish as compatible — don't flap between them
+    def _family(lang: str) -> str:
+        return "hindi_family" if lang in ("hindi", "hinglish") else "english"
+
+    stored_family = _family(stored_language)
+    detected_family = _family(detected_language)
+
+    if detected_family == stored_family:
+        # Consistent — reset streak
+        _language_learning.pop(user_id, None)
+        return stored_language
+
+    # Different family detected — track streak
+    entry = _language_learning.get(user_id, {"detected": detected_language, "streak": 0})
+    if entry["detected"] != detected_language:
+        # Detection changed mid-streak — reset
+        entry = {"detected": detected_language, "streak": 0}
+    entry["streak"] += 1
+    _language_learning[user_id] = entry
+
+    if entry["streak"] >= 5:
+        # 5 consecutive messages in a different language — update DB preference
+        try:
+            from database import update_user_fields as _uuf_learn
+            _uuf_learn(user_id, language=detected_language)
+            logger.info(
+                "LANG_LEARN | user_id=%s | updated preference: %s → %s",
+                user_id, stored_language, detected_language,
+            )
+        except Exception as _le:
+            logger.warning("LANG_LEARN | DB update failed | user_id=%s | %s", user_id, _le)
+        _language_learning.pop(user_id, None)
+        return detected_language
+
+    # Use detected language for this response even before the DB update
+    return detected_language
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +471,20 @@ async def _run_pipeline(
         "local_time_label":       _time_label,
     }
 
+    # --- Script-based language detection + learning loop ---
+    # Runs after user_context is built. Detects the actual language of the current
+    # message and adjusts user_context["language"] for this call.
+    # If 5+ consecutive messages differ from the stored preference, the DB is updated.
+    _stored_lang = user_context.get("language") or "english"
+    _detected_lang = _detect_message_language(text)
+    _effective_lang = _update_language_learning(user_id, _stored_lang, _detected_lang)
+    if _effective_lang != _stored_lang:
+        logger.info(
+            "LANG | user_id=%s | override: stored=%s detected=%s effective=%s",
+            user_id, _stored_lang, _detected_lang, _effective_lang,
+        )
+    user_context["language"] = _effective_lang
+
     # --- Meta-request: language switch ---
     # Must run before all protocols and DeepSeek.
     _LANGUAGE_SWITCH_TO_ENGLISH = [
@@ -415,15 +531,32 @@ async def _run_pipeline(
         "salam", "adaab", "hola",
     ]
 
-    def _get_time_aware_greeting(hour: int) -> str:
-        if 5 <= hour < 12:
-            return "Good morning. Good to hear from you."
-        elif 12 <= hour < 17:
-            return "Good afternoon."
-        elif 17 <= hour < 21:
-            return "Good evening. How has the day been?"
+    def _get_time_aware_greeting(hour: int, language: str, name: str) -> str:
+        _name = (name or "").strip()
+        _lang = (language or "english").lower()
+
+        # Build a name suffix — used only in Hindi/Hinglish for natural flow
+        _ji = f" {_name} ji" if _name else ""
+        _eng_name = f", {_name} ji" if _name else ""
+
+        if _lang in ("hindi", "hinglish"):
+            if 5 <= hour < 12:
+                return f"Namaste{_ji}. Sunkar achha laga. 🙏"
+            elif 12 <= hour < 17:
+                return f"Namaste{_ji}. Dopahar kaisi chal rahi hai?"
+            elif 17 <= hour < 21:
+                return f"Namaste{_ji}. Aaj ka din kaisa raha?"
+            else:
+                return f"Namaste{_ji}. Bahut raat ho gayi — sab theek hai?"
         else:
-            return "Hello. Up late tonight?"
+            if 5 <= hour < 12:
+                return f"Good morning{_eng_name}. Good to hear from you."
+            elif 12 <= hour < 17:
+                return f"Good afternoon{_eng_name}."
+            elif 17 <= hour < 21:
+                return f"Good evening{_eng_name}. How has the day been?"
+            else:
+                return f"Hello{_eng_name}. Up late tonight?"
 
     # Only fire the greeting handler if we are NOT mid-session.
     # If there is substantial session history (>= 4 turns), the senior is returning
@@ -433,7 +566,11 @@ async def _run_pipeline(
         and len(_session_history) < 4
     )
     if _is_fresh_greeting:
-        _greet_reply = _get_time_aware_greeting(_local_hour)
+        _greet_reply = _get_time_aware_greeting(
+            _local_hour,
+            language=user_context.get("language") or "english",
+            name=user_context.get("name") or "",
+        )
         await update.message.reply_text(_greet_reply)
         save_message_record(user_id, "out", _greet_reply)
         save_session_turn(user_id, "user", text)
@@ -442,16 +579,49 @@ async def _run_pipeline(
         return
 
     # --- Emergency keyword check (runs BEFORE Protocol 1) ---
-    # Detects physical safety signals ("I fell", "bachao", etc.) and presents
-    # the /help inline keyboard. Mental health crisis is handled by Protocol 1.
+    # Detects PHYSICAL safety signals only ("I fell", "bachao", chest pain, etc.).
+    # Mental health / suicidal-ideation phrases go exclusively to Protocol 1.
+    # send_help_prompt() sends an immediate text with 112 before any button press.
+    # We also attempt a family alert here if the user has consented.
     if check_emergency_keywords(text):
         await send_help_prompt(update)
+        # Attempt family alert immediately — don't wait for button press.
+        # Only fires if escalation_opted_in = 1 AND contacts have telegram_user_id.
+        try:
+            from safety import alert_emergency_contacts
+            await alert_emergency_contacts(context.bot, user_id, user_row)
+        except Exception as _emg_err:
+            logger.error("SAFETY | emergency alert failed | user_id=%s | %s", user_id, _emg_err)
         logger.info("OUT | user_id=%s | type=emergency_prompt", user_id)
         return
 
     # --- Protocol 1 check (runs BEFORE DeepSeek) ---
     session_count = _protocol1_session_counts.get(user_id, 0)
-    protocol1_reply = check_protocol1(user_id, text, session_count)
+    protocol1_reply, is_escalation = check_protocol1(user_id, text, session_count)
+
+    if is_escalation:
+        # Imminent-risk signal. Attempt family alert if user has consented.
+        # Build an honest response based on whether the alert actually went out.
+        _protocol1_session_counts[user_id] = session_count + 1
+        from safety import alert_emergency_contacts
+        from protocol1 import _ESCALATION_RESPONSE_ALERT_SENT, _ESCALATION_RESPONSE_NO_ALERT
+        _alert_sent = 0
+        try:
+            _alert_sent = await alert_emergency_contacts(context.bot, user_id, user_row)
+        except Exception as _ae:
+            logger.error("PROTOCOL1 | family alert failed | user_id=%s | %s", user_id, _ae)
+        # Use the honest response variant — never claim alert sent if it wasn't
+        _p1_escalation_text = (
+            _ESCALATION_RESPONSE_ALERT_SENT if _alert_sent > 0
+            else _ESCALATION_RESPONSE_NO_ALERT
+        )
+        await update.message.reply_text(_p1_escalation_text)
+        logger.warning(
+            "OUT | user_id=%s | type=protocol1_escalation | alert_sent=%d",
+            user_id, _alert_sent,
+        )
+        return
+
     if protocol1_reply:
         _protocol1_session_counts[user_id] = session_count + 1
         await update.message.reply_text(protocol1_reply)
@@ -526,7 +696,7 @@ async def _run_pipeline(
     if music_query:
         try:
             title, url = find_music(music_query)
-            reply = build_music_message(title, url)
+            reply = build_music_message(title, url, language=user_context.get("language") or "english")
             await update.message.reply_text(reply, parse_mode="Markdown")
             save_message_record(user_id, "out", reply)
             logger.info("OUT | user_id=%s | type=music | query=%r", user_id, music_query)
@@ -571,6 +741,25 @@ async def _run_pipeline(
     # emotional content. Hard override: wrap the message with explicit instructions
     # before it reaches DeepSeek. _original_text is preserved so session history
     # is never polluted with the injected wrapper.
+    # Grief signals — heavier disclosures that need more space than one sentence.
+    # These get 2-3 sentences of warm presence, not the strict one-sentence limit.
+    _GRIEF_SIGNALS = [
+        # English
+        "passed away", "he passed", "she passed", "they passed",
+        "died", "lost my", "lost him", "lost her",
+        "widowed", "widow", "widower",
+        "miss him so much", "miss her so much", "miss them so much",
+        "gone now", "not here anymore", "not with us anymore",
+        "years ago he", "years ago she",
+        # Hindi / Hinglish
+        "woh nahi rahe", "woh nahi rahi", "woh chale gaye", "woh chali gayi",
+        "unka intekaal", "unka nidhan", "guzar gaye", "guzar gayi",
+        "bahut yaad aata hai", "bahut yaad aati hai",
+        "akele ho gaye hain", "akele ho gayi hain",
+        "bichhad gaye", "bichhad gayi",
+    ]
+
+    # Loneliness / invisibility signals — one-sentence hold, no excavation
     _VULNERABILITY_SIGNALS = [
         # English
         "nobody needs me", "no one needs me", "feel like nobody",
@@ -585,9 +774,27 @@ async def _run_pipeline(
         "kisi ko zaroorat nahi", "bekar lagta", "bekar lag raha",
         "bojh lag raha", "bojh lagta", "koi yaad nahi karta",
     ]
+
     _text_lower = text.lower()
-    _is_vulnerability = any(sig in _text_lower for sig in _VULNERABILITY_SIGNALS)
-    if _is_vulnerability:
+    _is_grief = any(sig in _text_lower for sig in _GRIEF_SIGNALS)
+    _is_vulnerability = (not _is_grief) and any(sig in _text_lower for sig in _VULNERABILITY_SIGNALS)
+
+    if _is_grief:
+        _original_text = text
+        _lang = (user_context.get("language") or "english").lower()
+        _lang_label = {"hindi": "Hindi", "hinglish": "Hinglish"}.get(_lang, "English")
+        text = (
+            f"[HARD OVERRIDE — apply before anything else:\n"
+            f"1. Respond in {_lang_label} only. Do not switch language for any reason.\n"
+            f"2. Two to three short sentences of warm presence. No more.\n"
+            f"3. Stay with the grief — do not redirect, do not offer silver lining, do not look forward.\n"
+            f"4. No questions. Do not ask what happened or how they are feeling now.\n"
+            f"5. No therapy phrases ('it sounds like', 'I hear that'). Plain, warm language only.]\n\n"
+            f"Senior's message: {_original_text}"
+        )
+        logger.info("PIPELINE | user_id=%s | grief_pre_processor triggered", user_id)
+
+    elif _is_vulnerability:
         _original_text = text  # ensure original is preserved (may already be set above)
         _lang = (user_context.get("language") or "english").lower()
         _lang_label = {"hindi": "Hindi", "hinglish": "Hinglish"}.get(_lang, "English")
@@ -601,6 +808,59 @@ async def _run_pipeline(
             f"Senior's message: {_original_text}"
         )
         logger.info("PIPELINE | user_id=%s | vulnerability_pre_processor triggered", user_id)
+
+    # --- Identity / confusion intercept ---
+    # If the senior asks who Saathi is or seems confused about what they're using,
+    # return the hardcoded designed response without going to DeepSeek.
+    # This is more reliable than hoping DeepSeek follows the identity rules.
+    _IDENTITY_SIGNALS = [
+        "who are you", "what are you", "are you a robot", "are you a bot",
+        "are you human", "are you real", "is this a machine", "is this ai",
+        "kya tum insaan ho", "kya aap insaan ho", "tum kaun ho", "aap kaun ho",
+        "yeh kya hai", "kya ho tum", "kya hain aap",
+        "samjha nahi", "samjhi nahi", "kya ho raha hai yahan",
+        "i don't understand", "i'm confused", "i'm not sure what this is",
+    ]
+    # Always check the original message, not the wrapped version that grief/vulnerability may have set
+    _msg_stripped = _original_text.strip().lower().rstrip("?.!")
+    if any(sig in _msg_stripped for sig in _IDENTITY_SIGNALS):
+        _id_lang = (user_context.get("language") or "english").lower()
+        if _id_lang in ("hindi", "hinglish"):
+            _identity_reply = "Bas baat karne ke liye hoon — aur kuch nahi. 🙏"
+        else:
+            _identity_reply = "Just someone to chat with — that's really all. 🙏"
+        await update.message.reply_text(_identity_reply)
+        save_message_record(user_id, "out", _identity_reply)
+        save_session_turn(user_id, "user", _original_text)
+        save_session_turn(user_id, "assistant", _identity_reply)
+        logger.info("OUT | user_id=%s | type=identity_intercept", user_id)
+        return
+
+    # --- Short-reply disengagement detector ---
+    # If the senior sends a very short reply (≤4 words, no question mark),
+    # inject a HARD OVERRIDE so DeepSeek doesn't ask more questions.
+    # This catches "Ok", "Hmm", "👍", "Theek hai", "Haan" etc.
+    _word_count = len(_original_text.strip().split())  # use original, not possibly-wrapped text
+    _is_short_disengaged = (
+        _word_count <= 4
+        and "?" not in _original_text
+        and not any(sig in _original_text.lower() for sig in ["help", "bachao", "emergency"])
+        and not _is_vulnerability  # let vulnerability pre-processor handle emotional shorts
+        and not _is_grief          # let grief pre-processor handle grief shorts
+    )
+    if _is_short_disengaged and not _is_mid_session_greeting:
+        _dis_lang = (user_context.get("language") or "english").lower()
+        _dis_lang_label = {"hindi": "Hindi", "hinglish": "Hinglish"}.get(_dis_lang, "English")
+        text = (
+            f"[HARD OVERRIDE — apply before anything else:\n"
+            f"1. Respond in {_dis_lang_label} only.\n"
+            f"2. One short, warm, non-questioning sentence. Stop there.\n"
+            f"3. Ask nothing. No follow-up. No observations about how they seem.\n"
+            f"4. This is a disengaged reply — do not try to extend the conversation.\n"
+            f"5. Correct: 'Theek hai.' or 'Alright.' — Incorrect: 'Interesting — what do you think about...?']\n\n"
+            f"Senior's message: {_original_text}"
+        )
+        logger.info("PIPELINE | user_id=%s | short_reply_disengagement triggered", user_id)
 
     # --- DeepSeek ---
     # Pass _session_history so DeepSeek has full in-session conversation context.

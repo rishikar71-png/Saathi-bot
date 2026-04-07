@@ -17,7 +17,7 @@ by Stage 1's warm, non-alarming response — a warm check-in is never harmful.
 import re
 import logging
 from typing import Optional
-from database import log_protocol_event
+from database import log_protocol_event, get_recent_protocol1_stage1_count
 
 logger = logging.getLogger(__name__)
 
@@ -157,12 +157,21 @@ _STAGE2_RESPONSE = (
     "Kya aap chahenge?"
 )
 
-# Auto-escalation — used when imminent-action language is detected.
-_ESCALATION_RESPONSE = (
+# Auto-escalation responses — two variants depending on whether a family alert was sent.
+# main.py calls alert_emergency_contacts() and passes the result here.
+# We never say "I have told your family" if we haven't actually done it.
+_ESCALATION_RESPONSE_ALERT_SENT = (
     "Main yahan hoon. Abhi, is pal. Aap akele nahi hain.\n\n"
-    "Jo aap feel kar rahe hain woh bahut bhaari hai — aur main chahta hoon ki "
-    "koi aapke paas ho. Maine aapke apnon ko bata diya hai ki aapko abhi unki zaroorat hai.\n\n"
+    "Maine aapke apnon ko abhi message kar diya hai — woh aate honge.\n\n"
     "Aap yahan raho mere saath. Mujhe batao — abhi is pal aap kahan hain?"
+)
+
+_ESCALATION_RESPONSE_NO_ALERT = (
+    "Main yahan hoon. Abhi, is pal. Aap akele nahi hain.\n\n"
+    "Jo aap feel kar rahe hain woh bahut bhaari hai. "
+    "Kisi se baat karein abhi — Vandrevala Foundation ka number hai 1860-2662-345, "
+    "yeh 24 ghante free hain aur Hindi mein baat kar sakte hain.\n\n"
+    "Aap yahan raho mere saath. Main hoon."
 )
 
 
@@ -174,7 +183,7 @@ def check_protocol1(
     user_id: int,
     text: str,
     session_trigger_count: int = 0,
-) -> Optional[str]:
+) -> tuple:
     """
     Check the message for Protocol 1 crisis signals.
 
@@ -185,7 +194,19 @@ def check_protocol1(
             in this session (0 = first time). Caller tracks this.
 
     Returns:
-        A response string if Protocol 1 fires, or None if the message is clear.
+        A tuple (response_text_or_None, is_escalation).
+
+        - If escalation patterns matched: (None, True)
+          main.py handles the actual family alert and builds the honest response
+          based on whether the alert was sent.
+
+        - If stage 1/2 patterns matched: (response_text, False)
+
+        - If no trigger: (None, False)
+
+    Stage 2 decision uses BOTH the in-memory session counter AND a DB query
+    for recent Stage 1 triggers within the last 24 hours. This ensures Stage 2
+    fires correctly even after a bot restart.
     """
     matched_keywords = _find_matches(text, _ESCALATION_RE)
     if matched_keywords:
@@ -198,17 +219,19 @@ def check_protocol1(
             protocol_type="1",
             trigger_bucket="escalation",
             trigger_keywords=", ".join(matched_keywords),
-            family_alerted=1,
+            family_alerted=0,  # main.py updates this after actual alert attempt
         )
-        # TODO Module 13/14: trigger actual family alert here
-        return _ESCALATION_RESPONSE
+        return (None, True)  # main.py will send the alert and choose the honest response
 
     matched_keywords = _find_matches(text, _STAGE1_RE)
     if matched_keywords:
-        stage = 2 if session_trigger_count >= 1 else 1
+        # Check both in-memory counter AND DB for recent Stage 1 triggers.
+        # DB check ensures Stage 2 fires even after a bot restart.
+        db_recent_count = get_recent_protocol1_stage1_count(user_id, hours=24)
+        stage = 2 if (session_trigger_count >= 1 or db_recent_count >= 1) else 1
         logger.warning(
-            "PROTOCOL1 STAGE%d | user_id=%s | keywords=%s",
-            stage, user_id, matched_keywords,
+            "PROTOCOL1 STAGE%d | user_id=%s | keywords=%s | session_count=%d | db_recent=%d",
+            stage, user_id, matched_keywords, session_trigger_count, db_recent_count,
         )
         log_protocol_event(
             user_id=user_id,
@@ -217,9 +240,9 @@ def check_protocol1(
             trigger_keywords=", ".join(matched_keywords),
             family_alerted=0,
         )
-        return _STAGE2_RESPONSE if stage == 2 else _STAGE1_RESPONSE
+        return (_STAGE2_RESPONSE if stage == 2 else _STAGE1_RESPONSE, False)
 
-    return None
+    return (None, False)
 
 
 # ---------------------------------------------------------------------------

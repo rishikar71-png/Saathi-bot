@@ -709,6 +709,30 @@ def log_protocol_event(
         conn.commit()
 
 
+def get_recent_protocol1_stage1_count(user_id: int, hours: int = 24) -> int:
+    """
+    Return the number of Protocol 1 Stage 1 triggers for this user
+    in the last `hours` hours. Used to decide whether to fire Stage 2
+    even after a bot restart (the in-memory counter resets on restart;
+    this DB query ensures Stage 2 fires reliably within a 24-hour window).
+    """
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS cnt FROM protocol_log
+                WHERE user_id = ?
+                  AND protocol_type = '1'
+                  AND trigger_bucket = 'stage1'
+                  AND datetime(created_at) >= datetime('now', ? || ' hours')
+                """,
+                (user_id, f"-{hours}"),
+            ).fetchone()
+            return row["cnt"] if row else 0
+    except Exception:
+        return 0
+
+
 # ---------------------------------------------------------------------------
 # Session buffer — in-session conversation history for DeepSeek context.
 # A session is a run of messages with gaps < 60 minutes.
