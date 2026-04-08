@@ -1357,7 +1357,7 @@ def main() -> None:
     app.add_handler(MessageHandler(
         filters.PHOTO
         | filters.Document.ALL   # catches GIFs/animations too (sent as Documents)
-        | filters.Sticker
+        | filters.Sticker.ALL
         | filters.VIDEO
         | filters.VIDEO_NOTE
         | filters.AUDIO,
