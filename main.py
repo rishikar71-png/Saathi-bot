@@ -1356,9 +1356,8 @@ def main() -> None:
     # "I can't see that" message instead of silently dropping the message.
     app.add_handler(MessageHandler(
         filters.PHOTO
-        | filters.Document.ALL
+        | filters.Document.ALL   # catches GIFs/animations too (sent as Documents)
         | filters.Sticker
-        | filters.Animation
         | filters.VIDEO
         | filters.VIDEO_NOTE
         | filters.AUDIO,
