@@ -261,6 +261,14 @@ def _get_mood_summary(user_id: int, language: str) -> str:
         trend_up = scores[-1] > scores[0]
         trend_flat = scores[-1] == scores[0]
 
+        # Data sufficiency guard — only raise concern language if there is enough
+        # evidence: at least 4 diary entries this week AND at least 2 of them scored
+        # 2 or below. A single bad day (illness, bad news) can pull the average below 3
+        # without signalling a genuine pattern. We never want to alarm a family member
+        # on thin data.
+        _enough_data = len(scores) >= 4
+        _persistently_low = sum(1 for s in scores if s <= 2) >= 2
+
         if language in ("hindi", "hinglish"):
             if avg >= 4:
                 return f"Kaafi achha — {len(scores)} diary entries mein se zyada acche rahe."
@@ -268,7 +276,10 @@ def _get_mood_summary(user_id: int, language: str) -> str:
                 trend_str = "sudharta dikha" if trend_up else ("stable raha" if trend_flat else "thoda neeche gaya")
                 return f"Theek-thaak raha — {trend_str} hafte mein."
             else:
-                return f"Kuch dinon mein mood thoda neeche tha — dhyan rakhein."
+                if _enough_data and _persistently_low:
+                    return "Kuch dinon mein mood thoda neeche tha — thoda dhyan rakhein."
+                else:
+                    return "Hafte mein kuch mixed din rahe — ek-do din thoda neeche tha."
         else:
             if avg >= 4:
                 return f"Quite good — {len(scores)} entries recorded, mostly positive."
@@ -276,7 +287,10 @@ def _get_mood_summary(user_id: int, language: str) -> str:
                 trend_str = "improving" if trend_up else ("steady" if trend_flat else "slightly lower")
                 return f"Fairly stable — {trend_str} over the week."
             else:
-                return "A few quieter, heavier days this week. Worth keeping an eye on."
+                if _enough_data and _persistently_low:
+                    return "A few quieter, heavier days this week. Worth keeping an eye on."
+                else:
+                    return "A mixed week — one or two quieter days mixed in."
 
     except Exception as e:
         logger.warning("REPORT | mood summary failed: %s", e)

@@ -1133,6 +1133,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     logger.info("IN  | user_id=%s | type=text | content=%s", user_id, text)
     try:
         user_row = get_or_create_user(user_id)
+        # Show "typing..." immediately so the senior knows Saathi received the message.
+        # Fires before every pipeline call — including fast exits (acks, protocols).
+        # A quick response alongside the indicator is fine; a silent pause without it is not.
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id, action="typing"
+        )
         await _run_pipeline(user_id, text, user_row, update, input_type="text", context=context)
     except Exception as e:
         logger.error("ERR | user_id=%s | error=%s", user_id, e)
@@ -1156,6 +1162,12 @@ async def receive_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # Download voice file from Telegram into memory (no disk writes)
         tg_file = await context.bot.get_file(file_id)
         file_bytes = bytes(await tg_file.download_as_bytearray())
+
+        # Show "typing..." while Whisper transcribes — voice upload can take 2–4 seconds
+        # and a silent screen causes seniors to think something broke.
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id, action="typing"
+        )
 
         # Transcribe via Whisper — use the user's language as a hint
         user_language = (user_row["language"] or "hindi") if user_row else "hindi"
@@ -1204,6 +1216,37 @@ async def receive_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         raise
 
 
+async def handle_unsupported_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Catch-all handler for message types Saathi cannot process:
+    photos, stickers, GIFs, documents, video, audio files.
+
+    Without this, PTB silently drops the message and the senior gets no response —
+    which looks like the bot broke. A warm, language-aware reply is far better.
+    """
+    user_id = update.effective_user.id
+    logger.info("IN  | user_id=%s | type=unsupported_media", user_id)
+    try:
+        user_row = get_or_create_user(user_id)
+        language = (user_row["language"] or "hindi") if user_row else "hindi"
+    except Exception:
+        language = "hindi"
+
+    if language in ("hindi", "hinglish"):
+        reply = (
+            "Yeh mujhe abhi samajh nahi aata — "
+            "apni baat words mein bataiye na? 🙏"
+        )
+    else:
+        reply = (
+            "I can't quite see that yet — "
+            "but I'd love to hear about it in your own words. 🙏"
+        )
+
+    await update.message.reply_text(reply)
+    logger.info("OUT | user_id=%s | type=unsupported_media_reply", user_id)
+
+
 # ---------------------------------------------------------------------------
 # Scheduler job — runs every 60 seconds via PTB JobQueue (APScheduler)
 # ---------------------------------------------------------------------------
@@ -1244,7 +1287,51 @@ async def weekly_report_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _start_health_server() -> None:
+    """
+    Start a tiny HTTP health-check server in a background daemon thread.
+
+    Railway (or any uptime monitor) can send GET /health to verify the process
+    is alive and responding. If the process hangs, Railway's health check times out
+    and it restarts the service automatically.
+
+    Port is set via HEALTH_PORT env var (default 8080). Set it in Railway alongside
+    PORT, and configure the Railway health check to: GET /health on HEALTH_PORT.
+
+    This server is completely independent of the PTB webhook server — no event-loop
+    conflicts, no shared state. It is a daemon thread, so it exits cleanly when the
+    main process exits.
+    """
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    health_port = int(os.environ.get("HEALTH_PORT", 8080))
+
+    class _HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/health":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"OK")
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, format, *args):
+            pass  # silence per-request logs — health pings are very noisy
+
+    server = HTTPServer(("0.0.0.0", health_port), _HealthHandler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    logger.info(
+        "Health check server started — GET /health on port %d returns 200 OK",
+        health_port,
+    )
+
+
 def main() -> None:
+    _start_health_server()
     run_startup_migrations()
     init_db()
     logger.info("Database initialised")
@@ -1265,6 +1352,18 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handle_help_callback, pattern="^help_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, receive_voice))
+    # Catch photos, stickers, GIFs, documents, video, audio — return a warm
+    # "I can't see that" message instead of silently dropping the message.
+    app.add_handler(MessageHandler(
+        filters.PHOTO
+        | filters.Document.ALL
+        | filters.Sticker
+        | filters.Animation
+        | filters.VIDEO
+        | filters.VIDEO_NOTE
+        | filters.AUDIO,
+        handle_unsupported_media,
+    ))
 
     # Register the reminder scheduler — fires every 60 seconds, first check after 10s
     app.job_queue.run_repeating(reminder_job, interval=60, first=10)
