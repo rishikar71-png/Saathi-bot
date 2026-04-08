@@ -307,13 +307,14 @@ def fetch_news(interests: str = "") -> Optional[str]:
         return cached
 
     try:
-        params = {
+        # Strategy 1: country=in with optional category/keyword filter.
+        # This is the cleanest approach but the NewsAPI free tier can return
+        # 0 articles for country=in unpredictably. We check and fall through.
+        params: dict = {
             "country": "in",
             "apiKey": api_key,
-            "pageSize": 5,  # Fetch a few and pick the most substantive
+            "pageSize": 5,
         }
-
-        # Use category if keyword maps to one; otherwise use query
         if keyword:
             category = _NEWSAPI_CATEGORY_MAP.get(keyword.lower())
             if category:
@@ -323,7 +324,35 @@ def fetch_news(interests: str = "") -> Optional[str]:
 
         resp = requests.get(_NEWSAPI_URL, params=params, timeout=8)
 
-        if not resp.ok:
+        articles = []
+        if resp.ok:
+            articles = resp.json().get("articles", [])
+
+        # Strategy 2: if country filter returned nothing, fall back to
+        # a keyword query for India news. Free-tier country filter is
+        # unreliable; the keyword query is consistently populated.
+        if not articles:
+            fallback_q = keyword if keyword else "India"
+            fallback_params = {
+                "q": fallback_q,
+                "language": "en",
+                "sortBy": "publishedAt",
+                "apiKey": api_key,
+                "pageSize": 5,
+            }
+            resp2 = requests.get(
+                "https://newsapi.org/v2/everything",
+                params=fallback_params,
+                timeout=8,
+            )
+            if resp2.ok:
+                articles = resp2.json().get("articles", [])
+                logger.info(
+                    "APIS | news | country filter empty, used everything fallback | q=%s",
+                    fallback_q,
+                )
+
+        if not resp.ok and (not articles):
             logger.warning(
                 "APIS | news API error | status=%d | %s",
                 resp.status_code, resp.text[:100],
@@ -331,9 +360,7 @@ def fetch_news(interests: str = "") -> Optional[str]:
             _cache_set(cache_key, None)
             return None
 
-        articles = resp.json().get("articles", [])
         headline = _pick_best_headline(articles)
-
         _cache_set(cache_key, headline)
         if headline:
             logger.info("APIS | news fetched | keyword=%s | %s", keyword, headline[:80])
