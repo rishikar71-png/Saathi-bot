@@ -67,6 +67,48 @@ def _clean_for_tts(text: str) -> str:
     return cleaned[:1500]
 
 
+def _add_speech_pauses(text: str) -> str:
+    """
+    Add natural pause cues to text before sending to Neural2.
+
+    Neural2 uses punctuation as its primary prosody signal. Without these fixes,
+    responses that DeepSeek generates — which use em-dashes, ellipses, and run-on
+    clauses — arrive at TTS as a single breathless stream.
+
+    Changes made:
+    - Em-dash ( — ) → comma-space. DeepSeek uses these for emphasis and transition.
+      Neural2 barely pauses at an em-dash; it pauses properly at a comma.
+    - Ellipsis (...) → comma. Prevents Neural2 from hesitating oddly on three dots.
+    - Hindi full-stop (।) → period-space. Neural2 does not recognise the Devanagari
+      danda as a sentence boundary — without this it runs Hindi sentences together.
+    - Greeting + name → comma inserted. "Namaste Ramesh" → "Namaste, Ramesh".
+      The comma creates the natural beat a human speaker always puts there.
+    - Multiple spaces collapsed to one (cleanup after replacements).
+    """
+    # Em-dash variants → comma pause
+    text = text.replace(" — ", ", ")
+    text = text.replace("—", ", ")
+
+    # Ellipsis → comma (three or more dots)
+    text = re.sub(r'\.{3,}', ',', text)
+
+    # Hindi/Devanagari full stop → period so Neural2 treats it as a sentence end
+    text = text.replace('।', '. ')
+
+    # Insert comma after greeting word before a capitalised name
+    # "Namaste Ramesh ji" → "Namaste, Ramesh ji"
+    text = re.sub(
+        r'\b(Namaste|Namaskar|Hello|Good morning|Good afternoon|Good evening|Good night)\s+([A-Z])',
+        r'\1, \2',
+        text,
+    )
+
+    # Collapse multiple spaces left by replacements
+    text = re.sub(r'  +', ' ', text)
+
+    return text.strip()
+
+
 def text_to_speech(text: str, user_language: str = "english") -> bytes:
     """
     Convert text to speech using Google Cloud TTS.
@@ -84,7 +126,8 @@ def text_to_speech(text: str, user_language: str = "english") -> bytes:
     """
     api_key = os.environ["GOOGLE_CLOUD_API_KEY"]
     lang_code, voice_name = _VOICE_MAP.get(user_language.lower(), _DEFAULT_VOICE)
-    clean_text = _clean_for_tts(text)
+    # Strip markdown first, then add natural pause cues
+    clean_text = _add_speech_pauses(_clean_for_tts(text))
 
     if not clean_text:
         raise ValueError("Nothing to speak after cleaning text")
@@ -97,7 +140,7 @@ def text_to_speech(text: str, user_language: str = "english") -> bytes:
         },
         "audioConfig": {
             "audioEncoding": "OGG_OPUS",
-            "speakingRate": 0.9,
+            "speakingRate": 0.85,   # 0.9 → 0.85: more deliberate, less digital rush
             "pitch": 0.0,
         },
     }
