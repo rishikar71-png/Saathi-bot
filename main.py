@@ -275,10 +275,11 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
 
     if is_weather or is_news or is_cricket:
         parts.append(
-            "LIVE DATA CONTEXT — USE THIS ONLY, DO NOT ADD INFORMATION FROM YOUR TRAINING:\n"
-            "The user is asking about current events / live information. "
-            "Use only what is provided below. If nothing is provided, say honestly that "
-            "you don't have live updates today and offer to talk about something else."
+            "LIVE DATA CONTEXT — CRITICAL RULES:\n"
+            "1. You MUST use ONLY the data provided below. Do NOT use training knowledge for weather, news, or cricket.\n"
+            "2. If a section says 'No live data' — say exactly that to the user. Do NOT invent temperatures, conditions, scores, or headlines.\n"
+            "3. Making up weather ('pleasant day', 'light cloud cover', 'shawl handy') when no data is provided is a serious error.\n"
+            "4. The honest response when data is unavailable: 'I don't have live [weather/news/cricket] right now — my live updates aren't available at this moment.'"
         )
 
     profile_city = user_context.get("city") or ""

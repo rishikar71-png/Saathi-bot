@@ -2,12 +2,33 @@ import sqlite3
 import os
 
 DB_PATH = os.environ.get("DB_PATH", "saathi.db")
+TURSO_URL   = os.environ.get("TURSO_DATABASE_URL", "")
+TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
 
 
-def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+def _raw_connect():
+    """
+    Low-level connection factory.
+    - If TURSO_DATABASE_URL + TURSO_AUTH_TOKEN are set: uses libsql_experimental
+      in embedded-replica mode. On every call, conn.sync() pulls the latest data
+      from Turso cloud — this is what survives Railway redeploys.
+    - Otherwise: plain local SQLite (development / testing).
+    """
+    if TURSO_URL and TURSO_TOKEN:
+        import libsql_experimental as libsql          # noqa: PLC0415
+        conn = libsql.connect(DB_PATH, sync_url=TURSO_URL, auth_token=TURSO_TOKEN)
+        conn.sync()   # restore from cloud on every new connection
+        return conn
+    return sqlite3.connect(DB_PATH)
+
+
+def get_connection():
+    conn = _raw_connect()
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+    except Exception:
+        pass   # libsql_experimental may not support every PRAGMA
     return conn
 
 
@@ -20,7 +41,7 @@ def run_startup_migrations() -> None:
     """
     import logging
     _log = logging.getLogger(__name__)
-    conn = sqlite3.connect(DB_PATH)
+    conn = _raw_connect()
     migrations = [
         # session buffer table
         """CREATE TABLE IF NOT EXISTS session_messages (
