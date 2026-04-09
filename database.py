@@ -12,13 +12,21 @@ def _raw_connect():
     - If TURSO_DATABASE_URL + TURSO_AUTH_TOKEN are set: uses libsql_experimental
       in embedded-replica mode. On every call, conn.sync() pulls the latest data
       from Turso cloud — this is what survives Railway redeploys.
-    - Otherwise: plain local SQLite (development / testing).
+    - Falls back to local SQLite if libsql_experimental is unavailable or fails.
     """
+    import logging
+    _log = logging.getLogger(__name__)
+
     if TURSO_URL and TURSO_TOKEN:
-        import libsql_experimental as libsql          # noqa: PLC0415
-        conn = libsql.connect(DB_PATH, sync_url=TURSO_URL, auth_token=TURSO_TOKEN)
-        conn.sync()   # restore from cloud on every new connection
-        return conn
+        try:
+            import libsql_experimental as libsql      # noqa: PLC0415
+            conn = libsql.connect(DB_PATH, sync_url=TURSO_URL, auth_token=TURSO_TOKEN)
+            conn.sync()   # restore from cloud on every new connection
+            _log.info("DB | Turso cloud connection established")
+            return conn
+        except Exception as e:
+            _log.error("DB | Turso connection FAILED (%s) — falling back to local SQLite", e)
+
     return sqlite3.connect(DB_PATH)
 
 
