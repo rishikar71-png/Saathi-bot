@@ -1287,51 +1287,7 @@ async def weekly_report_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def _start_health_server() -> None:
-    """
-    Start a tiny HTTP health-check server in a background daemon thread.
-
-    Railway (or any uptime monitor) can send GET /health to verify the process
-    is alive and responding. If the process hangs, Railway's health check times out
-    and it restarts the service automatically.
-
-    Port is set via HEALTH_PORT env var (default 8080). Set it in Railway alongside
-    PORT, and configure the Railway health check to: GET /health on HEALTH_PORT.
-
-    This server is completely independent of the PTB webhook server — no event-loop
-    conflicts, no shared state. It is a daemon thread, so it exits cleanly when the
-    main process exits.
-    """
-    import threading
-    from http.server import BaseHTTPRequestHandler, HTTPServer
-
-    health_port = int(os.environ.get("HEALTH_PORT", 8080))
-
-    class _HealthHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            if self.path == "/health":
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain")
-                self.end_headers()
-                self.wfile.write(b"OK")
-            else:
-                self.send_response(404)
-                self.end_headers()
-
-        def log_message(self, format, *args):
-            pass  # silence per-request logs — health pings are very noisy
-
-    server = HTTPServer(("0.0.0.0", health_port), _HealthHandler)
-    t = threading.Thread(target=server.serve_forever, daemon=True)
-    t.start()
-    logger.info(
-        "Health check server started — GET /health on port %d returns 200 OK",
-        health_port,
-    )
-
-
 def main() -> None:
-    _start_health_server()
     run_startup_migrations()
     init_db()
     logger.info("Database initialised")
