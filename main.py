@@ -283,6 +283,19 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
 
     city = user_context.get("city") or ""
 
+    # If profile city is empty, try to extract a city name from the message itself.
+    # Handles: "weather in mumbai", "delhi mein mausam", "how's the weather in pune"
+    if is_weather and not city:
+        _city_match = re.search(
+            r"(?:weather|mausam|temperature)\s+(?:in|mein|of|ka|ki)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)",
+            text, re.IGNORECASE
+        ) or re.search(
+            r"([A-Za-z]+(?:\s+[A-Za-z]+)?)\s+(?:mein|ka|ki)\s+(?:mausam|weather|temperature)",
+            text, re.IGNORECASE
+        )
+        if _city_match:
+            city = _city_match.group(1).strip().title()
+
     if is_weather and city:
         try:
             raw = fetch_weather(city)
@@ -292,6 +305,8 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
                 parts.append(f"Weather: No live weather data available right now.")
         except Exception:
             parts.append("Weather: Not available right now.")
+    elif is_weather and not city:
+        parts.append("Weather: I don't know your city — ask me like 'what's the weather in Delhi?' and I'll check.")
 
     if is_cricket:
         try:

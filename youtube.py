@@ -309,8 +309,10 @@ def build_music_message(title: str, url: str, language: str = "english") -> str:
         ]
 
     preamble = _preambles[_variant]
+    # Trim long YouTube titles (compilations often have multi-part names)
+    display_title = title if len(title) <= 60 else title[:57].rsplit(" ", 1)[0] + "…"
     return (
         f"{preamble}\n\n"
-        f"*{title}*\n"
+        f"{display_title}\n"
         f"{url}"
     )
