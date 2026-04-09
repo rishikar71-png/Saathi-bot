@@ -1142,6 +1142,43 @@ async def adminreset_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(result)
 
 
+async def testapis_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Dev-only command: tests weather/news/cricket APIs live and reports results."""
+    if update.effective_user.id != 8711370451:
+        return
+    import os
+    from apis import fetch_weather, fetch_cricket, fetch_news
+    lines = ["*API Test Results*\n"]
+
+    # env vars
+    lines.append(f"WEATHER_API_KEY set: {'yes' if os.environ.get('WEATHER_API_KEY') else 'NO'}")
+    lines.append(f"CRICKET_API_KEY set: {'yes' if os.environ.get('CRICKET_API_KEY') else 'NO'}")
+    lines.append(f"NEWS_API_KEY set: {'yes' if os.environ.get('NEWS_API_KEY') else 'NO'}\n")
+
+    # weather
+    try:
+        w = fetch_weather("Mumbai")
+        lines.append(f"Weather (Mumbai): {str(w)[:120] if w else 'None returned'}")
+    except Exception as e:
+        lines.append(f"Weather error: {e}")
+
+    # cricket
+    try:
+        c = fetch_cricket()
+        lines.append(f"Cricket: {str(c)[:120] if c else 'None returned (no live match — expected)'}")
+    except Exception as e:
+        lines.append(f"Cricket error: {e}")
+
+    # news
+    try:
+        n = fetch_news("")
+        lines.append(f"News: {str(n)[:200] if n else 'None returned'}")
+    except Exception as e:
+        lines.append(f"News error: {e}")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     text = update.message.text
@@ -1320,6 +1357,7 @@ def main() -> None:
     app.add_handler(CommandHandler("familycode", handle_familycode))
     app.add_handler(CommandHandler("join", handle_join))
     app.add_handler(CommandHandler("adminreset", adminreset_command))
+    app.add_handler(CommandHandler("testapis", testapis_command))
     app.add_handler(CallbackQueryHandler(handle_help_callback, pattern="^help_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, receive_voice))
