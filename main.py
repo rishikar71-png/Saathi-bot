@@ -286,6 +286,11 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
     # Always try to extract city from the message first — if the senior asks about
     # Delhi weather, use Delhi, even if their profile city is Mumbai.
     # Fall back to profile city only when no city is mentioned in the message.
+    _TRAILING_NON_CITY = re.compile(
+        r"\b(today|tonight|now|aaj|abhi|kal|tomorrow|this week|is waqt|"
+        r"mein|ka|ki|ke|hai|hain|kya|please|batao|bata|do)\b.*$",
+        re.IGNORECASE,
+    )
     city = profile_city  # default
     if is_weather:
         _city_match = re.search(
@@ -296,7 +301,10 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
             text, re.IGNORECASE
         )
         if _city_match:
-            city = _city_match.group(1).strip().title()
+            raw_city = _city_match.group(1).strip()
+            raw_city = _TRAILING_NON_CITY.sub("", raw_city).strip()
+            if raw_city:
+                city = raw_city.title()
 
     if is_weather and city:
         try:
@@ -1188,29 +1196,30 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         user_row = get_or_create_user(user_id)
         # Show "typing..." and keep it alive for the full duration of the pipeline.
-        # Telegram's typing action expires after 5 seconds — we resend every 4s in the
-        # background so the senior always sees Saathi is thinking, not gone silent.
+        # Telegram's typing action expires after ~5 seconds — we resend every 4s so the
+        # senior always sees Saathi is thinking, never a silent gap.
         import asyncio
         chat_id = update.effective_chat.id
-        _stop_typing = asyncio.Event()
 
-        async def _keep_typing():
-            while not _stop_typing.is_set():
+        async def _keep_typing(stop_event: asyncio.Event) -> None:
+            while not stop_event.is_set():
                 try:
                     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
                 except Exception:
                     pass
-                try:
-                    await asyncio.wait_for(asyncio.shield(asyncio.sleep(4)), timeout=4)
-                except Exception:
-                    pass
+                # Sleep in 0.5s increments so we exit quickly when stop_event fires
+                for _ in range(8):  # 8 × 0.5s = 4s
+                    if stop_event.is_set():
+                        return
+                    await asyncio.sleep(0.5)
 
-        _typing_task = asyncio.create_task(_keep_typing())
+        _stop_event = asyncio.Event()
+        _typing_task = asyncio.create_task(_keep_typing(_stop_event))
         try:
             await _run_pipeline(user_id, text, user_row, update, input_type="text", context=context)
         finally:
-            _stop_typing.set()
-            _typing_task.cancel()
+            _stop_event.set()
+            await asyncio.sleep(0)  # yield so the task can exit cleanly
     except Exception as e:
         logger.error("ERR | user_id=%s | error=%s", user_id, e)
         await update.message.reply_text(
