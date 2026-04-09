@@ -6,13 +6,142 @@ TURSO_URL   = os.environ.get("TURSO_DATABASE_URL", "")
 TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
 
 
+# ---------------------------------------------------------------------------
+# libsql compatibility layer
+# libsql_experimental connections don't support row_factory or context manager
+# in the same way sqlite3 does. This thin wrapper adds both so the rest of
+# database.py can treat Turso exactly like a local SQLite connection.
+# ---------------------------------------------------------------------------
+
+class _Row:
+    """sqlite3.Row-compatible dict-like row. Supports row["col"], row[idx], row.keys()."""
+    __slots__ = ("_keys", "_vals")
+
+    def __init__(self, keys, vals):
+        self._keys = keys
+        self._vals = vals
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._vals[key]
+        try:
+            return self._vals[self._keys.index(key)]
+        except ValueError:
+            raise KeyError(key)
+
+    def keys(self):
+        return list(self._keys)
+
+    def __iter__(self):
+        return iter(self._vals)
+
+    def __len__(self):
+        return len(self._vals)
+
+    def __repr__(self):
+        return repr(dict(zip(self._keys, self._vals)))
+
+
+class _Cursor:
+    """Wraps a libsql cursor, converting rows to _Row objects."""
+    __slots__ = ("_cur",)
+
+    def __init__(self, cur):
+        self._cur = cur
+
+    @property
+    def lastrowid(self):
+        return self._cur.lastrowid
+
+    @property
+    def description(self):
+        return self._cur.description
+
+    @property
+    def rowcount(self):
+        return getattr(self._cur, "rowcount", -1)
+
+    def execute(self, sql, params=()):
+        self._cur.execute(sql, params)
+        return self
+
+    def executemany(self, sql, seq):
+        self._cur.executemany(sql, seq)
+        return self
+
+    def _wrap(self, row):
+        if row is None:
+            return None
+        desc = self._cur.description
+        if desc:
+            keys = [d[0] for d in desc]
+            return _Row(keys, list(row))
+        return row
+
+    def fetchone(self):
+        return self._wrap(self._cur.fetchone())
+
+    def fetchall(self):
+        return [self._wrap(r) for r in (self._cur.fetchall() or [])]
+
+    def __iter__(self):
+        for row in self._cur:
+            yield self._wrap(row)
+
+
+class _Connection:
+    """
+    Wraps a libsql_experimental connection to be sqlite3-compatible:
+    - Accepts conn.row_factory = sqlite3.Row (stored but handled at cursor level)
+    - Supports 'with conn:' context manager (commit on success, rollback on error)
+    - conn.execute() returns a _Cursor
+    """
+    __slots__ = ("_conn", "row_factory")
+
+    def __init__(self, conn):
+        self._conn = conn
+        self.row_factory = None
+
+    def cursor(self):
+        return _Cursor(self._conn.cursor())
+
+    def execute(self, sql, params=()):
+        return _Cursor(self._conn.execute(sql, params))
+
+    def executemany(self, sql, seq):
+        self._conn.executemany(sql, seq)
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        try:
+            self._conn.rollback()
+        except Exception:
+            pass
+
+    def close(self):
+        self._conn.close()
+
+    def sync(self):
+        self._conn.sync()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is None:
+            self.commit()
+        else:
+            self.rollback()
+        return False
+
+
 def _raw_connect():
     """
     Low-level connection factory.
-    - If TURSO_DATABASE_URL + TURSO_AUTH_TOKEN are set: uses libsql_experimental
-      in embedded-replica mode. On every call, conn.sync() pulls the latest data
-      from Turso cloud — this is what survives Railway redeploys.
-    - Falls back to local SQLite if libsql_experimental is unavailable or fails.
+    Uses Turso (cloud SQLite) when env vars are present; falls back to local SQLite.
+    Returns either a _Connection (Turso) or a standard sqlite3.Connection.
     """
     import logging
     _log = logging.getLogger(__name__)
@@ -20,10 +149,10 @@ def _raw_connect():
     if TURSO_URL and TURSO_TOKEN:
         try:
             import libsql_experimental as libsql      # noqa: PLC0415
-            conn = libsql.connect(DB_PATH, sync_url=TURSO_URL, auth_token=TURSO_TOKEN)
-            conn.sync()   # restore from cloud on every new connection
+            raw = libsql.connect(DB_PATH, sync_url=TURSO_URL, auth_token=TURSO_TOKEN)
+            raw.sync()   # restore latest data from cloud on every new connection
             _log.info("DB | Turso cloud connection established")
-            return conn
+            return _Connection(raw)
         except Exception as e:
             _log.error("DB | Turso connection FAILED (%s) — falling back to local SQLite", e)
 
@@ -32,11 +161,11 @@ def _raw_connect():
 
 def get_connection():
     conn = _raw_connect()
-    conn.row_factory = sqlite3.Row
+    conn.row_factory = sqlite3.Row   # no-op on _Connection but kept for sqlite3 path
     try:
         conn.execute("PRAGMA foreign_keys = ON")
     except Exception:
-        pass   # libsql_experimental may not support every PRAGMA
+        pass
     return conn
 
 
