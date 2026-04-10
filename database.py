@@ -121,6 +121,9 @@ class _Connection:
         return _Cursor(self._conn.cursor())
 
     def execute(self, sql, params=()):
+        # libsql requires a tuple — convert lists defensively so no callsite can break this
+        if isinstance(params, list):
+            params = tuple(params)
         return _Cursor(self._conn.execute(sql, params))
 
     def executemany(self, sql, seq):
@@ -794,7 +797,7 @@ def update_user_fields(user_id: int, **kwargs) -> None:
     if not kwargs:
         return
     set_clause = ", ".join(f"{k} = ?" for k in kwargs)
-    values = list(kwargs.values()) + [user_id]
+    values = tuple(kwargs.values()) + (user_id,)
     with get_connection() as conn:
         conn.execute(
             f"UPDATE users SET {set_clause}, updated_at = datetime('now') WHERE user_id = ?",
@@ -880,7 +883,7 @@ def upsert_diary_entry(user_id: int, entry_date: str, **kwargs) -> None:
     """
     cols = ["user_id", "entry_date"] + list(kwargs.keys())
     placeholders = ", ".join("?" for _ in cols)
-    values = [user_id, entry_date] + list(kwargs.values())
+    values = (user_id, entry_date) + tuple(kwargs.values())
     with get_connection() as conn:
         conn.execute(
             f"""
