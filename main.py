@@ -1375,9 +1375,12 @@ def main() -> None:
 
     # Seed the memory question bank — inserts 300+ questions if the table is empty.
     # Safe to call on every startup — silently skips if already seeded.
-    from memory_questions import seed_memory_questions
-    seed_memory_questions()
-    logger.info("Memory question bank ready")
+    try:
+        from memory_questions import seed_memory_questions
+        seed_memory_questions()
+        logger.info("Memory question bank ready")
+    except Exception as seed_err:
+        logger.error("STARTUP | seed_memory_questions failed (non-fatal): %s", seed_err)
 
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -1418,17 +1421,10 @@ def main() -> None:
     app.job_queue.run_repeating(weekly_report_job, interval=60, first=45)
     logger.info("Weekly report scheduler registered (interval=60s, Sunday 10am IST)")
 
-    if WEBHOOK_URL:
-        logger.info("Starting webhook mode on port %s", PORT)
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            url_path="/webhook",
-            webhook_url=f"{WEBHOOK_URL}/webhook",
-        )
-    else:
-        logger.info("No WEBHOOK_URL set — starting in polling mode")
-        app.run_polling()
+    # DIAGNOSTIC: forced polling mode to rule out webhook misconfiguration.
+    # Switch back to webhook once bot is confirmed live and responding.
+    logger.info("Starting in POLLING mode (diagnostic)")
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
