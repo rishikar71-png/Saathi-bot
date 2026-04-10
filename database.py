@@ -665,8 +665,8 @@ def _migrate_users_table(conn: sqlite3.Connection) -> None:
     for sql in _USERS_NEW_COLUMNS:
         try:
             conn.execute(sql)
-        except sqlite3.OperationalError:
-            pass  # column already exists
+        except Exception:
+            pass  # column already exists (sqlite3.OperationalError or libsql equivalent)
 
 
 _REMINDERS_NEW_COLUMNS = [
@@ -679,8 +679,8 @@ def _migrate_reminders_table(conn: sqlite3.Connection) -> None:
     for sql in _REMINDERS_NEW_COLUMNS:
         try:
             conn.execute(sql)
-        except sqlite3.OperationalError:
-            pass  # column already exists
+        except Exception:
+            pass  # column already exists (sqlite3.OperationalError or libsql equivalent)
 
 
 # Module 14 — add last_weekly_report_sent to family_members for dedup
@@ -693,8 +693,8 @@ def _migrate_family_members_table(conn: sqlite3.Connection) -> None:
     for sql in _FAMILY_MEMBERS_NEW_COLUMNS:
         try:
             conn.execute(sql)
-        except sqlite3.OperationalError:
-            pass  # column already exists
+        except Exception:
+            pass  # column already exists (sqlite3.OperationalError or libsql equivalent)
 
 
 # Module 7 — add emotional_context and notable_moments to diary_entries
@@ -708,8 +708,8 @@ def _migrate_diary_table(conn: sqlite3.Connection) -> None:
     for sql in _DIARY_NEW_COLUMNS:
         try:
             conn.execute(sql)
-        except sqlite3.OperationalError:
-            pass  # column already exists
+        except Exception:
+            pass  # column already exists (sqlite3.OperationalError or libsql equivalent)
 
 
 # ---------------------------------------------------------------------------
