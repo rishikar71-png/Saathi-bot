@@ -5,6 +5,21 @@ DB_PATH = os.environ.get("DB_PATH", "saathi.db")
 TURSO_URL   = os.environ.get("TURSO_DATABASE_URL", "")
 TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
 
+# ---------------------------------------------------------------------------
+# Global connection cache — ONE connection for the entire process lifetime.
+#
+# Problem we're solving: libsql embedded-replica calls raw.sync() on every
+# connect(), and each sync takes 25–45 seconds against Turso's cloud. With
+# the old pattern (new connection per query), startup required 3 separate
+# syncs (migrations → init_db → seed_questions) = 90+ seconds, causing
+# Railway's container timeout to kill the process before the bot started.
+#
+# Solution: connect and sync exactly ONCE on startup, then reuse the same
+# connection for all queries. The 'with get_connection() as conn:' pattern
+# still commits/rolls back correctly — it just no longer closes the connection.
+# ---------------------------------------------------------------------------
+_GLOBAL_CONN = None
+
 
 # ---------------------------------------------------------------------------
 # libsql compatibility layer
@@ -139,10 +154,19 @@ class _Connection:
 
 def _raw_connect():
     """
-    Low-level connection factory.
-    Uses Turso (cloud SQLite) when env vars are present; falls back to local SQLite.
-    Returns either a _Connection (Turso) or a standard sqlite3.Connection.
+    Returns the global cached connection, creating it on first call.
+
+    Turso/libsql: connects once, syncs once, then reuses the same connection
+    for the entire process lifetime. This avoids the 25-45s sync penalty on
+    every new connection (which was causing Railway startup timeouts).
+
+    sqlite3 fallback: check_same_thread=False so the single connection can be
+    used safely from the asyncio event loop and PTB's job scheduler.
     """
+    global _GLOBAL_CONN
+    if _GLOBAL_CONN is not None:
+        return _GLOBAL_CONN
+
     import logging
     _log = logging.getLogger(__name__)
 
@@ -150,13 +174,15 @@ def _raw_connect():
         try:
             import libsql_experimental as libsql      # noqa: PLC0415
             raw = libsql.connect(DB_PATH, sync_url=TURSO_URL, auth_token=TURSO_TOKEN)
-            raw.sync()   # restore latest data from cloud on every new connection
-            _log.info("DB | Turso cloud connection established")
-            return _Connection(raw)
+            raw.sync()   # pull latest state from cloud — done exactly ONCE at startup
+            _log.info("DB | Turso cloud connection established (global, single sync)")
+            _GLOBAL_CONN = _Connection(raw)
+            return _GLOBAL_CONN
         except Exception as e:
             _log.error("DB | Turso connection FAILED (%s) — falling back to local SQLite", e)
 
-    return sqlite3.connect(DB_PATH)
+    _GLOBAL_CONN = sqlite3.connect(DB_PATH, check_same_thread=False)
+    return _GLOBAL_CONN
 
 
 def get_connection():
@@ -251,7 +277,8 @@ def run_startup_migrations() -> None:
         conn.commit()
     except Exception as e:
         _log.debug("MIGRATION backfill skip (fresh DB): %s", e)
-    conn.close()
+    # Do NOT close — _raw_connect() now returns the global cached connection.
+    # Closing it here would destroy the connection for the rest of the process.
     _log.info("STARTUP MIGRATIONS complete")
 
 
