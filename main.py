@@ -1368,8 +1368,44 @@ async def weekly_report_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _start_health_server() -> None:
+    """
+    Bind to Railway's $PORT immediately so the platform considers the container
+    healthy and does not kill it during slow DB initialisation.
+
+    This is a minimal HTTP server (GET / → 200 OK).  In polling mode there is
+    no PTB webhook listener, so this port is free.  In webhook mode this server
+    is NOT started — PTB's run_webhook() owns the port instead.
+    """
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+
+        def log_message(self, *args):  # silence access logs
+            pass
+
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    logger.info("HEALTH | server started on port %d", port)
+
+
 def main() -> None:
+    # Start health server FIRST — before any DB work — so Railway sees the
+    # process as healthy and does not restart the container during slow init.
+    # Only needed in polling mode; webhook mode lets PTB own the port.
+    if not os.environ.get("WEBHOOK_URL", ""):
+        _start_health_server()
+
+    logger.info("STARTUP | run_startup_migrations")
     run_startup_migrations()
+    logger.info("STARTUP | init_db")
     init_db()
     logger.info("Database initialised")
 

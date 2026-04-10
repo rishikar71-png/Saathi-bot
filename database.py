@@ -284,15 +284,33 @@ def run_startup_migrations() -> None:
 
 def init_db() -> None:
     """Create all tables and indexes. Safe to call on every startup."""
+    import logging, time
+    _log = logging.getLogger(__name__)
+
     with get_connection() as conn:
-        _create_tables(conn)
-        _migrate_users_table(conn)
-        _migrate_reminders_table(conn)
-        _migrate_family_members_table(conn)
-        _migrate_diary_table(conn)
-        _create_indexes(conn)
-        _backfill_onboarding_complete(conn)
-        conn.commit()
+        t = time.time(); _create_tables(conn)
+        _log.info("DB | _create_tables done (%.2fs)", time.time() - t)
+
+        t = time.time(); _migrate_users_table(conn)
+        _log.info("DB | _migrate_users_table done (%.2fs)", time.time() - t)
+
+        t = time.time(); _migrate_reminders_table(conn)
+        _log.info("DB | _migrate_reminders_table done (%.2fs)", time.time() - t)
+
+        t = time.time(); _migrate_family_members_table(conn)
+        _log.info("DB | _migrate_family_members_table done (%.2fs)", time.time() - t)
+
+        t = time.time(); _migrate_diary_table(conn)
+        _log.info("DB | _migrate_diary_table done (%.2fs)", time.time() - t)
+
+        t = time.time(); _create_indexes(conn)
+        _log.info("DB | _create_indexes done (%.2fs)", time.time() - t)
+
+        t = time.time(); _backfill_onboarding_complete(conn)
+        _log.info("DB | _backfill done (%.2fs)", time.time() - t)
+
+        t = time.time(); conn.commit()
+        _log.info("DB | commit done (%.2fs)", time.time() - t)
 
 
 def _backfill_onboarding_complete(conn: sqlite3.Connection) -> None:
