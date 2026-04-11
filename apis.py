@@ -114,7 +114,7 @@ def fetch_weather(city: str) -> Optional[str]:
         return requests.get(
             _OWM_URL,
             params={"q": q, "appid": api_key, "units": "metric", "lang": "en"},
-            timeout=8,
+            timeout=4,
         )
 
     try:
@@ -195,7 +195,7 @@ def fetch_cricket() -> Optional[str]:
         resp = requests.get(
             _CRICAPI_URL,
             params={"apikey": api_key, "offset": 0},
-            timeout=8,
+            timeout=4,
         )
         if not resp.ok:
             logger.warning(
@@ -351,6 +351,38 @@ _LOW_QUALITY_TITLE_SIGNALS = [
     "recipe", "horoscope", "astrology", "zodiac",
 ]
 
+# Countries/cities that are clearly NOT India — when no keyword is specified
+# (general "any news?" request), skip articles whose title or first 100 chars
+# of description mention these terms exclusively. Indian RSS feeds still
+# occasionally surface Gulf, Pakistan, or US stories that are irrelevant
+# for an India-based senior.
+_NON_INDIA_GEO_SIGNALS = [
+    "dubai", "abu dhabi", "uae", "saudi arabia", "qatar",
+    "pakistan", "lahore", "islamabad", "karachi",
+    "china", "beijing", "xi jinping",
+    "ukraine", "russia", "moscow", "zelensky", "putin",
+    "israel", "gaza", "hamas",
+    "white house", "congress ", "pentagon", "washington dc",
+]
+
+def _is_india_relevant(title: str, desc: str) -> bool:
+    """
+    Quick geo-relevance check for when no keyword filter is active.
+    Returns False if the article is clearly about a non-India topic.
+    Returns True if it mentions India, or if it doesn't mention any
+    known non-India geo signal (neutral = probably India by default
+    since we use India-focused RSS feeds).
+    """
+    combined = (title + " " + desc[:150]).lower()
+    # Explicitly India = always relevant
+    if "india" in combined or "indian" in combined:
+        return True
+    # Explicitly non-India = skip
+    if any(sig in combined for sig in _NON_INDIA_GEO_SIGNALS):
+        return False
+    # No geo signal either way — trust the India-focused feed
+    return True
+
 _NEWSAPI_URL = "https://newsapi.org/v2/top-headlines"
 
 # Topics that map well to NewsAPI categories (kept for fallback)
@@ -384,7 +416,7 @@ def _fetch_news_from_rss(keyword: str = "") -> Optional[str]:
         try:
             resp = requests.get(
                 feed_url,
-                timeout=8,
+                timeout=4,
                 headers={"User-Agent": "Saathi-News-Bot/1.0"},
             )
             if not resp.ok:
@@ -422,6 +454,12 @@ def _fetch_news_from_rss(keyword: str = "") -> Optional[str]:
                 # Quality check — skip niche/clickbait titles
                 title_lc = title.lower()
                 is_low_quality = any(sig in title_lc for sig in _LOW_QUALITY_TITLE_SIGNALS)
+
+                # Geo-relevance check — when no keyword specified, skip articles
+                # about clearly non-India topics (Dubai, Pakistan, Ukraine, etc.)
+                if not kw_lower and not _is_india_relevant(title, desc):
+                    logger.debug("APIS | news geo-skip | title=%s", title[:60])
+                    continue
 
                 # Build result string
                 result = title
@@ -496,7 +534,7 @@ def fetch_news(interests: str = "") -> Optional[str]:
             else:
                 params["q"] = keyword
 
-        resp = requests.get(_NEWSAPI_URL, params=params, timeout=8)
+        resp = requests.get(_NEWSAPI_URL, params=params, timeout=4)
 
         articles = []
         if resp.ok:
@@ -518,7 +556,7 @@ def fetch_news(interests: str = "") -> Optional[str]:
             resp2 = requests.get(
                 "https://newsapi.org/v2/everything",
                 params=fallback_params,
-                timeout=8,
+                timeout=4,
             )
             if resp2.ok:
                 articles = resp2.json().get("articles", [])

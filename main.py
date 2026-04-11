@@ -383,28 +383,35 @@ async def _stream_reply(
     text: str,
     user_context: dict,
     session_history: list,
+    placeholder_msg=None,
 ) -> str:
     """
-    Call DeepSeek with stream=True. Sends a placeholder message immediately,
-    then edits it with accumulated text every ~1.5 seconds as chunks arrive.
+    Call DeepSeek with stream=True. If placeholder_msg is provided (pre-sent
+    by the caller before slow API calls), edits it with chunks as they arrive.
+    Otherwise sends a new placeholder immediately.
 
     Returns the complete reply string.
-
     Falls back to the non-streaming call_deepseek() if streaming raises.
 
     Why: DeepSeek's TTFT is 1–3 seconds. Without streaming, the user sees
     nothing for 15+ seconds (full prompt processing + generation). With
     streaming, they see the first words in 2–3 seconds — a 5x+ UX improvement
     with zero quality tradeoff.
+
+    The placeholder should be sent BEFORE any slow operations (API fetches etc.)
+    so the user always sees an immediate response indicator.
     """
     loop = asyncio.get_running_loop()
     chunk_queue: asyncio.Queue = asyncio.Queue()
 
-    # Send placeholder immediately so the user sees a response right away
-    try:
-        placeholder = await update.message.reply_text("…")
-    except Exception:
-        placeholder = None
+    # Use a pre-sent placeholder if provided; otherwise send one now
+    if placeholder_msg is not None:
+        placeholder = placeholder_msg
+    else:
+        try:
+            placeholder = await update.message.reply_text("…")
+        except Exception:
+            placeholder = None
 
     def _producer():
         """Runs the synchronous streaming generator in a background thread."""
@@ -966,12 +973,25 @@ async def _run_pipeline(
             )
         return
 
+    # --- Send placeholder BEFORE any slow operations ---
+    # All fast early-return paths above have already fired. If we're here,
+    # we're going to DeepSeek. Send "…" now so the user sees an immediate
+    # response indicator while API fetches and DeepSeek streaming happen.
+    _placeholder_msg = None
+    try:
+        _placeholder_msg = await update.message.reply_text("…")
+    except Exception:
+        pass
+
     # --- Live data injection for news / cricket / weather queries ---
     # The news/cricket/weather APIs are wired into the morning ritual but NOT into
     # ad-hoc conversation. Without this block, "tell me the news" goes to DeepSeek
     # which hallucinates stale content. Here we detect intent, call the APIs, and
     # inject real data (or an honest "I don't have live news") into the DeepSeek
     # system prompt as a context block.
+    # NOTE: This runs AFTER the placeholder is sent, so the user sees "…" while
+    # the API calls are in flight. Previously these blocking calls happened before
+    # any placeholder, causing 20-24s of silence on news/weather/cricket queries.
     _live_data_injected = _inject_live_data_if_needed(text, user_context)
     if _live_data_injected:
         user_context["live_data_context"] = _live_data_injected
@@ -1132,9 +1152,9 @@ async def _run_pipeline(
         logger.info("PIPELINE | user_id=%s | short_reply_disengagement triggered", user_id)
 
     # --- DeepSeek (streaming) ---
-    # _stream_reply sends a placeholder immediately, then edits it with text
-    # as chunks arrive — user sees first words in 2–3s instead of 15–25s.
-    reply = await _stream_reply(update, text, user_context, _session_history)
+    # _stream_reply edits the pre-sent placeholder with text as chunks arrive.
+    # User sees "…" appear before API calls, first real words in 2–3s after that.
+    reply = await _stream_reply(update, text, user_context, _session_history, placeholder_msg=_placeholder_msg)
     save_message_record(user_id, "out", reply)
     # Save this exchange to session buffer for the next DeepSeek call.
     # Use _original_text (not text) so the targeted prompt is never saved to session history.
