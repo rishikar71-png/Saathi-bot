@@ -3,8 +3,6 @@ import io
 import os
 import re
 import logging
-import threading
-import time
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -19,7 +17,7 @@ from database import (
     init_db, run_startup_migrations, get_or_create_user, save_message_record,
     save_session_turn, get_session_messages, admin_reset_user,
 )
-from deepseek import call_deepseek, call_deepseek_streaming, get_user_local_hour, get_time_of_day_label
+from deepseek import call_deepseek, get_user_local_hour, get_time_of_day_label
 from protocol1 import check_protocol1
 from protocol3 import check_protocol3
 from protocol4 import check_protocol4
@@ -383,7 +381,7 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
 # Streaming helper — runs DeepSeek in a thread, edits Telegram message live
 # ---------------------------------------------------------------------------
 
-async def _stream_reply(
+async def _async_reply(
     update,
     text: str,
     user_context: dict,
@@ -391,99 +389,52 @@ async def _stream_reply(
     placeholder_msg=None,
 ) -> str:
     """
-    Call DeepSeek with stream=True. If placeholder_msg is provided (pre-sent
-    by the caller before slow API calls), edits it with chunks as they arrive.
-    Otherwise sends a new placeholder immediately.
+    Run call_deepseek in a background thread via asyncio.to_thread so it
+    doesn't block the event loop (other users can be served while this one waits).
+
+    If placeholder_msg is already sent (pre-sent before slow API calls), edits
+    it with the reply. Otherwise sends the reply as a new message.
 
     Returns the complete reply string.
-    Falls back to the non-streaming call_deepseek() if streaming raises.
 
-    Why: DeepSeek's TTFT is 1–3 seconds. Without streaming, the user sees
-    nothing for 15+ seconds (full prompt processing + generation). With
-    streaming, they see the first words in 2–3 seconds — a 5x+ UX improvement
-    with zero quality tradeoff.
-
-    The placeholder should be sent BEFORE any slow operations (API fetches etc.)
-    so the user always sees an immediate response indicator.
+    Why asyncio.to_thread instead of streaming:
+    - Streaming via queue+thread had a deadlock path: if the producer thread
+      failed silently, sentinel never arrived and the bot hung on every message.
+    - asyncio.to_thread is a single awaitable with no queue, no sentinel, no
+      race condition. If it raises, the exception propagates normally.
+    - The UX tradeoff: user sees "…" for the full wait, then complete text appears.
+      This is better than silence for 15-25s, and infinitely better than a hung bot.
     """
-    loop = asyncio.get_running_loop()
-    chunk_queue: asyncio.Queue = asyncio.Queue()
+    # Run the blocking DeepSeek call in a thread pool (non-blocking to event loop)
+    try:
+        reply = await asyncio.to_thread(
+            call_deepseek, text, user_context,
+            session_history,  # passed as positional — matches session_messages param
+        )
+    except Exception as ds_err:
+        logger.error("DEEPSEEK | call failed: %s", ds_err)
+        # Edit placeholder to error message so senior isn't left with "…"
+        error_msg = "Kuch hua — main thodi der mein wapas aata hoon. 🙏"
+        if placeholder_msg:
+            try:
+                await placeholder_msg.edit_text(error_msg)
+            except Exception:
+                await update.message.reply_text(error_msg)
+        else:
+            await update.message.reply_text(error_msg)
+        return ""
 
-    # Use a pre-sent placeholder if provided; otherwise send one now
-    if placeholder_msg is not None:
-        placeholder = placeholder_msg
+    # Deliver the reply — edit placeholder if we have one, else send fresh
+    if placeholder_msg:
+        try:
+            await placeholder_msg.edit_text(reply)
+        except Exception:
+            # Edit can fail if reply text is identical to placeholder text (rare)
+            await update.message.reply_text(reply)
     else:
-        try:
-            placeholder = await update.message.reply_text("…")
-        except Exception:
-            placeholder = None
+        await update.message.reply_text(reply)
 
-    def _producer():
-        """Runs the synchronous streaming generator in a background thread."""
-        try:
-            for chunk in call_deepseek_streaming(text, user_context, session_messages=session_history):
-                asyncio.run_coroutine_threadsafe(chunk_queue.put(chunk), loop)
-        except Exception as exc:
-            asyncio.run_coroutine_threadsafe(chunk_queue.put(exc), loop)
-        finally:
-            asyncio.run_coroutine_threadsafe(chunk_queue.put(None), loop)
-
-    t = threading.Thread(target=_producer, daemon=True)
-    t.start()
-
-    accumulated = ""
-    last_edit = time.time()
-    _EDIT_INTERVAL = 1.5  # seconds — safe for Telegram's 20-edits/min global limit
-
-    while True:
-        chunk = await chunk_queue.get()
-
-        if chunk is None:
-            break  # stream complete
-
-        if isinstance(chunk, Exception):
-            # Streaming failed — fall back to blocking call
-            logger.warning("STREAM | streaming failed (%s), falling back to blocking call", chunk)
-            try:
-                reply = call_deepseek(text, user_context, session_messages=session_history)
-                if placeholder:
-                    try:
-                        await placeholder.edit_text(reply)
-                    except Exception:
-                        await update.message.reply_text(reply)
-                else:
-                    await update.message.reply_text(reply)
-                return reply
-            except Exception as fb_err:
-                logger.error("STREAM | fallback also failed: %s", fb_err)
-                raise fb_err
-
-        accumulated += chunk
-
-        # Edit the placeholder every EDIT_INTERVAL seconds (rate-limit safe)
-        now = time.time()
-        if placeholder and now - last_edit >= _EDIT_INTERVAL and len(accumulated) > 15:
-            try:
-                await placeholder.edit_text(accumulated + "…")
-                last_edit = now
-            except Exception:
-                pass  # rate limit or network — keep accumulating, edit next cycle
-
-    # Final edit — complete text without trailing ellipsis
-    if accumulated and placeholder:
-        try:
-            await placeholder.edit_text(accumulated)
-        except Exception:
-            # Edit failed (e.g. text identical to placeholder) — send fresh message
-            try:
-                await update.message.reply_text(accumulated)
-            except Exception:
-                pass
-
-    elif accumulated and not placeholder:
-        await update.message.reply_text(accumulated)
-
-    return accumulated
+    return reply
 
 
 # ---------------------------------------------------------------------------
@@ -1156,10 +1107,10 @@ async def _run_pipeline(
         )
         logger.info("PIPELINE | user_id=%s | short_reply_disengagement triggered", user_id)
 
-    # --- DeepSeek (streaming) ---
-    # _stream_reply edits the pre-sent placeholder with text as chunks arrive.
-    # User sees "…" appear before API calls, first real words in 2–3s after that.
-    reply = await _stream_reply(update, text, user_context, _session_history, placeholder_msg=_placeholder_msg)
+    # --- DeepSeek (async, non-blocking) ---
+    # _async_reply runs call_deepseek in a thread pool so the event loop stays
+    # free for other users. Pre-sent placeholder is edited with the reply when done.
+    reply = await _async_reply(update, text, user_context, _session_history, placeholder_msg=_placeholder_msg)
     save_message_record(user_id, "out", reply)
     # Save this exchange to session buffer for the next DeepSeek call.
     # Use _original_text (not text) so the targeted prompt is never saved to session history.
