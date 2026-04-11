@@ -1,7 +1,10 @@
+import asyncio
 import io
 import os
 import re
 import logging
+import threading
+import time
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -16,7 +19,7 @@ from database import (
     init_db, run_startup_migrations, get_or_create_user, save_message_record,
     save_session_turn, get_session_messages, admin_reset_user,
 )
-from deepseek import call_deepseek, get_user_local_hour, get_time_of_day_label
+from deepseek import call_deepseek, call_deepseek_streaming, get_user_local_hour, get_time_of_day_label
 from protocol1 import check_protocol1
 from protocol3 import check_protocol3
 from protocol4 import check_protocol4
@@ -267,7 +270,6 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
 
     try:
         from apis import fetch_news, fetch_cricket, fetch_weather
-        from rituals import wrap_news, wrap_cricket, wrap_weather
     except ImportError:
         return None
 
@@ -276,10 +278,13 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
     if is_weather or is_news or is_cricket:
         parts.append(
             "LIVE DATA CONTEXT — CRITICAL RULES:\n"
-            "1. You MUST use ONLY the data provided below. Do NOT use training knowledge for weather, news, or cricket.\n"
-            "2. If a section says 'No live data' — say exactly that to the user. Do NOT invent temperatures, conditions, scores, or headlines.\n"
-            "3. Making up weather ('pleasant day', 'light cloud cover', 'shawl handy') when no data is provided is a serious error.\n"
-            "4. The honest response when data is unavailable: 'I don't have live [weather/news/cricket] right now — my live updates aren't available at this moment.'"
+            "1. Use ONLY the data provided below. Do NOT use training knowledge for weather, news, or cricket.\n"
+            "2. Sections marked '— raw data:' contain real live data. Present this warmly and conversationally.\n"
+            "   Do NOT read numbers cold. Wrap them: '32°C and humid' → 'quite warm and sticky today'.\n"
+            "   Cricket raw data includes a status prefix: LIVE NOW / TODAY (upcoming) / COMPLETED TODAY / UPCOMING.\n"
+            "   Use the prefix to speak accurately: 'there's a match on right now' vs 'there's one later today' vs 'the match finished earlier'.\n"
+            "3. If a section says 'No live data' — be honest. Do NOT invent temperatures, scores, or headlines.\n"
+            "4. Honest response when unavailable: 'I don't have live [weather/news/cricket] at the moment.'"
         )
 
     profile_city = user_context.get("city") or ""
@@ -288,8 +293,10 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
     # Delhi weather, use Delhi, even if their profile city is Mumbai.
     # Fall back to profile city only when no city is mentioned in the message.
     _TRAILING_NON_CITY = re.compile(
-        r"\b(today|tonight|now|aaj|abhi|kal|tomorrow|this week|is waqt|"
-        r"mein|ka|ki|ke|hai|hain|kya|please|batao|bata|do)\b.*$",
+        r"\b(today|tonight|right now|right|currently|now|just now|"
+        r"aaj|abhi|kal|tomorrow|this week|is waqt|"
+        r"mein|ka|ki|ke|hai|hain|kya|please|batao|bata|do|"
+        r"at|the|this|morning|evening|afternoon|in|ka|bata|karo|zara|jaraa)\b.*$",
         re.IGNORECASE,
     )
     city = profile_city  # default
@@ -311,9 +318,9 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
         try:
             raw = fetch_weather(city)
             if raw:
-                parts.append(f"Weather ({city}): {wrap_weather(city, raw)}")
+                parts.append(f"Weather ({city}) — raw data: {raw}")
             else:
-                parts.append(f"Weather: No live weather data available right now.")
+                parts.append(f"Weather ({city}): No live weather data available right now.")
         except Exception:
             parts.append("Weather: Not available right now.")
     elif is_weather and not city:
@@ -323,18 +330,33 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
         try:
             raw = fetch_cricket()
             if raw:
-                parts.append(f"Cricket: {wrap_cricket(raw)}")
+                parts.append(f"Cricket — raw data: {raw}")
             else:
-                parts.append("Cricket: No live match data right now.")
+                # Explicit scripted fallback — prevents DeepSeek using training knowledge
+                # to fabricate yesterday's scores or invent a match result.
+                parts.append(
+                    "CRICKET — MANDATORY SCRIPTED RESPONSE:\n"
+                    "The live cricket API returned no India match data for today.\n"
+                    "You MUST respond with ONLY this sentence (adapt language to the user's preference):\n"
+                    "English: \"There's no live cricket on right now — I'll have updates once a match begins.\"\n"
+                    "Hindi: \"Abhi koi live cricket match nahi hai — match shuru hone par bataunga.\"\n"
+                    "Do NOT add any match names, scores, teams, venues, or results.\n"
+                    "Do NOT use any cricket knowledge from your training data."
+                )
         except Exception:
-            parts.append("Cricket: Not available right now.")
+            parts.append(
+                "CRICKET — MANDATORY SCRIPTED RESPONSE:\n"
+                "Cricket data is unavailable right now.\n"
+                "You MUST respond with ONLY: \"I can't get cricket scores right now — I'll try again later.\"\n"
+                "Do NOT fabricate match results."
+            )
 
     if is_news:
         news_interests = user_context.get("news_interests") or user_context.get("favourite_topics") or ""
         try:
             raw = fetch_news(news_interests)
             if raw:
-                parts.append(f"News: {wrap_news(raw)}")
+                parts.append(f"News — raw headline: {raw}")
             else:
                 parts.append("News: No live headlines available right now.")
         except Exception:
@@ -350,6 +372,106 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
         )
 
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Streaming helper — runs DeepSeek in a thread, edits Telegram message live
+# ---------------------------------------------------------------------------
+
+async def _stream_reply(
+    update,
+    text: str,
+    user_context: dict,
+    session_history: list,
+) -> str:
+    """
+    Call DeepSeek with stream=True. Sends a placeholder message immediately,
+    then edits it with accumulated text every ~1.5 seconds as chunks arrive.
+
+    Returns the complete reply string.
+
+    Falls back to the non-streaming call_deepseek() if streaming raises.
+
+    Why: DeepSeek's TTFT is 1–3 seconds. Without streaming, the user sees
+    nothing for 15+ seconds (full prompt processing + generation). With
+    streaming, they see the first words in 2–3 seconds — a 5x+ UX improvement
+    with zero quality tradeoff.
+    """
+    loop = asyncio.get_running_loop()
+    chunk_queue: asyncio.Queue = asyncio.Queue()
+
+    # Send placeholder immediately so the user sees a response right away
+    try:
+        placeholder = await update.message.reply_text("…")
+    except Exception:
+        placeholder = None
+
+    def _producer():
+        """Runs the synchronous streaming generator in a background thread."""
+        try:
+            for chunk in call_deepseek_streaming(text, user_context, session_messages=session_history):
+                asyncio.run_coroutine_threadsafe(chunk_queue.put(chunk), loop)
+        except Exception as exc:
+            asyncio.run_coroutine_threadsafe(chunk_queue.put(exc), loop)
+        finally:
+            asyncio.run_coroutine_threadsafe(chunk_queue.put(None), loop)
+
+    t = threading.Thread(target=_producer, daemon=True)
+    t.start()
+
+    accumulated = ""
+    last_edit = time.time()
+    _EDIT_INTERVAL = 1.5  # seconds — safe for Telegram's 20-edits/min global limit
+
+    while True:
+        chunk = await chunk_queue.get()
+
+        if chunk is None:
+            break  # stream complete
+
+        if isinstance(chunk, Exception):
+            # Streaming failed — fall back to blocking call
+            logger.warning("STREAM | streaming failed (%s), falling back to blocking call", chunk)
+            try:
+                reply = call_deepseek(text, user_context, session_messages=session_history)
+                if placeholder:
+                    try:
+                        await placeholder.edit_text(reply)
+                    except Exception:
+                        await update.message.reply_text(reply)
+                else:
+                    await update.message.reply_text(reply)
+                return reply
+            except Exception as fb_err:
+                logger.error("STREAM | fallback also failed: %s", fb_err)
+                raise fb_err
+
+        accumulated += chunk
+
+        # Edit the placeholder every EDIT_INTERVAL seconds (rate-limit safe)
+        now = time.time()
+        if placeholder and now - last_edit >= _EDIT_INTERVAL and len(accumulated) > 15:
+            try:
+                await placeholder.edit_text(accumulated + "…")
+                last_edit = now
+            except Exception:
+                pass  # rate limit or network — keep accumulating, edit next cycle
+
+    # Final edit — complete text without trailing ellipsis
+    if accumulated and placeholder:
+        try:
+            await placeholder.edit_text(accumulated)
+        except Exception:
+            # Edit failed (e.g. text identical to placeholder) — send fresh message
+            try:
+                await update.message.reply_text(accumulated)
+            except Exception:
+                pass
+
+    elif accumulated and not placeholder:
+        await update.message.reply_text(accumulated)
+
+    return accumulated
 
 
 # ---------------------------------------------------------------------------
@@ -1009,12 +1131,10 @@ async def _run_pipeline(
         )
         logger.info("PIPELINE | user_id=%s | short_reply_disengagement triggered", user_id)
 
-    # --- DeepSeek ---
-    # Pass _session_history so DeepSeek has full in-session conversation context.
-    reply = call_deepseek(text, user_context, session_messages=_session_history)
-
-    # Send text first — user gets the response immediately regardless of TTS
-    await update.message.reply_text(reply)
+    # --- DeepSeek (streaming) ---
+    # _stream_reply sends a placeholder immediately, then edits it with text
+    # as chunks arrive — user sees first words in 2–3s instead of 15–25s.
+    reply = await _stream_reply(update, text, user_context, _session_history)
     save_message_record(user_id, "out", reply)
     # Save this exchange to session buffer for the next DeepSeek call.
     # Use _original_text (not text) so the targeted prompt is never saved to session history.
@@ -1457,10 +1577,17 @@ def main() -> None:
     app.job_queue.run_repeating(weekly_report_job, interval=60, first=45)
     logger.info("Weekly report scheduler registered (interval=60s, Sunday 10am IST)")
 
-    # DIAGNOSTIC: forced polling mode to rule out webhook misconfiguration.
-    # Switch back to webhook once bot is confirmed live and responding.
-    logger.info("Starting in POLLING mode (diagnostic)")
-    app.run_polling(drop_pending_updates=True)
+    if WEBHOOK_URL:
+        logger.info("Starting webhook mode on port %s", PORT)
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path="/webhook",
+            webhook_url=f"{WEBHOOK_URL}/webhook",
+        )
+    else:
+        logger.info("No WEBHOOK_URL set — starting in polling mode")
+        app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":

@@ -30,6 +30,7 @@ users share the same morning check-in time. Cache keys:
 
 import logging
 import os
+import re
 import time
 from typing import Optional
 
@@ -95,17 +96,38 @@ def fetch_weather(city: str) -> Optional[str]:
         logger.debug("APIS | weather cache hit | city=%s", city)
         return cached
 
-    try:
-        resp = requests.get(
+    # City alias map — OWM sometimes fails on common short names.
+    # Try the alias if the primary query returns 404.
+    _CITY_ALIASES = {
+        "delhi":     "New Delhi,IN",
+        "mumbai":    "Mumbai,IN",
+        "bangalore": "Bengaluru,IN",
+        "bengaluru": "Bengaluru,IN",
+        "calcutta":  "Kolkata,IN",
+        "bombay":    "Mumbai,IN",
+        "madras":    "Chennai,IN",
+        "pune":      "Pune,IN",
+        "hyderabad": "Hyderabad,IN",
+    }
+
+    def _owm_get(q: str):
+        return requests.get(
             _OWM_URL,
-            params={
-                "q": city,
-                "appid": api_key,
-                "units": "metric",
-                "lang": "en",
-            },
+            params={"q": q, "appid": api_key, "units": "metric", "lang": "en"},
             timeout=8,
         )
+
+    try:
+        resp = _owm_get(city)
+
+        # If OWM can't find the city (404), try with the country code suffix
+        # or a known alias (e.g. "Delhi" → "New Delhi,IN").
+        if resp.status_code == 404:
+            alias = _CITY_ALIASES.get(city.lower())
+            retry_q = alias if alias else f"{city},IN"
+            logger.info("APIS | weather 404 for '%s', retrying as '%s'", city, retry_q)
+            resp = _owm_get(retry_q)
+
         if not resp.ok:
             logger.warning(
                 "APIS | weather API error | city=%s | status=%d | %s",
@@ -207,8 +229,25 @@ def fetch_cricket() -> Optional[str]:
 def _find_india_match(matches: list) -> Optional[str]:
     """
     Scan the matches list for one involving India.
-    Returns a human-readable summary string, or None if no India match found.
+
+    Filters strictly by today's IST date so yesterday's results are never
+    presented as today's news. Returns a summary prefixed with match state:
+
+        LIVE NOW — <details>           match in progress today
+        TODAY (upcoming) — <details>   scheduled today, not yet started
+        COMPLETED TODAY — <details>    finished today
+        UPCOMING — <details>           next India match (future date), only
+                                        if nothing is happening today
+
+    Returns None if no India match found at all.
     """
+    from datetime import datetime, timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
+    today_ist = datetime.now(IST).strftime("%Y-%m-%d")
+
+    today_matches = []     # (match, started, ended) for matches dated today
+    upcoming_matches = []  # matches with a future date
+
     for match in matches:
         name = (match.get("name") or "").lower()
         teams = match.get("teams", [])
@@ -221,49 +260,100 @@ def _find_india_match(matches: list) -> Optional[str]:
         if not is_india_match:
             continue
 
-        # Build a readable summary
-        match_name = match.get("name", "India match")
-        match_type = match.get("matchType", "").upper()
-        status = match.get("status", "")
-        venue = match.get("venue", "")
+        # CricAPI returns date as "YYYY-MM-DD" (or datetime string — take first 10 chars)
+        match_date = (match.get("date") or match.get("dateTimeGMT") or "")[:10]
+        match_started = bool(match.get("matchStarted", False))
+        match_ended   = bool(match.get("matchEnded", False))
 
-        # Score — CricAPI returns scores as a list of dicts
-        score_parts = []
-        for score_obj in match.get("score", []):
-            inning = score_obj.get("inning", "")
-            runs = score_obj.get("r", "")
-            wickets = score_obj.get("w", "")
-            overs = score_obj.get("o", "")
-            if runs != "" and wickets != "":
-                score_parts.append(f"{inning}: {runs}/{wickets} ({overs} ov)")
+        if match_date == today_ist:
+            today_matches.append((match, match_started, match_ended))
+        elif match_date > today_ist:
+            upcoming_matches.append(match)
+        # Past dates (match_date < today_ist) are silently skipped.
 
-        score_str = " | ".join(score_parts) if score_parts else ""
+    # Priority order: live today > upcoming today > next scheduled (future)
+    for match, started, ended in today_matches:
+        summary = _format_match_summary(match)
+        if started and not ended:
+            return f"LIVE NOW — {summary}"
+        elif not started:
+            return f"TODAY (upcoming) — {summary}"
+        else:
+            return f"COMPLETED TODAY — {summary}"
 
-        parts = [match_name]
-        if match_type:
-            parts[0] += f" ({match_type})"
-        if score_str:
-            parts.append(score_str)
-        if status:
-            parts.append(status)
-        if venue:
-            parts.append(f"at {venue}")
-
-        return " — ".join(parts)
+    # Nothing today — surface the next scheduled India match if available
+    if upcoming_matches:
+        return f"UPCOMING — {_format_match_summary(upcoming_matches[0])}"
 
     return None
 
 
+def _format_match_summary(match: dict) -> str:
+    """Build a human-readable one-line summary for a single match dict."""
+    match_name = match.get("name", "India match")
+    match_type = (match.get("matchType") or "").upper()
+    status     = match.get("status", "")
+    venue      = match.get("venue", "")
+
+    score_parts = []
+    for score_obj in match.get("score", []):
+        inning   = score_obj.get("inning", "")
+        runs     = score_obj.get("r", "")
+        wickets  = score_obj.get("w", "")
+        overs    = score_obj.get("o", "")
+        if runs != "" and wickets != "":
+            score_parts.append(f"{inning}: {runs}/{wickets} ({overs} ov)")
+
+    score_str = " | ".join(score_parts) if score_parts else ""
+
+    parts = [match_name]
+    if match_type:
+        parts[0] += f" ({match_type})"
+    if score_str:
+        parts.append(score_str)
+    if status:
+        parts.append(status)
+    if venue:
+        parts.append(f"at {venue}")
+
+    return " — ".join(parts)
+
+
 # ---------------------------------------------------------------------------
-# News — NewsAPI top headlines (India)
-# Docs: https://newsapi.org/docs/endpoints/top-headlines
-# Free tier: 100 calls/day — sufficient for the 20-user pilot.
-# Personalised by user's news_interests field; falls back to top India news.
+# News — RSS-first approach (no API key needed) + NewsAPI fallback
+#
+# Primary: public RSS feeds from The Hindu and NDTV (India-only, reliable).
+# Fallback: NewsAPI top headlines (free tier, 100 calls/day).
+#
+# Why RSS primary: NewsAPI's free developer plan is unreliable from
+# production servers (rate limits, domain blocks). RSS feeds are public,
+# need no key, and are consistently available from any server.
+#
+# Uses Python's built-in xml.etree.ElementTree — no extra dependencies.
 # ---------------------------------------------------------------------------
+
+_RSS_FEEDS_INDIA = [
+    # TOI Top Stories first — broadest top-of-the-hour coverage
+    "https://timesofindia.indiatimes.com/rssfeeds/296589292.cms",
+    # The Hindu national — reliable but sometimes niche
+    "https://www.thehindu.com/news/national/feeder/default.rss",
+    # NDTV India — fallback
+    "https://feeds.feedburner.com/ndtvnews-india-news",
+]
+
+# Words that signal a niche/opinion/trend article — skip these in favour of
+# a harder news headline. A real top headline rarely needs these qualifiers.
+_LOW_QUALITY_TITLE_SIGNALS = [
+    "here's why", "here is why", "this is why", "find out", "you need to know",
+    "all you need", "top 5", "top 10", "in numbers", "things to know",
+    "explained:", "explainer", "fact check", "opinion:", "opinion |",
+    "column:", "editorial:", "interview:", "book review", "travel:",
+    "recipe", "horoscope", "astrology", "zodiac",
+]
 
 _NEWSAPI_URL = "https://newsapi.org/v2/top-headlines"
 
-# Topics that map well to NewsAPI categories
+# Topics that map well to NewsAPI categories (kept for fallback)
 _NEWSAPI_CATEGORY_MAP = {
     "business":      "business",
     "sports":        "sports",
@@ -280,24 +370,94 @@ _NEWSAPI_CATEGORY_MAP = {
 }
 
 
+def _fetch_news_from_rss(keyword: str = "") -> Optional[str]:
+    """
+    Try each RSS feed in order. Return the first usable headline found.
+    Optionally filters by keyword if provided.
+    Returns None if all feeds fail or return no usable headlines.
+    """
+    import xml.etree.ElementTree as ET
+
+    kw_lower = keyword.lower() if keyword else ""
+
+    for feed_url in _RSS_FEEDS_INDIA:
+        try:
+            resp = requests.get(
+                feed_url,
+                timeout=8,
+                headers={"User-Agent": "Saathi-News-Bot/1.0"},
+            )
+            if not resp.ok:
+                logger.debug("APIS | RSS feed failed | url=%s | status=%d", feed_url, resp.status_code)
+                continue
+
+            root = ET.fromstring(resp.content)
+            items = root.findall(".//item")
+
+            # Two passes: first collect keyword-matched items, then quality-filter,
+            # then fall back to any clean item if nothing passes the filter.
+            candidates = []
+            for item in items[:15]:  # Check first 15 items
+                title_el = item.find("title")
+                desc_el   = item.find("description")
+
+                title = (title_el.text or "").strip() if title_el is not None else ""
+                desc  = (desc_el.text  or "").strip() if desc_el  is not None else ""
+
+                # Strip CDATA wrappers if present
+                title = title.replace("<![CDATA[", "").replace("]]>", "").strip()
+                desc  = desc.replace("<![CDATA[", "").replace("]]>", "").strip()
+                # Strip any HTML tags from description
+                desc = re.sub(r"<[^>]+>", " ", desc).strip()
+                # Collapse whitespace
+                desc = re.sub(r"\s+", " ", desc).strip()
+
+                if not title or "[Removed]" in title or len(title) < 20:
+                    continue
+
+                # If keyword filter set, check if title or desc contains it
+                if kw_lower and kw_lower not in title.lower() and kw_lower not in desc.lower():
+                    continue
+
+                # Quality check — skip niche/clickbait titles
+                title_lc = title.lower()
+                is_low_quality = any(sig in title_lc for sig in _LOW_QUALITY_TITLE_SIGNALS)
+
+                # Build result string
+                result = title
+                if desc:
+                    first_sentence = desc.split(".")[0].strip()
+                    if first_sentence and first_sentence.lower() != title.lower() and len(first_sentence) > 10:
+                        result = f"{title}. {first_sentence}."
+
+                candidates.append((is_low_quality, result))
+
+            # Return first high-quality candidate; fall back to any candidate
+            for low_q, result in candidates:
+                if not low_q:
+                    return result
+            if candidates:
+                return candidates[0][1]  # best available even if low-quality
+
+            logger.debug("APIS | RSS feed empty/filtered | url=%s | keyword=%s", feed_url, keyword)
+
+        except Exception as rss_err:
+            logger.debug("APIS | RSS feed error | url=%s | %s", feed_url, rss_err)
+            continue
+
+    return None
+
+
 def fetch_news(interests: str = "") -> Optional[str]:
     """
-    Fetch a single top news headline from NewsAPI.
+    Fetch a single top news headline for India.
 
-    If the user has interests set (from onboarding), uses the first keyword
-    as a query filter. Falls back to general top headlines for India.
+    Strategy:
+    1. Try public RSS feeds (no key needed, reliable).
+    2. Fall back to NewsAPI if RSS fails.
 
-    Returns a plain-text headline + brief description suitable for passing
-    to wrap_news(). Example:
-        "Budget 2025: Finance Minister announces tax relief for middle class"
-
-    Returns None if the API key is missing or the call fails.
+    Returns a plain-text headline + brief description, or None on failure.
     """
-    api_key = os.environ.get("NEWS_API_KEY")
-    if not api_key:
-        return None
-
-    # Extract first meaningful keyword from user's interests
     keyword = _extract_first_keyword(interests)
     cache_key = f"news:{keyword.lower() if keyword else 'india'}"
 
@@ -306,10 +466,24 @@ def fetch_news(interests: str = "") -> Optional[str]:
         logger.debug("APIS | news cache hit | keyword=%s", keyword)
         return cached
 
+    # ── Strategy 1: RSS feeds (primary, no key required) ──────────────────
     try:
-        # Strategy 1: country=in with optional category/keyword filter.
-        # This is the cleanest approach but the NewsAPI free tier can return
-        # 0 articles for country=in unpredictably. We check and fall through.
+        headline = _fetch_news_from_rss(keyword)
+        if headline:
+            _cache_set(cache_key, headline)
+            logger.info("APIS | news fetched via RSS | keyword=%s | %s", keyword, headline[:80])
+            return headline
+        logger.info("APIS | news RSS returned nothing | keyword=%s — trying NewsAPI", keyword)
+    except Exception as rss_err:
+        logger.warning("APIS | news RSS failed entirely | %s", rss_err)
+
+    # ── Strategy 2: NewsAPI fallback ───────────────────────────────────────
+    api_key = os.environ.get("NEWS_API_KEY")
+    if not api_key:
+        _cache_set(cache_key, None)
+        return None
+
+    try:
         params: dict = {
             "country": "in",
             "apiKey": api_key,
@@ -327,14 +501,15 @@ def fetch_news(interests: str = "") -> Optional[str]:
         articles = []
         if resp.ok:
             articles = resp.json().get("articles", [])
+        else:
+            logger.warning(
+                "APIS | NewsAPI error | status=%d | body=%s",
+                resp.status_code, resp.text[:200],
+            )
 
-        # Strategy 2: if country filter returned nothing, fall back to
-        # a keyword query for India news. Free-tier country filter is
-        # unreliable; the keyword query is consistently populated.
         if not articles:
-            fallback_q = keyword if keyword else "India"
             fallback_params = {
-                "q": fallback_q,
+                "q": keyword if keyword else "India",
                 "language": "en",
                 "sortBy": "publishedAt",
                 "apiKey": api_key,
@@ -347,27 +522,20 @@ def fetch_news(interests: str = "") -> Optional[str]:
             )
             if resp2.ok:
                 articles = resp2.json().get("articles", [])
-                logger.info(
-                    "APIS | news | country filter empty, used everything fallback | q=%s",
-                    fallback_q,
+            else:
+                logger.warning(
+                    "APIS | NewsAPI everything fallback error | status=%d | body=%s",
+                    resp2.status_code, resp2.text[:200],
                 )
-
-        if not resp.ok and (not articles):
-            logger.warning(
-                "APIS | news API error | status=%d | %s",
-                resp.status_code, resp.text[:100],
-            )
-            _cache_set(cache_key, None)
-            return None
 
         headline = _pick_best_headline(articles)
         _cache_set(cache_key, headline)
         if headline:
-            logger.info("APIS | news fetched | keyword=%s | %s", keyword, headline[:80])
+            logger.info("APIS | news fetched via NewsAPI | keyword=%s | %s", keyword, headline[:80])
         return headline
 
     except Exception as e:
-        logger.warning("APIS | news fetch failed | %s", e)
+        logger.warning("APIS | NewsAPI fallback failed | %s", e)
         _cache_set(cache_key, None)
         return None
 

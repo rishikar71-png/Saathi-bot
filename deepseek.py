@@ -957,3 +957,93 @@ def call_deepseek(
     )
 
     return reply
+
+
+def call_deepseek_streaming(
+    user_message: str,
+    user_context: dict,
+    session_messages: list | None = None,
+):
+    """
+    Streaming variant of call_deepseek. Yields text chunks as they arrive
+    from DeepSeek, so the caller can display partial responses immediately.
+
+    Memory retrieval and prompt construction are identical to call_deepseek.
+    The only difference is stream=True on the API call.
+
+    Usage (in a thread):
+        for chunk in call_deepseek_streaming(msg, ctx, history):
+            accumulated += chunk
+            # push accumulated to Telegram via asyncio queue
+
+    Raises on API error (caller should fall back to call_deepseek).
+    """
+    # Memory retrieval — identical to call_deepseek
+    user_id = user_context.get("user_id")
+    if user_id:
+        try:
+            memory_ctx = get_relevant_memories(user_id, user_message)
+            if memory_ctx:
+                user_context = {**user_context, "memory_context": memory_ctx}
+        except Exception as e:
+            logger.warning("DEEPSEEK | streaming | memory retrieval failed: %s", e)
+
+    system_prompt = _build_system_prompt(user_context)
+
+    # Language priming — identical to call_deepseek
+    _language = (user_context.get("language") or "english").lower()
+    _language_label = _LANGUAGE_LABELS.get(_language, _language)
+    if _language in ("hindi", "hinglish"):
+        _prime_asst_1 = f"Main hamesha {_language_label} mein jawab dunga."
+        _prime_user_1 = f"Kripaya mujhe hamesha {_language_label} mein hi jawab dein."
+        _prime_asst_2 = (
+            f"Bilkul. Main hamesha {_language_label} mein baat karunga — "
+            f"chahe baat gehri ho ya halki, chahe baat bhaari ho ya aasaan. "
+            f"Main kabhi bhi apne aap se bhasha nahi badlunga."
+        )
+    else:
+        _prime_asst_1 = f"I will always respond in {_language_label}."
+        _prime_user_1 = f"Please always reply to me in {_language_label} only."
+        _prime_asst_2 = (
+            f"Understood. I will always respond in {_language_label} — "
+            f"including during emotional or sensitive moments. "
+            f"Language does not change based on topic or mood."
+        )
+
+    messages = [
+        {"role": "system",    "content": system_prompt},
+        {"role": "assistant", "content": _prime_asst_1},
+        {"role": "user",      "content": _prime_user_1},
+        {"role": "assistant", "content": _prime_asst_2},
+    ]
+    if session_messages:
+        messages.extend(session_messages)
+    messages.append({"role": "user", "content": user_message})
+
+    logger.info(
+        "DEEPSEEK | streaming | user_id=%s | msg_len=%d | session_turns=%d",
+        user_id or "unknown",
+        len(user_message),
+        len(session_messages) if session_messages else 0,
+    )
+
+    stream = _get_client().chat.completions.create(
+        model="deepseek-chat",
+        messages=messages,
+        temperature=0.8,
+        max_tokens=400,
+        stream=True,
+    )
+
+    full_reply = ""
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            full_reply += delta
+            yield delta
+
+    logger.info(
+        "DEEPSEEK | streaming complete | user_id=%s | reply_len=%d",
+        user_id or "unknown",
+        len(full_reply),
+    )
