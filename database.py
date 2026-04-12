@@ -825,6 +825,8 @@ def update_user_fields(user_id: int, **kwargs) -> None:
             values,
         )
         conn.commit()
+    # Invalidate cache — profile just changed, next read must go to DB
+    invalidate_user_cache(user_id)
 
 
 def advance_onboarding_step(user_id: int, step: int) -> None:
@@ -1040,7 +1042,38 @@ def admin_reset_user(telegram_id: int) -> str:
         return f"Reset complete for user {telegram_id}."
 
 
+# ---------------------------------------------------------------------------
+# In-memory user row cache
+#
+# get_or_create_user() is called on EVERY incoming message. With the libsql
+# embedded replica, even a pure SELECT can take 10–12s when the connection
+# is under load from concurrent background writes. User profiles almost never
+# change mid-conversation (only during onboarding), so caching the row
+# in memory per user drops this from 10–12s to ~0ms on every subsequent call.
+#
+# Cache is invalidated on update_user_fields() so onboarding changes are
+# always reflected immediately.
+# ---------------------------------------------------------------------------
+import time as _time
+
+_USER_CACHE: dict[int, tuple[float, object]] = {}   # user_id → (timestamp, row)
+_USER_CACHE_TTL = 300   # 5 minutes — refresh silently in background after this
+
+
+def invalidate_user_cache(user_id: int) -> None:
+    """Remove a user from the in-memory cache. Call after any profile update."""
+    _USER_CACHE.pop(user_id, None)
+
+
 def get_or_create_user(user_id: int) -> sqlite3.Row:
+    # Fast path: return cached row if fresh enough
+    cached = _USER_CACHE.get(user_id)
+    if cached is not None:
+        ts, row = cached
+        if _time.time() - ts < _USER_CACHE_TTL:
+            return row
+        # Stale — fall through to refresh from DB
+
     with get_connection() as conn:
         row = conn.execute(
             "SELECT * FROM users WHERE user_id = ?", (user_id,)
@@ -1053,4 +1086,7 @@ def get_or_create_user(user_id: int) -> sqlite3.Row:
             row = conn.execute(
                 "SELECT * FROM users WHERE user_id = ?", (user_id,)
             ).fetchone()
-        return row
+
+    # Store in cache
+    _USER_CACHE[user_id] = (_time.time(), row)
+    return row

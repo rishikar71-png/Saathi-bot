@@ -384,6 +384,11 @@ _IRRELEVANT_TOPIC_SIGNALS = [
     "cryptocurrency", "bitcoin price", "nft ", "web3", "crypto market",
     # Dating apps / lifestyle trends irrelevant to this demographic
     "dating app", "tinder", "bumble", "hookup", "ghosting",
+    # Crime, violence, accidents — distressing for seniors, not appropriate for a companion bot
+    "kidnap", "ransom", "murder", "killed", "shot dead", "stabbed", "rape", "sexual assault",
+    "blast", "explosion", "bomb", "terror attack", "shoot-out", "encounter",
+    "accident", "fatal", "road crash", "pile-up", "derail", "plane crash",
+    "riot", "mob", "lynching", "arson",
 ]
 
 
