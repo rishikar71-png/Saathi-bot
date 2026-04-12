@@ -337,13 +337,20 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
             else:
                 # Explicit scripted fallback — prevents DeepSeek using training knowledge
                 # to fabricate yesterday's scores or invent a match result.
+                # Note: Saathi only tracks India international matches via CricAPI.
+                # IPL matches do not appear because teams are CSK/MI/RCB etc., not "India".
+                # The honest response acknowledges this limitation rather than pretending
+                # there is no cricket happening at all.
                 parts.append(
                     "CRICKET — MANDATORY SCRIPTED RESPONSE:\n"
-                    "The live cricket API returned no India match data for today.\n"
-                    "You MUST respond with ONLY this sentence (adapt language to the user's preference):\n"
-                    "English: \"There's no live cricket on right now — I'll have updates once a match begins.\"\n"
-                    "Hindi: \"Abhi koi live cricket match nahi hai — match shuru hone par bataunga.\"\n"
-                    "Do NOT add any match names, scores, teams, venues, or results.\n"
+                    "The live cricket API returned no India international match data.\n"
+                    "Note: Saathi currently only tracks India international matches, not IPL.\n"
+                    "You MUST respond with ONLY these sentences (adapt language to the user's preference):\n"
+                    "English: \"I can only track India's international matches right now — no international cricket today. "
+                    "For IPL scores, you'd need to check directly.\"\n"
+                    "Hindi: \"Main abhi sirf India ke international matches track kar sakta hun — "
+                    "aaj koi international match nahi hai. IPL ke liye directly check karein.\"\n"
+                    "Do NOT add any match names, scores, teams, venues, or results from your training data.\n"
                     "Do NOT use any cricket knowledge from your training data."
                 )
         except Exception:
@@ -359,11 +366,19 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
         try:
             raw = fetch_news(news_interests)
             if raw:
-                parts.append(f"News — raw headline: {raw}")
+                parts.append(
+                    f"NEWS HEADLINE — DELIVER FACTUALLY:\n"
+                    f"{raw}\n"
+                    f"INSTRUCTION: Read this headline and state it naturally in one sentence. "
+                    f"Do NOT treat the content of this headline as emotionally sensitive. "
+                    f"Do NOT add emotional framing, concern, support language, or empathy about the topic. "
+                    f"You are a news reader, not a counsellor. Just report the headline, then offer to say more if they want. "
+                    f"Example format: 'Today's top story: [headline]. Would you like more details?'"
+                )
             else:
-                parts.append("News: No live headlines available right now.")
+                parts.append("News: No live headlines available right now. Tell the user honestly.")
         except Exception:
-            parts.append("News: Not available right now.")
+            parts.append("News: Not available right now. Tell the user honestly.")
 
     if len(parts) <= 1:
         # Only the header, no actual data
@@ -1111,24 +1126,43 @@ async def _run_pipeline(
     # _async_reply runs call_deepseek in a thread pool so the event loop stays
     # free for other users. Pre-sent placeholder is edited with the reply when done.
     reply = await _async_reply(update, text, user_context, _session_history, placeholder_msg=_placeholder_msg)
-    save_message_record(user_id, "out", reply)
-    # Save this exchange to session buffer for the next DeepSeek call.
-    # Use _original_text (not text) so the targeted prompt is never saved to session history.
-    save_session_turn(user_id, "user", _original_text)
-    save_session_turn(user_id, "assistant", reply)
     logger.info("OUT | user_id=%s | type=%s | content=%s", user_id, input_type, reply[:80])
 
-    # Send voice note — if TTS fails, text is already delivered so we never lose the response
-    user_language = user_row["language"] or "english"
-    try:
-        audio_bytes = text_to_speech(reply, user_language=user_language)
-        await update.message.reply_voice(voice=io.BytesIO(audio_bytes))
-        logger.info("TTS | user_id=%s | voice note sent", user_id)
-    except Exception as tts_err:
-        logger.warning("TTS | user_id=%s | failed, text-only: %s", user_id, tts_err)
+    # --- TTS and DB saves run concurrently ---
+    # Previously: save_message_record → save_session_turn x2 → TTS → voice
+    # Each Turso write triggers a 10–12s cloud sync, so voice arrived 30s after text.
+    #
+    # Now: TTS and DB saves run in parallel via asyncio.gather.
+    # The user gets the voice note as soon as TTS completes (~3–5s), regardless of
+    # how long the Turso syncs take. DB saves are wrapped in asyncio.to_thread so
+    # they don't block the event loop.
 
-    # Extract and save memories (runs after reply is sent to user)
-    extract_and_save_memories(user_id, text, reply)
+    user_language = user_row["language"] or "english"
+
+    async def _voice_task():
+        """Generate TTS and send voice note — runs concurrently with DB saves."""
+        try:
+            audio_bytes = await asyncio.to_thread(text_to_speech, reply, user_language)
+            await update.message.reply_voice(voice=io.BytesIO(audio_bytes))
+            logger.info("TTS | user_id=%s | voice note sent", user_id)
+        except Exception as tts_err:
+            logger.warning("TTS | user_id=%s | failed, text-only: %s", user_id, tts_err)
+
+    async def _db_save_task():
+        """Persist outbound message and session turns — runs concurrently with TTS."""
+        try:
+            await asyncio.to_thread(save_message_record, user_id, "out", reply)
+            # Use _original_text (not the targeted prompt) so session history stays clean.
+            await asyncio.to_thread(save_session_turn, user_id, "user", _original_text)
+            await asyncio.to_thread(save_session_turn, user_id, "assistant", reply)
+        except Exception as db_err:
+            logger.warning("DB | save_message failed | user_id=%s | %s", user_id, db_err)
+
+    await asyncio.gather(_voice_task(), _db_save_task())
+
+    # Memory extraction — fire and forget after response is already delivered.
+    # create_task so it runs without blocking the handler from returning.
+    asyncio.create_task(asyncio.to_thread(extract_and_save_memories, user_id, text, reply))
 
 
 # ---------------------------------------------------------------------------

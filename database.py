@@ -110,12 +110,22 @@ class _Connection:
     - Accepts conn.row_factory = sqlite3.Row (stored but handled at cursor level)
     - Supports 'with conn:' context manager (commit on success, rollback on error)
     - conn.execute() returns a _Cursor
+
+    CRITICAL — write tracking:
+    libsql's embedded-replica calls sync() inside commit(), which takes 10–12 seconds
+    against Turso's cloud. The OLD code called commit() on EVERY 'with conn:' block —
+    including pure SELECT operations — causing a 10–12s sync after every DB read.
+
+    Fix: track whether any write (INSERT/UPDATE/DELETE/REPLACE) was executed in this
+    block. Only call commit() (and thus sync()) if a write actually happened.
+    Read-only blocks exit cleanly with no commit and no cloud sync.
     """
-    __slots__ = ("_conn", "row_factory")
+    __slots__ = ("_conn", "row_factory", "_dirty")
 
     def __init__(self, conn):
         self._conn = conn
         self.row_factory = None
+        self._dirty = False  # becomes True when a write statement is executed
 
     def cursor(self):
         return _Cursor(self._conn.cursor())
@@ -124,19 +134,26 @@ class _Connection:
         # libsql requires a tuple — convert lists defensively so no callsite can break this
         if isinstance(params, list):
             params = tuple(params)
+        # Track writes — mark dirty so __exit__ knows to commit (and sync to cloud)
+        _sql_upper = sql.strip().upper()
+        if any(_sql_upper.startswith(kw) for kw in ("INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "DROP", "ALTER")):
+            self._dirty = True
         return _Cursor(self._conn.execute(sql, params))
 
     def executemany(self, sql, seq):
+        self._dirty = True
         self._conn.executemany(sql, seq)
 
     def commit(self):
         self._conn.commit()
+        self._dirty = False
 
     def rollback(self):
         try:
             self._conn.rollback()
         except Exception:
             pass
+        self._dirty = False
 
     def close(self):
         self._conn.close()
@@ -145,11 +162,15 @@ class _Connection:
         self._conn.sync()
 
     def __enter__(self):
+        self._dirty = False  # reset for this block
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if exc_type is None:
-            self.commit()
+            if self._dirty:
+                # Write happened — commit (this triggers Turso cloud sync, ~10–12s)
+                self.commit()
+            # else: pure read — skip commit entirely, no cloud sync
         else:
             self.rollback()
         return False

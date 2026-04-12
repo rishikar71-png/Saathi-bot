@@ -333,12 +333,14 @@ def _format_match_summary(match: dict) -> str:
 # ---------------------------------------------------------------------------
 
 _RSS_FEEDS_INDIA = [
-    # TOI Top Stories first — broadest top-of-the-hour coverage
-    "https://timesofindia.indiatimes.com/rssfeeds/296589292.cms",
-    # The Hindu national — reliable but sometimes niche
+    # Reuters India — primary source. Clean wire copy, no clickbait, no influencer content.
+    "https://feeds.reuters.com/reuters/INtopNews",
+    # PTI via The Hindu national — reliable Indian wire copy
     "https://www.thehindu.com/news/national/feeder/default.rss",
     # NDTV India — fallback
     "https://feeds.feedburner.com/ndtvnews-india-news",
+    # TOI Top Stories — last resort (broadest but noisiest)
+    "https://timesofindia.indiatimes.com/rssfeeds/296589292.cms",
 ]
 
 # Words that signal a niche/opinion/trend article — skip these in favour of
@@ -364,6 +366,26 @@ _NON_INDIA_GEO_SIGNALS = [
     "israel", "gaza", "hamas",
     "white house", "congress ", "pentagon", "washington dc",
 ]
+
+# Topics irrelevant to Indian seniors aged 65+ — skip when no keyword specified.
+# These are niche internet/youth culture topics that Indian news sites still cover.
+_IRRELEVANT_TOPIC_SIGNALS = [
+    # Gaming / streaming / influencer
+    "streamer", "streaming platform", "gamer", "gaming tournament", "esports", "e-sports",
+    "youtuber", "influencer", "content creator", "viral video", "tiktok", "instagram reel",
+    "twitch", "discord server", "minecraft", "fortnite", "pubg", "bgmi",
+    # Online personalities / social media drama — not news for 65+ seniors
+    "online personality", "social media star", "youtube star", "instagram star",
+    "allegations against", "sexual harassment allegations", "misconduct allegations",
+    "cancelled", "cancel culture", "controversy over",
+    # K-pop / western pop celebrity gossip
+    "k-pop", "kpop", "bts ", "blackpink", "taylor swift", "kardashian",
+    # Crypto / NFT
+    "cryptocurrency", "bitcoin price", "nft ", "web3", "crypto market",
+    # Dating apps / lifestyle trends irrelevant to this demographic
+    "dating app", "tinder", "bumble", "hookup", "ghosting",
+]
+
 
 def _is_india_relevant(title: str, desc: str) -> bool:
     """
@@ -459,6 +481,12 @@ def _fetch_news_from_rss(keyword: str = "") -> Optional[str]:
                 # about clearly non-India topics (Dubai, Pakistan, Ukraine, etc.)
                 if not kw_lower and not _is_india_relevant(title, desc):
                     logger.debug("APIS | news geo-skip | title=%s", title[:60])
+                    continue
+
+                # Topic-relevance check — skip gaming/streamer/influencer/crypto
+                # content that is irrelevant to seniors aged 65+
+                if not kw_lower and any(sig in title_lc for sig in _IRRELEVANT_TOPIC_SIGNALS):
+                    logger.debug("APIS | news topic-skip | title=%s", title[:60])
                     continue
 
                 # Build result string
