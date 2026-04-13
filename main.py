@@ -3,6 +3,8 @@ import io
 import os
 import re
 import logging
+import time
+from collections import deque
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -94,42 +96,144 @@ _archetype_cache: dict[int, str] = {}
 # When streak reaches 5, users.language is updated in the DB.
 _language_learning: dict[int, dict] = {}
 
+# ---------------------------------------------------------------------------
+# In-memory session store — replaces DB-backed get_session_messages /
+# save_session_turn in the hot path.
+#
+# Why: save_session_turn triggers a Turso cloud commit (~10–12s). With the
+# old pattern, every message caused 2-3 blocking syncs. With in-memory
+# sessions, the hot path never touches the DB for session context.
+#
+# Gap logic: if the user's last message was >12 minutes ago, clear the
+# session (start fresh). This also fixes session contamination — a cricket
+# conversation from 20 minutes ago no longer bleeds into "hello".
+#
+# DB persist: session turns are still written to session_messages table,
+# but async via the write queue below (for diary generation / analytics).
+# ---------------------------------------------------------------------------
+_SESSION_STORE: dict[int, dict] = {}   # user_id → {"turns": deque, "last_ts": float}
+_SESSION_GAP_SEC = 12 * 60             # 12 minutes = new session boundary
+_SESSION_MAX_ITEMS = 24                # 12 exchange pairs max
+
+_SESSION_RESET_SIGNALS = {
+    "bye", "goodbye", "good night", "goodnight", "talk later", "see you",
+    "kal baat karenge", "baad mein baat karte hain", "shubh ratri", "alvida",
+    "phir milenge", "raat ko baat karte hain",
+}
+
+
+def _live_session_get(user_id: int, text: str) -> list:
+    """Return current session turns from memory. Resets on gap or reset signal."""
+    now = time.monotonic()
+    state = _SESSION_STORE.get(user_id)
+    is_reset = text.strip().lower() in _SESSION_RESET_SIGNALS
+    if state is None or is_reset or (now - state["last_ts"]) > _SESSION_GAP_SEC:
+        _SESSION_STORE[user_id] = {
+            "turns": deque(maxlen=_SESSION_MAX_ITEMS),
+            "last_ts": now,
+        }
+        return []
+    state["last_ts"] = now
+    return list(state["turns"])
+
+
+def _live_session_append(user_id: int, role: str, content: str) -> None:
+    """Append a turn to the in-memory session (instant, no I/O)."""
+    if user_id not in _SESSION_STORE:
+        _SESSION_STORE[user_id] = {
+            "turns": deque(maxlen=_SESSION_MAX_ITEMS),
+            "last_ts": time.monotonic(),
+        }
+    _SESSION_STORE[user_id]["turns"].append({"role": role, "content": content})
+    _SESSION_STORE[user_id]["last_ts"] = time.monotonic()
+
+
+# ---------------------------------------------------------------------------
+# Async write queue — serialises all DB writes through a single background
+# worker so they never block the request path.
+#
+# Why a single worker: libsql/_GLOBAL_CONN is single-writer. Multiple threads
+# calling commit() concurrently contend on the same connection. One worker
+# eliminates contention entirely; writes are serialised and Turso syncs happen
+# one at a time in the background while the user already has their reply.
+#
+# Initialised in post_init() once the asyncio event loop is running.
+# ---------------------------------------------------------------------------
+_DB_WRITE_QUEUE: asyncio.Queue | None = None
+
+
+async def _db_writer_worker() -> None:
+    """Single background coroutine that drains the DB write queue."""
+    while True:
+        fn, args, kwargs = await _DB_WRITE_QUEUE.get()
+        try:
+            await asyncio.to_thread(fn, *args, **kwargs)
+        except Exception as _wq_err:
+            logger.warning("DB_QUEUE | write failed | fn=%s | %s", fn.__name__, _wq_err)
+        finally:
+            _DB_WRITE_QUEUE.task_done()
+
+
+def _db_queue(fn, *args, **kwargs) -> None:
+    """
+    Enqueue a DB write function for background execution.
+    Falls back to a fire-and-forget asyncio.to_thread call if the queue
+    isn't running yet (e.g. during startup before post_init completes).
+    Never blocks the caller.
+    """
+    if _DB_WRITE_QUEUE is not None:
+        try:
+            _DB_WRITE_QUEUE.put_nowait((fn, args, kwargs))
+        except asyncio.QueueFull:
+            logger.warning("DB_QUEUE | full — dropping write: %s", fn.__name__)
+    else:
+        # Queue not ready yet — best-effort synchronous fallback during startup
+        try:
+            fn(*args, **kwargs)
+        except Exception as _fb_err:
+            logger.warning("DB_QUEUE | fallback write failed | fn=%s | %s", fn.__name__, _fb_err)
+
 
 def _get_archetype_adjustment(user_id: int, days_since_first_message: int) -> str | None:
     """
-    Return archetype adjustment text for user_context, or None.
+    Return archetype adjustment text from in-memory cache, or None.
 
-    - Only active during First 7 Days (days_since_first_message <= 7)
-    - Calculates once after 3+ inbound messages, then caches in memory
-    - Returns None for 'default' or after Day 7
+    Non-blocking: never does a DB query in the hot path. If the cache is
+    empty, returns None immediately — the background task below populates
+    it for the next message turn.
     """
     if days_since_first_message > 7:
         return None
-
     if user_id in _archetype_cache:
         return get_archetype_adjustment_text(_archetype_cache[user_id])
+    return None
 
-    # Not yet detected — check how many messages the senior has sent
+
+async def _detect_archetype_background(user_id: int) -> None:
+    """
+    Background coroutine: reads first 5 inbound messages from DB and
+    populates _archetype_cache. Runs once per user (skips if already cached).
+    Fires via asyncio.create_task — never awaited in the request path.
+    """
+    if user_id in _archetype_cache:
+        return
     try:
-        from database import get_connection
-        with get_connection() as conn:
-            rows = conn.execute(
-                """SELECT content FROM messages
-                   WHERE user_id = ? AND direction = 'in'
-                   ORDER BY created_at
-                   LIMIT 5""",
-                (user_id,),
-            ).fetchall()
+        def _read():
+            from database import get_connection
+            with get_connection() as conn:
+                return conn.execute(
+                    "SELECT content FROM messages WHERE user_id=? AND direction='in' "
+                    "ORDER BY created_at LIMIT 5",
+                    (user_id,),
+                ).fetchall()
+        rows = await asyncio.to_thread(_read)
         if len(rows) >= 3:
             messages = [r["content"] for r in rows if r["content"]]
             label = detect_archetype_signal(messages)
             _archetype_cache[user_id] = label
-            logger.info("ARCHETYPE | user_id=%s | detected=%s", user_id, label)
-            return get_archetype_adjustment_text(label)
+            logger.info("ARCHETYPE_BG | user_id=%s | detected=%s", user_id, label)
     except Exception as e:
-        logger.warning("ARCHETYPE | lookup failed | user_id=%s | %s", user_id, e)
-
-    return None
+        logger.warning("ARCHETYPE_BG | failed | user_id=%s | %s", user_id, e)
 
 
 # ---------------------------------------------------------------------------
@@ -470,10 +574,10 @@ async def _run_pipeline(
 
     input_type is "text" or "voice" — used for message logging only.
     """
-    save_message_record(user_id, "in", text, message_type=input_type)
-    # Retrieve live session history AFTER saving the inbound message.
-    # Passed to DeepSeek so it has full in-session conversation context.
-    _session_history = get_session_messages(user_id)
+    # Retrieve live session history from memory — instant, no DB I/O.
+    # The inbound message save happens AFTER the placeholder is sent (below),
+    # so the user sees "…" immediately instead of waiting 10-12s for a Turso sync.
+    _session_history = _live_session_get(user_id, text)
 
     # --- End-of-life: death notification from a registered family member ---
     # Only check messages from registered family contacts — prevents abuse.
@@ -675,6 +779,10 @@ async def _run_pipeline(
     # Build context dict from user profile.
     days_since_first = user_row["days_since_first_message"] or 1
     archetype_adjustment = _get_archetype_adjustment(user_id, days_since_first)
+    # If archetype not yet cached, fire background detection for the NEXT turn.
+    # Non-blocking: never awaited here, runs while DeepSeek is processing.
+    if archetype_adjustment is None and days_since_first <= 7 and user_id not in _archetype_cache:
+        asyncio.create_task(_detect_archetype_background(user_id))
 
     _local_hour = get_user_local_hour(dict(user_row))
     _time_label = get_time_of_day_label(_local_hour)
@@ -954,6 +1062,13 @@ async def _run_pipeline(
     except Exception:
         pass
 
+    # --- Queue inbound message DB save (fire-and-forget, non-blocking) ---
+    # This used to run synchronously at the START of _run_pipeline, before
+    # the placeholder was sent — causing a 10-12s Turso sync that kept the
+    # user in silence. Now it queues to a background worker so it never
+    # blocks the response path. The session history is already in memory.
+    _db_queue(save_message_record, user_id, "in", text, input_type)
+
     # --- Live data injection for news / cricket / weather queries ---
     # The news/cricket/weather APIs are wired into the morning ritual but NOT into
     # ad-hoc conversation. Without this block, "tell me the news" goes to DeepSeek
@@ -1128,37 +1243,29 @@ async def _run_pipeline(
     reply = await _async_reply(update, text, user_context, _session_history, placeholder_msg=_placeholder_msg)
     logger.info("OUT | user_id=%s | type=%s | content=%s", user_id, input_type, reply[:80])
 
-    # --- TTS and DB saves run concurrently ---
-    # Previously: save_message_record → save_session_turn x2 → TTS → voice
-    # Each Turso write triggers a 10–12s cloud sync, so voice arrived 30s after text.
-    #
-    # Now: TTS and DB saves run in parallel via asyncio.gather.
-    # The user gets the voice note as soon as TTS completes (~3–5s), regardless of
-    # how long the Turso syncs take. DB saves are wrapped in asyncio.to_thread so
-    # they don't block the event loop.
+    # --- Update in-memory session (instant) + queue DB persists ---
+    # In-memory update is synchronous and takes microseconds.
+    # Use _original_text (not the targeted greeting prompt) so session history stays clean.
+    _live_session_append(user_id, "user", _original_text)
+    _live_session_append(user_id, "assistant", reply)
 
+    # DB writes go to the background queue — never block the response path.
+    # Each write queues into _DB_WRITE_QUEUE and is processed by the single
+    # worker (_db_writer_worker) — one at a time, no Turso contention.
+    _db_queue(save_message_record, user_id, "out", reply)
+    _db_queue(save_session_turn, user_id, "user", _original_text)
+    _db_queue(save_session_turn, user_id, "assistant", reply)
+
+    # --- TTS voice note ---
+    # No longer needs asyncio.gather with DB saves — DB writes are queued and
+    # non-blocking, so TTS runs immediately after the reply is delivered.
     user_language = user_row["language"] or "english"
-
-    async def _voice_task():
-        """Generate TTS and send voice note — runs concurrently with DB saves."""
-        try:
-            audio_bytes = await asyncio.to_thread(text_to_speech, reply, user_language)
-            await update.message.reply_voice(voice=io.BytesIO(audio_bytes))
-            logger.info("TTS | user_id=%s | voice note sent", user_id)
-        except Exception as tts_err:
-            logger.warning("TTS | user_id=%s | failed, text-only: %s", user_id, tts_err)
-
-    async def _db_save_task():
-        """Persist outbound message and session turns — runs concurrently with TTS."""
-        try:
-            await asyncio.to_thread(save_message_record, user_id, "out", reply)
-            # Use _original_text (not the targeted prompt) so session history stays clean.
-            await asyncio.to_thread(save_session_turn, user_id, "user", _original_text)
-            await asyncio.to_thread(save_session_turn, user_id, "assistant", reply)
-        except Exception as db_err:
-            logger.warning("DB | save_message failed | user_id=%s | %s", user_id, db_err)
-
-    await asyncio.gather(_voice_task(), _db_save_task())
+    try:
+        audio_bytes = await asyncio.to_thread(text_to_speech, reply, user_language)
+        await update.message.reply_voice(voice=io.BytesIO(audio_bytes))
+        logger.info("TTS | user_id=%s | voice note sent", user_id)
+    except Exception as tts_err:
+        logger.warning("TTS | user_id=%s | failed, text-only: %s", user_id, tts_err)
 
     # Memory extraction — fire and forget after response is already delivered.
     # create_task so it runs without blocking the handler from returning.
@@ -1526,6 +1633,18 @@ def _start_health_server() -> None:
     logger.info("HEALTH | server started on port %d", port)
 
 
+async def post_init(application: Application) -> None:
+    """
+    Called by PTB once the asyncio event loop is running.
+    Starts the DB write queue worker — must run inside the event loop
+    because asyncio.Queue() and create_task() require it.
+    """
+    global _DB_WRITE_QUEUE
+    _DB_WRITE_QUEUE = asyncio.Queue()
+    asyncio.create_task(_db_writer_worker())
+    logger.info("STARTUP | DB write queue started")
+
+
 def main() -> None:
     # Start health server FIRST — before any DB work — so Railway sees the
     # process as healthy and does not restart the container during slow init.
@@ -1548,7 +1667,7 @@ def main() -> None:
     except Exception as seed_err:
         logger.error("STARTUP | seed_memory_questions failed (non-fatal): %s", seed_err)
 
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", handle_help_command))
     app.add_handler(CommandHandler("policy", handle_policy_command))

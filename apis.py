@@ -164,8 +164,22 @@ def fetch_weather(city: str) -> Optional[str]:
 
 _CRICAPI_URL = "https://api.cricapi.com/v1/currentMatches"
 
-# Teams to identify as India (covers both senior men's and women's)
+# Teams to match: India internationals + all 10 IPL franchises.
+# IPL runs April–May — without this, all IPL matches were silently excluded.
 _INDIA_TEAM_KEYWORDS = {"india", "ind"}
+
+_IPL_TEAM_ALIASES = {
+    # Abbreviations
+    "mi", "csk", "rcb", "kkr", "lsg", "gt", "pbks", "rr", "dc", "srh",
+    # Full names (lowercase for substring match against match name / team strings)
+    "mumbai indians", "chennai super kings",
+    "royal challengers bengaluru", "royal challengers bangalore",
+    "lucknow super giants", "gujarat titans", "kolkata knight riders",
+    "punjab kings", "rajasthan royals", "delhi capitals", "sunrisers hyderabad",
+}
+
+# Combined set used by _find_india_match
+_TRACKED_TEAM_KEYWORDS = _INDIA_TEAM_KEYWORDS | _IPL_TEAM_ALIASES
 
 
 def fetch_cricket() -> Optional[str]:
@@ -228,7 +242,7 @@ def fetch_cricket() -> Optional[str]:
 
 def _find_india_match(matches: list) -> Optional[str]:
     """
-    Scan the matches list for one involving India.
+    Scan the matches list for India internationals OR any IPL match.
 
     Filters strictly by today's IST date so yesterday's results are never
     presented as today's news. Returns a summary prefixed with match state:
@@ -236,10 +250,10 @@ def _find_india_match(matches: list) -> Optional[str]:
         LIVE NOW — <details>           match in progress today
         TODAY (upcoming) — <details>   scheduled today, not yet started
         COMPLETED TODAY — <details>    finished today
-        UPCOMING — <details>           next India match (future date), only
+        UPCOMING — <details>           next match (future date), only
                                         if nothing is happening today
 
-    Returns None if no India match found at all.
+    Returns None if no tracked match found at all.
     """
     from datetime import datetime, timezone, timedelta
     IST = timezone(timedelta(hours=5, minutes=30))
@@ -253,11 +267,11 @@ def _find_india_match(matches: list) -> Optional[str]:
         teams = match.get("teams", [])
         team_names = " ".join(t.lower() for t in teams)
 
-        is_india_match = (
-            any(kw in name for kw in _INDIA_TEAM_KEYWORDS)
-            or any(kw in team_names for kw in _INDIA_TEAM_KEYWORDS)
+        is_tracked_match = (
+            any(kw in name for kw in _TRACKED_TEAM_KEYWORDS)
+            or any(kw in team_names for kw in _TRACKED_TEAM_KEYWORDS)
         )
-        if not is_india_match:
+        if not is_tracked_match:
             continue
 
         # CricAPI returns date as "YYYY-MM-DD" (or datetime string — take first 10 chars)
