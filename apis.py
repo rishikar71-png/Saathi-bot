@@ -225,6 +225,15 @@ def fetch_cricket() -> Optional[str]:
             return None
 
         matches = data.get("data", [])
+
+        # Debug: log all match names returned by CricAPI so we can verify
+        # whether IPL matches appear in the free tier response.
+        if matches:
+            all_names = [m.get("name", "?") for m in matches[:10]]
+            logger.info("APIS | cricket raw matches (%d total) | %s", len(matches), " | ".join(all_names))
+        else:
+            logger.info("APIS | cricket API returned 0 matches")
+
         india_match = _find_india_match(matches)
 
         _cache_set(cache_key, india_match)
@@ -443,10 +452,10 @@ _NEWSAPI_CATEGORY_MAP = {
 }
 
 
-def _fetch_news_from_rss(keyword: str = "") -> Optional[str]:
+def _fetch_news_from_rss(keyword: str = "", max_results: int = 1) -> Optional[str]:
     """
-    Try each RSS feed in order. Return the first usable headline found.
-    Optionally filters by keyword if provided.
+    Try each RSS feed in order. Return up to max_results usable headlines,
+    joined by newlines. Optionally filters by keyword if provided.
     Returns None if all feeds fail or return no usable headlines.
     """
     import xml.etree.ElementTree as ET
@@ -517,12 +526,23 @@ def _fetch_news_from_rss(keyword: str = "") -> Optional[str]:
 
                 candidates.append((is_low_quality, result))
 
-            # Return first high-quality candidate; fall back to any candidate
+            # Collect up to max_results headlines: high-quality first, then fallback
+            collected = []
             for low_q, result in candidates:
                 if not low_q:
-                    return result
-            if candidates:
-                return candidates[0][1]  # best available even if low-quality
+                    collected.append(result)
+                if len(collected) >= max_results:
+                    break
+            # If not enough high-quality, pad with any candidates
+            if len(collected) < max_results:
+                for low_q, result in candidates:
+                    if result not in collected:
+                        collected.append(result)
+                    if len(collected) >= max_results:
+                        break
+
+            if collected:
+                return "\n".join(collected)
 
             logger.debug("APIS | RSS feed empty/filtered | url=%s | keyword=%s", feed_url, keyword)
 
@@ -535,13 +555,13 @@ def _fetch_news_from_rss(keyword: str = "") -> Optional[str]:
 
 def fetch_news(interests: str = "") -> Optional[str]:
     """
-    Fetch a single top news headline for India.
+    Fetch up to 3 top news headlines for India.
 
     Strategy:
-    1. Try public RSS feeds (no key needed, reliable).
+    1. Try public RSS feeds (no key needed, reliable) — returns up to 3 headlines.
     2. Fall back to NewsAPI if RSS fails.
 
-    Returns a plain-text headline + brief description, or None on failure.
+    Returns a newline-separated string of headlines, or None on failure.
     """
     keyword = _extract_first_keyword(interests)
     cache_key = f"news:{keyword.lower() if keyword else 'india'}"
@@ -553,7 +573,7 @@ def fetch_news(interests: str = "") -> Optional[str]:
 
     # ── Strategy 1: RSS feeds (primary, no key required) ──────────────────
     try:
-        headline = _fetch_news_from_rss(keyword)
+        headline = _fetch_news_from_rss(keyword, max_results=3)
         if headline:
             _cache_set(cache_key, headline)
             logger.info("APIS | news fetched via RSS | keyword=%s | %s", keyword, headline[:80])

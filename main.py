@@ -441,19 +441,16 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
             else:
                 # Explicit scripted fallback — prevents DeepSeek using training knowledge
                 # to fabricate yesterday's scores or invent a match result.
-                # Note: Saathi only tracks India international matches via CricAPI.
-                # IPL matches do not appear because teams are CSK/MI/RCB etc., not "India".
-                # The honest response acknowledges this limitation rather than pretending
-                # there is no cricket happening at all.
+                # Note: Saathi tracks both India international matches AND all IPL teams.
+                # If this fires, there is genuinely no live or scheduled match today.
                 parts.append(
                     "CRICKET — MANDATORY SCRIPTED RESPONSE:\n"
-                    "The live cricket API returned no India international match data.\n"
-                    "Note: Saathi currently only tracks India international matches, not IPL.\n"
+                    "The live cricket API found no match scheduled for today (India international or IPL).\n"
                     "You MUST respond with ONLY these sentences (adapt language to the user's preference):\n"
-                    "English: \"I can only track India's international matches right now — no international cricket today. "
-                    "For IPL scores, you'd need to check directly.\"\n"
-                    "Hindi: \"Main abhi sirf India ke international matches track kar sakta hun — "
-                    "aaj koi international match nahi hai. IPL ke liye directly check karein.\"\n"
+                    "English: \"No cricket today — at least not in the schedule I can see. "
+                    "I'll have live updates the next time there's a match.\"\n"
+                    "Hindi: \"Aaj koi cricket match nahi dikh raha — schedule mein kuch nahi hai. "
+                    "Jab match hoga, main turant bata dunga.\"\n"
                     "Do NOT add any match names, scores, teams, venues, or results from your training data.\n"
                     "Do NOT use any cricket knowledge from your training data."
                 )
@@ -470,14 +467,18 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
         try:
             raw = fetch_news(news_interests)
             if raw:
+                headlines = [h.strip() for h in raw.strip().split("\n") if h.strip()]
+                n = len(headlines)
                 parts.append(
-                    f"NEWS HEADLINE — DELIVER FACTUALLY:\n"
-                    f"{raw}\n"
-                    f"INSTRUCTION: Read this headline and state it naturally in one sentence. "
-                    f"Do NOT treat the content of this headline as emotionally sensitive. "
-                    f"Do NOT add emotional framing, concern, support language, or empathy about the topic. "
-                    f"You are a news reader, not a counsellor. Just report the headline, then offer to say more if they want. "
-                    f"Example format: 'Today's top story: [headline]. Would you like more details?'"
+                    f"NEWS HEADLINES — DELIVER FACTUALLY ({n} stories available today):\n"
+                    + "\n".join(f"{i+1}. {h}" for i, h in enumerate(headlines))
+                    + "\n\nINSTRUCTION: Share these stories naturally. "
+                    f"If this is the first time the user is asking about news today, give all {n} — "
+                    f"say 'Here's what's happening today:' and list them briefly. "
+                    f"If they have already received these stories in this conversation, acknowledge that "
+                    f"warmly and say you don't have more right now. "
+                    f"Do NOT add emotional framing or counsellor language. "
+                    f"Do NOT fabricate any additional stories beyond what is listed above."
                 )
             else:
                 parts.append("News: No live headlines available right now. Tell the user honestly.")
@@ -1431,33 +1432,39 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user_id = update.effective_user.id
     text = update.message.text
     logger.info("IN  | user_id=%s | type=text | content=%s", user_id, text)
+
+    chat_id = update.effective_chat.id
+
+    async def _keep_typing(stop_event: asyncio.Event) -> None:
+        """Keep the 'typing…' indicator alive until stop_event is set."""
+        while not stop_event.is_set():
+            try:
+                await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+            except Exception:
+                pass
+            for _ in range(8):  # 8 × 0.5s = 4s between refreshes
+                if stop_event.is_set():
+                    return
+                await asyncio.sleep(0.5)
+
     try:
-        user_row = get_or_create_user(user_id)
-        # Show "typing..." and keep it alive for the full duration of the pipeline.
-        # Telegram's typing action expires after ~5 seconds — we resend every 4s so the
-        # senior always sees Saathi is thinking, never a silent gap.
-        import asyncio
-        chat_id = update.effective_chat.id
-
-        async def _keep_typing(stop_event: asyncio.Event) -> None:
-            while not stop_event.is_set():
-                try:
-                    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
-                except Exception:
-                    pass
-                # Sleep in 0.5s increments so we exit quickly when stop_event fires
-                for _ in range(8):  # 8 × 0.5s = 4s
-                    if stop_event.is_set():
-                        return
-                    await asyncio.sleep(0.5)
-
+        # Start typing indicator IMMEDIATELY — before any DB work.
+        # Previously, get_or_create_user() ran synchronously here and blocked the
+        # event loop for up to 10-12s (Turso sync) before the indicator even fired.
         _stop_event = asyncio.Event()
         _typing_task = asyncio.create_task(_keep_typing(_stop_event))
+
+        # Fetch the user row in a background thread so the event loop stays free.
+        # get_or_create_user() can block on _GLOBAL_CONN if the write queue worker
+        # is mid-sync — running it in asyncio.to_thread prevents that from stalling
+        # the typing indicator or other concurrent handlers.
+        user_row = await asyncio.to_thread(get_or_create_user, user_id)
+
         try:
             await _run_pipeline(user_id, text, user_row, update, input_type="text", context=context)
         finally:
             _stop_event.set()
-            await asyncio.sleep(0)  # yield so the task can exit cleanly
+            await asyncio.sleep(0)  # yield so _keep_typing can exit cleanly
     except Exception as e:
         logger.error("ERR | user_id=%s | error=%s", user_id, e)
         await update.message.reply_text(
@@ -1475,14 +1482,16 @@ async def receive_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         user_id, file_id, duration,
     )
     try:
-        user_row = get_or_create_user(user_id)
-
-        # Download voice file from Telegram into memory (no disk writes)
-        tg_file = await context.bot.get_file(file_id)
+        # Fetch user row and download voice file concurrently.
+        # get_or_create_user is now in asyncio.to_thread so it doesn't block the event loop
+        # while waiting for _GLOBAL_CONN (which may be mid-Turso-sync from the write queue).
+        user_row, tg_file = await asyncio.gather(
+            asyncio.to_thread(get_or_create_user, user_id),
+            context.bot.get_file(file_id),
+        )
         file_bytes = bytes(await tg_file.download_as_bytearray())
 
-        # Show "typing..." while Whisper transcribes — voice upload can take 2–4 seconds
-        # and a silent screen causes seniors to think something broke.
+        # Show "typing..." while Whisper transcribes
         await context.bot.send_chat_action(
             chat_id=update.effective_chat.id, action="typing"
         )
