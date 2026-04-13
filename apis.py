@@ -356,15 +356,51 @@ def _format_match_summary(match: dict) -> str:
 # ---------------------------------------------------------------------------
 
 _RSS_FEEDS_INDIA = [
-    # Reuters India — primary source. Clean wire copy, no clickbait, no influencer content.
+    # Reuters India — primary. Clean wire copy, national scope, no clickbait.
     "https://feeds.reuters.com/reuters/INtopNews",
-    # PTI via The Hindu national — reliable Indian wire copy
-    "https://www.thehindu.com/news/national/feeder/default.rss",
-    # NDTV India — fallback
+    # Hindustan Times top stories — broad national coverage, less South India bias than The Hindu
+    "https://www.hindustantimes.com/feeds/rss/topstories/rssfeed.xml",
+    # NDTV India — reliable national fallback
     "https://feeds.feedburner.com/ndtvnews-india-news",
-    # TOI Top Stories — last resort (broadest but noisiest)
+    # TOI Top Stories — broadest, last resort (noisiest)
     "https://timesofindia.indiatimes.com/rssfeeds/296589292.cms",
 ]
+
+# World / international news feeds — used when user asks about global or country-specific news.
+_RSS_FEEDS_WORLD = [
+    # BBC World — gold standard international coverage, public RSS, no key needed
+    "https://feeds.bbci.co.uk/news/world/rss.xml",
+    # Reuters World — reliable wire copy
+    "https://feeds.reuters.com/reuters/worldNews",
+    # BBC News top stories — includes world + UK as fallback
+    "https://feeds.bbci.co.uk/news/rss.xml",
+]
+
+# Regex to detect country/region names in a world news query
+_WORLD_COUNTRY_RE = re.compile(
+    r"\b(usa|america|american|u\.s\.|united states|"
+    r"uk|britain|england|europe|european|eu|"
+    r"china|russia|ukraine|france|germany|japan|korea|"
+    r"israel|middle east|africa|australia|canada|pakistan|"
+    r"iran|turkey|brazil|mexico)\b",
+    re.IGNORECASE,
+)
+
+# Normalise raw country token to a clean search keyword
+_COUNTRY_NORMALISE = {
+    "america": "US", "american": "US", "usa": "US", "u.s.": "US", "united states": "US",
+    "britain": "UK", "england": "UK", "uk": "UK",
+    "european": "Europe", "eu": "Europe",
+}
+
+
+def _extract_world_keyword(query_text: str) -> str:
+    """Return a country/region keyword from a world news query, or '' for general world news."""
+    m = _WORLD_COUNTRY_RE.search(query_text)
+    if not m:
+        return ""
+    raw = m.group(1).lower()
+    return _COUNTRY_NORMALISE.get(raw, raw.title())
 
 # Words that signal a niche/opinion/trend article — skip these in favour of
 # a harder news headline. A real top headline rarely needs these qualifiers.
@@ -452,17 +488,23 @@ _NEWSAPI_CATEGORY_MAP = {
 }
 
 
-def _fetch_news_from_rss(keyword: str = "", max_results: int = 1) -> Optional[str]:
+def _fetch_news_from_rss(keyword: str = "", max_results: int = 1, feeds=None) -> Optional[str]:
     """
     Try each RSS feed in order. Return up to max_results usable headlines,
     joined by newlines. Optionally filters by keyword if provided.
     Returns None if all feeds fail or return no usable headlines.
+
+    feeds: list of RSS URLs to try. Defaults to _RSS_FEEDS_INDIA.
+           Pass _RSS_FEEDS_WORLD for international queries.
     """
     import xml.etree.ElementTree as ET
 
+    if feeds is None:
+        feeds = _RSS_FEEDS_INDIA
+
     kw_lower = keyword.lower() if keyword else ""
 
-    for feed_url in _RSS_FEEDS_INDIA:
+    for feed_url in feeds:
         try:
             resp = requests.get(
                 feed_url,
@@ -553,32 +595,59 @@ def _fetch_news_from_rss(keyword: str = "", max_results: int = 1) -> Optional[st
     return None
 
 
-def fetch_news(interests: str = "") -> Optional[str]:
-    """
-    Fetch up to 3 top news headlines for India.
+_WORLD_QUERY_RE = re.compile(
+    r"\b(world|international|global|abroad|overseas|around the world|"
+    r"what.{0,10}world|everywhere|"
+    r"usa|america|american|u\.s\.|united states|"
+    r"uk|britain|england|europe|european|"
+    r"china|russia|ukraine|france|germany|japan|korea|"
+    r"israel|middle east|africa|australia|canada|"
+    r"iran|turkey|brazil|mexico)\b",
+    re.IGNORECASE,
+)
 
-    Strategy:
-    1. Try public RSS feeds (no key needed, reliable) — returns up to 3 headlines.
-    2. Fall back to NewsAPI if RSS fails.
+
+def fetch_news(interests: str = "", query_text: str = "") -> Optional[str]:
+    """
+    Fetch up to 3 top news headlines.
+
+    If query_text indicates world/international intent (e.g. "what's in the USA?",
+    "world news"), uses _RSS_FEEDS_WORLD (BBC, Reuters World).
+    Otherwise uses _RSS_FEEDS_INDIA.
+
+    Falls back to NewsAPI if RSS fails.
 
     Returns a newline-separated string of headlines, or None on failure.
     """
-    keyword = _extract_first_keyword(interests)
-    cache_key = f"news:{keyword.lower() if keyword else 'india'}"
+    # Determine feed source from message intent, not profile interests
+    is_world = bool(_WORLD_QUERY_RE.search(query_text)) if query_text else False
+
+    if is_world:
+        feeds = _RSS_FEEDS_WORLD
+        keyword = _extract_world_keyword(query_text)   # '' = general world, 'US' = USA
+        cache_key = f"news_world:{keyword.lower() if keyword else 'world'}"
+        logger.debug("APIS | news | world query detected | keyword=%s", keyword or "(general)")
+    else:
+        feeds = _RSS_FEEDS_INDIA
+        keyword = _extract_first_keyword(interests)
+        cache_key = f"news:{keyword.lower() if keyword else 'india'}"
 
     hit, cached = _cache_get(cache_key)
     if hit:
-        logger.debug("APIS | news cache hit | keyword=%s", keyword)
+        logger.debug("APIS | news cache hit | key=%s", cache_key)
         return cached
 
     # ── Strategy 1: RSS feeds (primary, no key required) ──────────────────
     try:
-        headline = _fetch_news_from_rss(keyword, max_results=3)
+        headline = _fetch_news_from_rss(keyword, max_results=3, feeds=feeds)
         if headline:
             _cache_set(cache_key, headline)
-            logger.info("APIS | news fetched via RSS | keyword=%s | %s", keyword, headline[:80])
+            logger.info(
+                "APIS | news fetched via RSS | world=%s | keyword=%s | %s",
+                is_world, keyword or "(none)", headline[:80],
+            )
             return headline
-        logger.info("APIS | news RSS returned nothing | keyword=%s — trying NewsAPI", keyword)
+        logger.info("APIS | news RSS returned nothing | key=%s — trying NewsAPI", cache_key)
     except Exception as rss_err:
         logger.warning("APIS | news RSS failed entirely | %s", rss_err)
 

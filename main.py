@@ -115,6 +115,33 @@ _SESSION_STORE: dict[int, dict] = {}   # user_id → {"turns": deque, "last_ts":
 _SESSION_GAP_SEC = 12 * 60             # 12 minutes = new session boundary
 _SESSION_MAX_ITEMS = 24                # 12 exchange pairs max
 
+# ---------------------------------------------------------------------------
+# User row cache — eliminates the ~5s Turso sync on get_or_create_user
+# ---------------------------------------------------------------------------
+# Every call to get_or_create_user queries libsql/Turso (~4-5s cloud sync).
+# For regular conversation the user row is stable — caching is safe.
+# Invalidate after any DB write that changes the user row (onboarding steps,
+# language updates). Cache is in-process; restarts clear it automatically.
+# ---------------------------------------------------------------------------
+_USER_CACHE: dict[int, dict] = {}
+
+
+async def _get_user_with_cache(user_id: int):
+    """Return user row from memory (<1ms) or Turso (slow, first call only)."""
+    cached = _USER_CACHE.get(user_id)
+    if cached is not None:
+        return cached
+    row = await asyncio.to_thread(get_or_create_user, user_id)
+    if row:
+        _USER_CACHE[user_id] = dict(row)
+    return _USER_CACHE.get(user_id)
+
+
+def _invalidate_user_cache(user_id: int) -> None:
+    """Drop cached row so next access re-reads from Turso."""
+    _USER_CACHE.pop(user_id, None)
+
+
 _SESSION_RESET_SIGNALS = {
     "bye", "goodbye", "good night", "goodnight", "talk later", "see you",
     "kal baat karenge", "baad mein baat karte hain", "shubh ratri", "alvida",
@@ -465,7 +492,9 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
     if is_news:
         news_interests = user_context.get("news_interests") or user_context.get("favourite_topics") or ""
         try:
-            raw = fetch_news(news_interests)
+            # Pass query_text=text so fetch_news can detect world/country intent
+            # and use international RSS feeds (BBC, Reuters) instead of India-only feeds.
+            raw = fetch_news(news_interests, query_text=text)
             if raw:
                 headlines = [h.strip() for h in raw.strip().split("\n") if h.strip()]
                 n = len(headlines)
@@ -474,7 +503,7 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
                     + "\n".join(f"{i+1}. {h}" for i, h in enumerate(headlines))
                     + "\n\nINSTRUCTION: Share these stories naturally. "
                     f"If this is the first time the user is asking about news today, give all {n} — "
-                    f"say 'Here's what's happening today:' and list them briefly. "
+                    f"say 'Here's what's happening:' and list them briefly. "
                     f"If they have already received these stories in this conversation, acknowledge that "
                     f"warmly and say you don't have more right now. "
                     f"Do NOT add emotional framing or counsellor language. "
@@ -715,6 +744,8 @@ async def _run_pipeline(
             "OUT | user_id=%s | type=onboarding | step=%d",
             user_id, user_row["onboarding_step"],
         )
+        # User row changed (onboarding_step advanced) — drop cached snapshot.
+        _invalidate_user_cache(user_id)
         return
 
     # --- Staged handoff (child-led mode only, handoff_step 0–3) ---
@@ -848,6 +879,7 @@ async def _run_pipeline(
     if any(p in msg_lower for p in _LANGUAGE_SWITCH_TO_ENGLISH):
         from database import update_user_fields as _uuf_lang
         _uuf_lang(user_id, language="english")
+        _invalidate_user_cache(user_id)
         _lang_reply = "Of course."
         await update.message.reply_text(_lang_reply)
         save_message_record(user_id, "out", _lang_reply)
@@ -859,6 +891,7 @@ async def _run_pipeline(
     if any(p in msg_lower for p in _LANGUAGE_SWITCH_TO_HINDI):
         from database import update_user_fields as _uuf_lang
         _uuf_lang(user_id, language="hindi")
+        _invalidate_user_cache(user_id)
         _lang_reply = "Bilkul."
         await update.message.reply_text(_lang_reply)
         save_message_record(user_id, "out", _lang_reply)
@@ -1257,16 +1290,22 @@ async def _run_pipeline(
     _db_queue(save_session_turn, user_id, "user", _original_text)
     _db_queue(save_session_turn, user_id, "assistant", reply)
 
-    # --- TTS voice note ---
-    # No longer needs asyncio.gather with DB saves — DB writes are queued and
-    # non-blocking, so TTS runs immediately after the reply is delivered.
+    # --- TTS voice note (background task) ---
+    # Fire-and-forget: the pipeline returns as soon as text is delivered.
+    # Voice arrives independently — typically 10-15s later depending on
+    # Google Cloud TTS latency from Railway servers. The senior already has
+    # the text; voice is a supplementary accessibility layer.
     user_language = user_row["language"] or "english"
-    try:
-        audio_bytes = await asyncio.to_thread(text_to_speech, reply, user_language)
-        await update.message.reply_voice(voice=io.BytesIO(audio_bytes))
-        logger.info("TTS | user_id=%s | voice note sent", user_id)
-    except Exception as tts_err:
-        logger.warning("TTS | user_id=%s | failed, text-only: %s", user_id, tts_err)
+
+    async def _send_tts_bg(_uid: int, _reply: str, _lang: str, _upd) -> None:
+        try:
+            audio_bytes = await asyncio.to_thread(text_to_speech, _reply, _lang)
+            await _upd.message.reply_voice(voice=io.BytesIO(audio_bytes))
+            logger.info("TTS | user_id=%s | voice note sent (bg)", _uid)
+        except Exception as _e:
+            logger.warning("TTS | user_id=%s | bg failed: %s", _uid, _e)
+
+    asyncio.create_task(_send_tts_bg(user_id, reply, user_language, update))
 
     # Memory extraction — fire and forget after response is already delivered.
     # create_task so it runs without blocking the handler from returning.
@@ -1454,11 +1493,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         _stop_event = asyncio.Event()
         _typing_task = asyncio.create_task(_keep_typing(_stop_event))
 
-        # Fetch the user row in a background thread so the event loop stays free.
-        # get_or_create_user() can block on _GLOBAL_CONN if the write queue worker
-        # is mid-sync — running it in asyncio.to_thread prevents that from stalling
-        # the typing indicator or other concurrent handlers.
-        user_row = await asyncio.to_thread(get_or_create_user, user_id)
+        # Fetch the user row from the in-memory cache (instant) or Turso (~5s first
+        # call). After the first message the cache hit means this returns in <1ms,
+        # so the typing indicator fires almost immediately.
+        user_row = await _get_user_with_cache(user_id)
 
         try:
             await _run_pipeline(user_id, text, user_row, update, input_type="text", context=context)
@@ -1482,11 +1520,9 @@ async def receive_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         user_id, file_id, duration,
     )
     try:
-        # Fetch user row and download voice file concurrently.
-        # get_or_create_user is now in asyncio.to_thread so it doesn't block the event loop
-        # while waiting for _GLOBAL_CONN (which may be mid-Turso-sync from the write queue).
+        # Fetch user row (from cache, instant) and download voice file concurrently.
         user_row, tg_file = await asyncio.gather(
-            asyncio.to_thread(get_or_create_user, user_id),
+            _get_user_with_cache(user_id),
             context.bot.get_file(file_id),
         )
         file_bytes = bytes(await tg_file.download_as_bytearray())
