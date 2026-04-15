@@ -1620,7 +1620,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         user_row = await _get_user_with_cache(user_id)
 
         try:
-            await _run_pipeline(user_id, text, user_row, update, input_type="text", context=context)
+            # Hard 25-second timeout on the full pipeline.
+            # If a DB call hangs (e.g. malformed libsql connection blocking a
+            # thread), _run_pipeline never returns and _keep_typing spins
+            # forever until Railway kills the container. The timeout cancels
+            # the pipeline cleanly so the bot stays alive for other users.
+            await asyncio.wait_for(
+                _run_pipeline(user_id, text, user_row, update, input_type="text", context=context),
+                timeout=25.0,
+            )
+        except asyncio.TimeoutError:
+            logger.error("ERR | user_id=%s | pipeline timeout (>25s) — likely stuck DB call", user_id)
+            raise RuntimeError("pipeline timeout")
         finally:
             _stop_event.set()
             await asyncio.sleep(0)  # yield so _keep_typing can exit cleanly

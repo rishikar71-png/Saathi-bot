@@ -258,13 +258,36 @@ def _raw_connect():
     return _GLOBAL_CONN
 
 
+def _reset_connection() -> None:
+    """
+    Discard the global connection and delete the local DB file so _raw_connect()
+    will re-establish a clean connection on the next call.
+
+    Called at runtime when any query raises "database disk image is malformed"
+    or similar — prevents the rest of the session from using a broken connection.
+    """
+    global _GLOBAL_CONN
+    import logging
+    logging.getLogger(__name__).warning("DB | resetting malformed connection and deleting replica")
+    _GLOBAL_CONN = None
+    _delete_db_file()
+
+
 def get_connection():
+    global _GLOBAL_CONN
     conn = _raw_connect()
     conn.row_factory = sqlite3.Row   # no-op on _Connection but kept for sqlite3 path
     try:
         conn.execute("PRAGMA foreign_keys = ON")
-    except Exception:
-        pass
+    except Exception as _pragma_err:
+        # If a basic PRAGMA fails with malformed/corrupt, the connection is dead.
+        # Reset it so the NEXT caller gets a fresh one.
+        _err = str(_pragma_err).lower()
+        if any(kw in _err for kw in ("malformed", "corrupt", "not a database", "disk image")):
+            _reset_connection()
+            # Re-create the connection fresh for THIS caller too.
+            _GLOBAL_CONN = None
+            conn = _raw_connect()
     return conn
 
 
