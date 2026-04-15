@@ -138,7 +138,18 @@ class _Connection:
         _sql_upper = sql.strip().upper()
         if any(_sql_upper.startswith(kw) for kw in ("INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "DROP", "ALTER")):
             self._dirty = True
-        return _Cursor(self._conn.execute(sql, params))
+        try:
+            return _Cursor(self._conn.execute(sql, params))
+        except Exception as _exec_err:
+            _err_str = str(_exec_err).lower()
+            if any(kw in _err_str for kw in ("malformed", "corrupt", "not a database", "disk image")):
+                import logging
+                logging.getLogger(__name__).error(
+                    "DB | malformed detected mid-query — resetting connection for next caller | sql=%s",
+                    sql[:80],
+                )
+                _reset_connection()
+            raise
 
     def executemany(self, sql, seq):
         self._dirty = True
