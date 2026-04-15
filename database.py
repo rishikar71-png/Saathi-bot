@@ -1158,22 +1158,26 @@ def admin_reset_user(telegram_id: int) -> str:
         if not row:
             return f"User {telegram_id} not found in DB."
         user_id = row[0]
-        # Delete all related data — including the users row itself.
-        # get_or_create_user() will recreate the users row with clean defaults
-        # on the next incoming message. This is the only reliable reset approach.
+        # Disable foreign key checks for this operation so we can delete
+        # in any order without worrying about constraint violations.
+        conn.execute("PRAGMA foreign_keys = OFF")
+        # Delete all related data tables first, then the users row.
+        # Comprehensive list — covers all tables that may reference user_id.
         tables = [
             "diary_entries", "memories", "health_logs", "session_log",
             "session_messages", "medicine_reminders", "heartbeat_log",
             "protocol_log", "family_members", "user_question_tracking",
-            "memory_prompt_log",
+            "memory_prompt_log", "messages", "ritual_log",
+            "user_activity_patterns",
         ]
         for table in tables:
             try:
-                c.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
+                conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
             except Exception:
-                pass  # table may not exist in all schema versions
-        # Delete the users row last — this is the critical step
-        c.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+                pass  # table may not exist in all schema versions — skip silently
+        # Delete the users row itself — critical step
+        conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+        conn.execute("PRAGMA foreign_keys = ON")
         conn.commit()
         return f"Reset complete for user {telegram_id}."
 

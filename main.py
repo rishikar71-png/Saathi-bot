@@ -1575,9 +1575,13 @@ async def adminreset_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except ValueError:
         await update.message.reply_text("Invalid telegram_id — must be a number.")
         return
-    result = admin_reset_user(target_telegram_id)
-    _invalidate_user_cache(target_telegram_id)
-    _LIVE_SESSION_STORE.pop(target_telegram_id, None)
+    try:
+        result = admin_reset_user(target_telegram_id)
+    except Exception as _e:
+        result = f"DB reset failed: {_e}"
+    finally:
+        _invalidate_user_cache(target_telegram_id)
+        _LIVE_SESSION_STORE.pop(target_telegram_id, None)
     await update.message.reply_text(result)
 
 
