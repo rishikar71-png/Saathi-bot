@@ -132,7 +132,22 @@ async def _get_user_with_cache(user_id: int):
     cached = _USER_CACHE.get(user_id)
     if cached is not None:
         return cached
-    row = await asyncio.to_thread(get_or_create_user, user_id)
+    try:
+        row = await asyncio.to_thread(get_or_create_user, user_id)
+    except Exception as _cache_err:
+        _err_lower = str(_cache_err).lower()
+        if "no such table" in _err_lower:
+            # After a connection reset the local replica may be empty (Turso sync
+            # returned a blank DB).  Re-run startup migrations + init_db — both
+            # are fully idempotent (IF NOT EXISTS / INSERT OR IGNORE) — then retry.
+            logging.getLogger(__name__).warning(
+                "DB | 'no such table' after reset — re-running schema init and retrying"
+            )
+            await asyncio.to_thread(run_startup_migrations)
+            await asyncio.to_thread(init_db)
+            row = await asyncio.to_thread(get_or_create_user, user_id)
+        else:
+            raise
     if row:
         _USER_CACHE[user_id] = dict(row)
     return _USER_CACHE.get(user_id)
