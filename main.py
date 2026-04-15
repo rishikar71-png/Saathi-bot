@@ -1566,6 +1566,7 @@ async def adminreset_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("Invalid telegram_id — must be a number.")
         return
     result = admin_reset_user(target_telegram_id)
+    _invalidate_user_cache(target_telegram_id)
     await update.message.reply_text(result)
 
 
