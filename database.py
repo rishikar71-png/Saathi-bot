@@ -1158,35 +1158,22 @@ def admin_reset_user(telegram_id: int) -> str:
         if not row:
             return f"User {telegram_id} not found in DB."
         user_id = row[0]
-        # Reset all related data tables
-        c.execute("DELETE FROM diary_entries WHERE user_id = ?", (user_id,))
-        c.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
-        c.execute("DELETE FROM health_logs WHERE user_id = ?", (user_id,))
-        c.execute("DELETE FROM session_log WHERE user_id = ?", (user_id,))
-        c.execute("DELETE FROM session_messages WHERE user_id = ?", (user_id,))
-        c.execute("DELETE FROM medicine_reminders WHERE user_id = ?", (user_id,))
-        c.execute("DELETE FROM heartbeat_log WHERE user_id = ?", (user_id,))
-        c.execute("DELETE FROM protocol_log WHERE user_id = ?", (user_id,))
-        # Reset the users row itself — most important step
-        c.execute("""
-            UPDATE users SET
-                onboarding_complete = 0,
-                onboarding_step = 0,
-                setup_mode = NULL,
-                handoff_step = 0,
-                name = NULL,
-                bot_name = NULL,
-                persona = NULL,
-                language = 'en',
-                city = NULL,
-                spouse_name = NULL,
-                medicines_raw = NULL,
-                days_since_first_message = 0,
-                pending_memory_question_id = NULL,
-                pending_memory_question_text = NULL,
-                pending_memory_question_theme = NULL
-            WHERE user_id = ?
-        """, (user_id,))
+        # Delete all related data — including the users row itself.
+        # get_or_create_user() will recreate the users row with clean defaults
+        # on the next incoming message. This is the only reliable reset approach.
+        tables = [
+            "diary_entries", "memories", "health_logs", "session_log",
+            "session_messages", "medicine_reminders", "heartbeat_log",
+            "protocol_log", "family_members", "user_question_tracking",
+            "memory_prompt_log",
+        ]
+        for table in tables:
+            try:
+                c.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
+            except Exception:
+                pass  # table may not exist in all schema versions
+        # Delete the users row last — this is the critical step
+        c.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
         conn.commit()
         return f"Reset complete for user {telegram_id}."
 
