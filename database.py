@@ -252,36 +252,78 @@ def _raw_connect():
                     _log.error("DB | Turso connection FAILED (%s) — falling back to local SQLite", e)
                 break  # non-malformed error or second attempt failed — fall through
 
-    # Pure local SQLite fallback.
-    # If the local file is malformed (same corrupted replica), delete it first
-    # so sqlite3 starts from a blank slate rather than crashing.
+    # Pure local SQLite path (Railway Volume or local dev).
+    # Run integrity_check before connecting for real. If the file is malformed:
+    #   - Turso was the primary path: safe to delete and restart (cloud is intact)
+    #   - sqlite3 is the primary path: log a CRITICAL error but do NOT delete —
+    #     the file is the only copy of all data; let WAL recovery attempt first.
     if os.path.exists(DB_PATH):
+        import logging as _lg
+        _ic_log = _lg.getLogger(__name__)
         try:
             test_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-            test_conn.execute("PRAGMA integrity_check")
+            result = test_conn.execute("PRAGMA integrity_check").fetchone()
             test_conn.close()
-        except Exception:
-            import logging as _lg
-            _lg.getLogger(__name__).warning("DB | local SQLite also malformed — deleting for fresh start")
-            _delete_db_file()
+            if result and result[0] != "ok":
+                raise Exception(f"integrity_check returned: {result[0]}")
+        except Exception as _ic_err:
+            if TURSO_URL and TURSO_TOKEN:
+                # Turso was primary — deleting replica is safe
+                _ic_log.warning(
+                    "DB | local SQLite replica malformed (%s) — deleting for fresh Turso sync", _ic_err
+                )
+                _delete_db_file()
+            else:
+                # sqlite3 is primary — DO NOT delete; log critically and continue
+                _ic_log.critical(
+                    "DB | CRITICAL: saathi.db integrity check failed (%s). "
+                    "File preserved — WAL recovery may succeed. "
+                    "If bot fails to start, restore from Railway Volume backup.",
+                    _ic_err,
+                )
 
-    _GLOBAL_CONN = sqlite3.connect(DB_PATH, check_same_thread=False)
+    _sqlite_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    # WAL mode: allows concurrent readers alongside the single writer.
+    # Without this, any two threads accessing the DB simultaneously (asyncio
+    # event loop + APScheduler job thread) will see "database is locked" errors.
+    _sqlite_conn.execute("PRAGMA journal_mode=WAL")
+    _sqlite_conn.execute("PRAGMA synchronous=NORMAL")  # safe with WAL; faster than FULL
+    _GLOBAL_CONN = _sqlite_conn
     return _GLOBAL_CONN
 
 
 def _reset_connection() -> None:
     """
-    Discard the global connection and delete the local DB file so _raw_connect()
-    will re-establish a clean connection on the next call.
+    Discard the global connection so _raw_connect() will re-establish a clean
+    one on the next call.
 
-    Called at runtime when any query raises "database disk image is malformed"
-    or similar — prevents the rest of the session from using a broken connection.
+    IMPORTANT — file deletion policy:
+    - libsql/Turso path: safe to delete the local replica; cloud copy is intact,
+      next connect() will sync a fresh replica from Turso.
+    - sqlite3/Railway Volume path: NEVER delete the file — it is the only copy
+      of all user data. Null the connection and let sqlite3 reconnect to the
+      same (possibly WAL-recovered) file instead.
     """
     global _GLOBAL_CONN
     import logging
-    logging.getLogger(__name__).warning("DB | resetting malformed connection and deleting replica")
-    _GLOBAL_CONN = None
-    _delete_db_file()
+    _log = logging.getLogger(__name__)
+
+    if TURSO_URL and TURSO_TOKEN:
+        # Turso: delete local replica — cloud is the source of truth
+        _log.warning("DB | resetting malformed libsql connection and deleting replica")
+        _GLOBAL_CONN = None
+        _delete_db_file()
+    else:
+        # sqlite3: discard connection object only — DO NOT delete the file
+        _log.warning(
+            "DB | resetting malformed sqlite3 connection (file preserved — Railway Volume is source of truth)"
+        )
+        try:
+            if _GLOBAL_CONN is not None:
+                _GLOBAL_CONN.close()
+        except Exception:
+            pass
+        _GLOBAL_CONN = None
 
 
 def get_connection():

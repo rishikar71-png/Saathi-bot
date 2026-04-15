@@ -1860,6 +1860,21 @@ def main() -> None:
     init_db()
     logger.info("Database initialised")
 
+    # Verify DB is usable before starting any scheduler or accepting traffic.
+    # If this fails, the container log will show a CRITICAL error — Railway keeps
+    # restarting, which is better than silently serving a broken bot.
+    try:
+        from database import get_connection as _gc
+        _vc = _gc()
+        _vc.execute("SELECT 1 FROM users LIMIT 1")
+        logger.info("STARTUP | DB schema verified OK")
+    except Exception as _verify_err:
+        logger.critical(
+            "STARTUP | DB schema verification FAILED: %s — "
+            "check Railway Volume mount and DB_PATH env var",
+            _verify_err,
+        )
+
     # Seed the memory question bank — inserts 300+ questions if the table is empty.
     # Safe to call on every startup — silently skips if already seeded.
     try:
