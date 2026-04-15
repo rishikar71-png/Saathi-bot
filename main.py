@@ -790,6 +790,7 @@ async def _run_pipeline(
         if setup_mode == "pending":
             # User is replying to the opening detection question — parse their answer.
             mode, next_msg = handle_mode_detection(user_id, text)
+            _invalidate_user_cache(user_id)
             await update.message.reply_text(next_msg, parse_mode="Markdown")
             logger.info("OUT | user_id=%s | type=mode_detection | mode=%s", user_id, mode)
             return
@@ -859,6 +860,7 @@ async def _run_pipeline(
             replies.append(msg4)
             logger.info("OUT | user_id=%s | type=handoff | step=3 | bot_name=%s", user_id, bot_name)
 
+        _invalidate_user_cache(user_id)
         for r in replies:
             await update.message.reply_text(r)
             save_message_record(user_id, "out", r)
