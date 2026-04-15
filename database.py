@@ -176,6 +176,20 @@ class _Connection:
         return False
 
 
+def _delete_db_file() -> None:
+    """Delete the local DB file and its journal/wal siblings."""
+    import logging
+    _log = logging.getLogger(__name__)
+    for suffix in ("", "-journal", "-wal", "-shm"):
+        path = DB_PATH + suffix
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+                _log.warning("DB | deleted corrupted file: %s", path)
+        except Exception as del_err:
+            _log.error("DB | could not delete %s: %s", path, del_err)
+
+
 def _raw_connect():
     """
     Returns the global cached connection, creating it on first call.
@@ -186,6 +200,11 @@ def _raw_connect():
 
     sqlite3 fallback: check_same_thread=False so the single connection can be
     used safely from the asyncio event loop and PTB's job scheduler.
+
+    Self-healing: if the local DB file is malformed (corrupted embedded replica
+    from an interrupted sync), delete it and retry so libsql creates a fresh
+    copy from Turso. This prevents the crash-loop seen when Railway restarts
+    after a mid-sync crash.
     """
     global _GLOBAL_CONN
     if _GLOBAL_CONN is not None:
@@ -195,15 +214,45 @@ def _raw_connect():
     _log = logging.getLogger(__name__)
 
     if TURSO_URL and TURSO_TOKEN:
+        for attempt in (1, 2):   # attempt 2 retries after deleting the corrupted file
+            try:
+                import libsql_experimental as libsql      # noqa: PLC0415
+                raw = libsql.connect(DB_PATH, sync_url=TURSO_URL, auth_token=TURSO_TOKEN)
+                raw.sync()   # pull latest state from cloud — done exactly ONCE at startup
+                _log.info("DB | Turso cloud connection established (global, single sync)")
+                _GLOBAL_CONN = _Connection(raw)
+                return _GLOBAL_CONN
+            except Exception as e:
+                err_str = str(e).lower()
+                if "malformed" in err_str or "corrupt" in err_str or "not a database" in err_str:
+                    if attempt == 1:
+                        # Corrupted local replica — delete and retry once
+                        _log.warning(
+                            "DB | local replica malformed on attempt %d — deleting and retrying", attempt
+                        )
+                        _delete_db_file()
+                        continue   # retry
+                    else:
+                        _log.error(
+                            "DB | Turso still failing after file deletion (%s) — falling back to local SQLite",
+                            e,
+                        )
+                else:
+                    _log.error("DB | Turso connection FAILED (%s) — falling back to local SQLite", e)
+                break  # non-malformed error or second attempt failed — fall through
+
+    # Pure local SQLite fallback.
+    # If the local file is malformed (same corrupted replica), delete it first
+    # so sqlite3 starts from a blank slate rather than crashing.
+    if os.path.exists(DB_PATH):
         try:
-            import libsql_experimental as libsql      # noqa: PLC0415
-            raw = libsql.connect(DB_PATH, sync_url=TURSO_URL, auth_token=TURSO_TOKEN)
-            raw.sync()   # pull latest state from cloud — done exactly ONCE at startup
-            _log.info("DB | Turso cloud connection established (global, single sync)")
-            _GLOBAL_CONN = _Connection(raw)
-            return _GLOBAL_CONN
-        except Exception as e:
-            _log.error("DB | Turso connection FAILED (%s) — falling back to local SQLite", e)
+            test_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+            test_conn.execute("PRAGMA integrity_check")
+            test_conn.close()
+        except Exception:
+            import logging as _lg
+            _lg.getLogger(__name__).warning("DB | local SQLite also malformed — deleting for fresh start")
+            _delete_db_file()
 
     _GLOBAL_CONN = sqlite3.connect(DB_PATH, check_same_thread=False)
     return _GLOBAL_CONN
