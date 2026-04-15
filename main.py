@@ -1625,10 +1625,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             _stop_event.set()
             await asyncio.sleep(0)  # yield so _keep_typing can exit cleanly
     except Exception as e:
-        logger.error("ERR | user_id=%s | error=%s", user_id, e)
-        await update.message.reply_text(
-            "Maafi chahta hoon, abhi kuch takleef aa rahi hai. Thodi der mein dobara try karein. 🙏"
-        )
+        logger.error("ERR | user_id=%s | error=%s", user_id, e, exc_info=True)
+        # Use the user's language if we can read it from cache; default to English.
+        _err_lang = "english"
+        try:
+            _err_row = _USER_CACHE.get(user_id)
+            if _err_row:
+                _err_lang = (_err_row.get("language") or "english").lower()
+        except Exception:
+            pass
+        if _err_lang in ("hindi", "hinglish"):
+            _err_msg = "Maafi chahta hoon, kuch takleef aa rahi hai. Thodi der mein dobara try karein. 🙏"
+        else:
+            _err_msg = "Sorry, something went wrong on my end. Please try again in a moment. 🙏"
+        await update.message.reply_text(_err_msg)
         raise
 
 
