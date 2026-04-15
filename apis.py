@@ -249,6 +249,34 @@ def fetch_cricket() -> Optional[str]:
         return None
 
 
+def _parse_match_date(raw: str) -> str:
+    """
+    Normalise CricAPI date strings to "YYYY-MM-DD" for comparison.
+
+    Handles the formats seen from CricAPI free tier:
+      "2026-04-15"              → "2026-04-15"
+      "2026-04-15T14:00:00"     → "2026-04-15"
+      "2026-04-15 14:00:00"     → "2026-04-15"
+      "15-04-2026"              → "2026-04-15"
+      "15 Apr 2026"             → "2026-04-15"
+      "Apr 15, 2026"            → "2026-04-15"
+
+    Returns "" if none of the formats match.
+    """
+    from datetime import datetime
+    raw = raw.strip()
+    # Fast path: already ISO format (with or without time component)
+    if len(raw) >= 10 and raw[4] == "-" and raw[7] == "-":
+        return raw[:10]
+    # Try common non-ISO formats
+    for fmt in ("%d-%m-%Y", "%d %b %Y", "%b %d, %Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(raw[:20], fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+    return ""
+
+
 def _find_india_match(matches: list) -> Optional[str]:
     """
     Scan the matches list for India internationals OR any IPL match.
@@ -268,8 +296,9 @@ def _find_india_match(matches: list) -> Optional[str]:
     IST = timezone(timedelta(hours=5, minutes=30))
     today_ist = datetime.now(IST).strftime("%Y-%m-%d")
 
-    today_matches = []     # (match, started, ended) for matches dated today
-    upcoming_matches = []  # matches with a future date
+    today_matches = []      # (match, started, ended) for matches dated today
+    upcoming_matches = []   # matches with a future date
+    undated_matches = []    # tracked matches with no parseable date
 
     for match in matches:
         name = (match.get("name") or "").lower()
@@ -283,8 +312,21 @@ def _find_india_match(matches: list) -> Optional[str]:
         if not is_tracked_match:
             continue
 
-        # CricAPI returns date as "YYYY-MM-DD" (or datetime string — take first 10 chars)
-        match_date = (match.get("date") or match.get("dateTimeGMT") or "")[:10]
+        # Log the raw date fields for the first tracked match so we can verify
+        # CricAPI is returning a parseable format (debug aid, logged once per call).
+        if not today_matches and not upcoming_matches and not undated_matches:
+            logger.info(
+                "APIS | cricket tracked match | name=%r | raw_date=%r | raw_dtGMT=%r",
+                match.get("name", ""), match.get("date", ""), match.get("dateTimeGMT", ""),
+            )
+
+        # CricAPI free tier returns dates in inconsistent formats:
+        #   "YYYY-MM-DD", "YYYY-MM-DDThh:mm:ss", "YYYY-MM-DD hh:mm:ss",
+        #   "dd-mm-YYYY", "dd MMM YYYY", or missing entirely.
+        # _parse_match_date() normalises all to "YYYY-MM-DD" for comparison.
+        raw_date = match.get("date") or match.get("dateTimeGMT") or ""
+        match_date = _parse_match_date(raw_date) if raw_date else ""
+
         match_started = bool(match.get("matchStarted", False))
         match_ended   = bool(match.get("matchEnded", False))
 
@@ -292,6 +334,9 @@ def _find_india_match(matches: list) -> Optional[str]:
             today_matches.append((match, match_started, match_ended))
         elif match_date > today_ist:
             upcoming_matches.append(match)
+        elif not match_date:
+            # No usable date — bucket separately so we can fall back to it
+            undated_matches.append((match, match_started, match_ended))
         # Past dates (match_date < today_ist) are silently skipped.
 
     # Priority order: live today > upcoming today > next scheduled (future)
@@ -307,6 +352,19 @@ def _find_india_match(matches: list) -> Optional[str]:
     # Nothing today — surface the next scheduled India match if available
     if upcoming_matches:
         return f"UPCOMING — {_format_match_summary(upcoming_matches[0])}"
+
+    # Fallback: CricAPI didn't return a parseable date (common on free tier).
+    # Show the first undated tracked match rather than returning None.
+    # This is better than silently saying "no cricket today" when IPL is live.
+    if undated_matches:
+        match, started, ended = undated_matches[0]
+        summary = _format_match_summary(match)
+        if started and not ended:
+            return f"LIVE NOW — {summary}"
+        elif ended:
+            return f"RECENT — {summary}"
+        else:
+            return f"SCHEDULED — {summary}"
 
     return None
 
@@ -448,6 +506,14 @@ _IRRELEVANT_TOPIC_SIGNALS = [
     "blast", "explosion", "bomb", "terror attack", "shoot-out", "encounter",
     "accident", "fatal", "road crash", "pile-up", "derail", "plane crash",
     "riot", "mob", "lynching", "arson",
+    # Body discovery / horror headlines
+    "dead body", "body found", "found dead", "found hanging", "decomposed", "decomposing",
+    "horror:", "bathroom horror", "gruesome", "missing woman", "missing girl",
+    "corpse", "human remains", "skeletal remains",
+    # Celebrity gossip irrelevant to seniors 65+ — applies to both India and world feeds
+    "rehab", "divorc", "dating again", "break up", "breakup", "affair", "cheating",
+    "baby shower", "baby bump", "pregnancy reveal", "engaged to", "wedding photos",
+    "wardrobe malfunction", "drunk", "dui", "arrested for",
 ]
 
 

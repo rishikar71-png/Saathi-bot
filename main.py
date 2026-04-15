@@ -124,6 +124,7 @@ _SESSION_MAX_ITEMS = 24                # 12 exchange pairs max
 # language updates). Cache is in-process; restarts clear it automatically.
 # ---------------------------------------------------------------------------
 _USER_CACHE: dict[int, dict] = {}
+_STARTUP_MONOTONIC = time.monotonic()   # set once at import time for uptime tracking
 
 
 async def _get_user_with_cache(user_id: int):
@@ -140,6 +141,40 @@ async def _get_user_with_cache(user_id: int):
 def _invalidate_user_cache(user_id: int) -> None:
     """Drop cached row so next access re-reads from Turso."""
     _USER_CACHE.pop(user_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Family-member cache — eliminates the ~5–30s sync Turso call inside
+# _run_pipeline that checks whether the incoming user is a registered
+# family contact rather than a senior.
+# ---------------------------------------------------------------------------
+# Root cause of 37s delays: find_senior_for_family_member() makes a raw
+# Turso query at the TOP of _run_pipeline (before the placeholder is sent).
+# When memory-extraction background tasks hold the libsql global-connection
+# mutex for ~28s (6 DeepSeek calls × 4s each), this query blocks for the
+# entire duration, stalling the event loop and preventing the placeholder
+# from being sent.
+#
+# Family membership never changes after setup, so an in-process cache is
+# 100% correct. First lookup uses asyncio.to_thread (yields to event loop);
+# every subsequent lookup returns in <1ms from the dict.
+# ---------------------------------------------------------------------------
+_FAMILY_CACHE: dict[int, object] = {}
+_FM_NOT_CACHED = object()   # sentinel — distinguishes "not looked up" from None
+
+
+async def _senior_for_family_cached(user_id: int):
+    """
+    Return senior_id if user_id is a registered family contact, else None.
+    Cached permanently — family membership is set at onboarding and never changes.
+    First call: asyncio.to_thread (non-blocking). Subsequent calls: dict lookup.
+    """
+    cached = _FAMILY_CACHE.get(user_id, _FM_NOT_CACHED)
+    if cached is not _FM_NOT_CACHED:
+        return cached   # None (not a family member) or int (senior_id)
+    result = await asyncio.to_thread(find_senior_for_family_member, user_id)
+    _FAMILY_CACHE[user_id] = result
+    return result
 
 
 _SESSION_RESET_SIGNALS = {
@@ -611,8 +646,9 @@ async def _run_pipeline(
 
     # --- End-of-life: death notification from a registered family member ---
     # Only check messages from registered family contacts — prevents abuse.
-    # This runs before everything else so it can silence the normal pipeline.
-    senior_id_for_family = find_senior_for_family_member(user_id)
+    # Uses the in-memory cache: first call is asyncio.to_thread (non-blocking);
+    # subsequent calls return in <1ms. Eliminates the 5–30s sync Turso block.
+    senior_id_for_family = await _senior_for_family_cached(user_id)
     if senior_id_for_family is not None:
         from database import get_or_create_user as _get_senior
         senior_row = _get_senior(senior_id_for_family)
@@ -674,8 +710,12 @@ async def _run_pipeline(
         logger.info("OUT | user_id=%s | type=policy_full", user_id)
         return
 
-    # Track first message of the day for adaptive ritual scheduling
-    record_first_message(user_id)
+    # Track first message of the day for adaptive ritual scheduling.
+    # NOTE: This is queued to the background writer — NOT called synchronously here.
+    # record_first_message() calls get_connection() + commit() which triggers a
+    # Turso sync (~5s) even for INSERT OR IGNORE no-ops. Running it synchronously
+    # before the placeholder caused a 5s freeze on every single message.
+    # The actual DB write is queued below, after the placeholder is sent.
 
     # --- Medicine reminder acknowledgement ---
     # Checked before anything else so 👍 is never routed to DeepSeek.
@@ -1096,12 +1136,11 @@ async def _run_pipeline(
     except Exception:
         pass
 
-    # --- Queue inbound message DB save (fire-and-forget, non-blocking) ---
-    # This used to run synchronously at the START of _run_pipeline, before
-    # the placeholder was sent — causing a 10-12s Turso sync that kept the
-    # user in silence. Now it queues to a background worker so it never
-    # blocks the response path. The session history is already in memory.
+    # --- Queue inbound message DB save + first-message tracking (fire-and-forget) ---
+    # Both calls do Turso commits. Queueing them here (AFTER the placeholder) means
+    # the user always sees "…" in <1s regardless of Turso sync latency.
     _db_queue(save_message_record, user_id, "in", text, input_type)
+    _db_queue(record_first_message, user_id)
 
     # --- Live data injection for news / cricket / weather queries ---
     # The news/cricket/weather APIs are wired into the morning ritual but NOT into
@@ -1109,10 +1148,13 @@ async def _run_pipeline(
     # which hallucinates stale content. Here we detect intent, call the APIs, and
     # inject real data (or an honest "I don't have live news") into the DeepSeek
     # system prompt as a context block.
-    # NOTE: This runs AFTER the placeholder is sent, so the user sees "…" while
-    # the API calls are in flight. Previously these blocking calls happened before
-    # any placeholder, causing 20-24s of silence on news/weather/cricket queries.
-    _live_data_injected = _inject_live_data_if_needed(text, user_context)
+    # NOTE: Now runs in asyncio.to_thread so RSS/API fetches (requests.get calls)
+    # do NOT block the event loop. Without this, a 3-feed RSS fetch (3 × 4s timeout)
+    # would freeze the event loop for up to 12–16s, preventing subsequent messages
+    # from being processed and stalling TTS background tasks.
+    _live_data_injected = await asyncio.to_thread(
+        _inject_live_data_if_needed, text, user_context
+    )
     if _live_data_injected:
         user_context["live_data_context"] = _live_data_injected
         logger.info("LIVE_DATA | user_id=%s | injected: %r", user_id, _live_data_injected[:80])
@@ -1246,13 +1288,27 @@ async def _run_pipeline(
         return
 
     # --- Short-reply disengagement detector ---
-    # If the senior sends a very short reply (≤4 words, no question mark),
+    # If the senior sends a very short reply (≤3 words, no question mark, no question word),
     # inject a HARD OVERRIDE so DeepSeek doesn't ask more questions.
     # This catches "Ok", "Hmm", "👍", "Theek hai", "Haan" etc.
+    #
+    # IMPORTANT: threshold is ≤3 (not ≤4). "whats the news today" (4 words) and
+    # "how are you" (3 words) were both mis-firing when threshold was 4.
+    # "how are you" still fires at ≤3, but the question-word exclusion catches it.
+    #
+    # Question-word exclusion: messages that start with a WH-question or common
+    # Hindi question words ("how are you", "what happened", "kya hua", "kaisa hai")
+    # are genuine questions — never treat them as disengaged, regardless of length.
+    _QUESTION_STARTS = {
+        "how", "what", "when", "where", "who", "why", "which",
+        "kya", "kaise", "kaun", "kab", "kyun", "kyunki",
+    }
+    _first_word = _original_text.strip().lower().split()[0] if _original_text.strip() else ""
     _word_count = len(_original_text.strip().split())  # use original, not possibly-wrapped text
     _is_short_disengaged = (
-        _word_count <= 4
+        _word_count <= 3
         and "?" not in _original_text
+        and _first_word not in _QUESTION_STARTS
         and not any(sig in _original_text.lower() for sig in ["help", "bachao", "emergency"])
         and not _is_vulnerability  # let vulnerability pre-processor handle emotional shorts
         and not _is_grief          # let grief pre-processor handle grief shorts
@@ -1292,20 +1348,39 @@ async def _run_pipeline(
 
     # --- TTS voice note (background task) ---
     # Fire-and-forget: the pipeline returns as soon as text is delivered.
-    # Voice arrives independently — typically 10-15s later depending on
+    # Voice arrives independently — typically 10-20s later depending on
     # Google Cloud TTS latency from Railway servers. The senior already has
     # the text; voice is a supplementary accessibility layer.
+    #
+    # Two guards to prevent stale/oversized voice notes:
+    #   1. STALENESS: if TTS takes so long that >40s have passed since the text was
+    #      sent, the conversation has likely moved on. Drop the voice note silently.
+    #   2. LENGTH: long responses (news, cricket, weather — typically >180 chars) are
+    #      already well-formatted text. Sending a 2-minute voice reading of a news
+    #      bulletin is worse UX than just the text. Skip TTS for these.
     user_language = user_row["language"] or "english"
+    _tts_sent_at = time.monotonic()
+    _TTS_STALE_SECONDS = 40
+    _TTS_MAX_CHARS = 180  # skip TTS for long info-dump responses
 
-    async def _send_tts_bg(_uid: int, _reply: str, _lang: str, _upd) -> None:
+    async def _send_tts_bg(_uid: int, _reply: str, _lang: str, _upd, _sent_at: float) -> None:
         try:
+            if len(_reply) > _TTS_MAX_CHARS:
+                logger.info("TTS | user_id=%s | skipped (reply too long: %d chars)", _uid, len(_reply))
+                return
             audio_bytes = await asyncio.to_thread(text_to_speech, _reply, _lang)
+            elapsed = time.monotonic() - _sent_at
+            if elapsed > _TTS_STALE_SECONDS:
+                logger.info(
+                    "TTS | user_id=%s | dropped (stale: %.1fs since text sent)", _uid, elapsed
+                )
+                return
             await _upd.message.reply_voice(voice=io.BytesIO(audio_bytes))
-            logger.info("TTS | user_id=%s | voice note sent (bg)", _uid)
+            logger.info("TTS | user_id=%s | voice note sent (bg) | elapsed=%.1fs", _uid, elapsed)
         except Exception as _e:
             logger.warning("TTS | user_id=%s | bg failed: %s", _uid, _e)
 
-    asyncio.create_task(_send_tts_bg(user_id, reply, user_language, update))
+    asyncio.create_task(_send_tts_bg(user_id, reply, user_language, update, _tts_sent_at))
 
     # Memory extraction — fire and forget after response is already delivered.
     # create_task so it runs without blocking the handler from returning.
@@ -1315,6 +1390,52 @@ async def _run_pipeline(
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
+
+async def handle_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/status — quick health check. Confirms the bot is alive, shows uptime and API key presence."""
+    import os, datetime
+    user_id = update.effective_user.id
+    logger.info("IN  | user_id=%s | type=command | content=/status", user_id)
+
+    lines = ["*Saathi status*", ""]
+
+    # Uptime
+    try:
+        uptime_s = int(time.monotonic() - _STARTUP_MONOTONIC)
+        h, rem = divmod(uptime_s, 3600)
+        m, s = divmod(rem, 60)
+        lines.append(f"✅ Bot alive — uptime {h}h {m}m {s}s")
+    except Exception:
+        lines.append("✅ Bot alive")
+
+    # API keys present (not their values — just presence)
+    key_checks = [
+        ("TELEGRAM_BOT_TOKEN",  "Telegram"),
+        ("DEEPSEEK_API_KEY",    "DeepSeek"),
+        ("OPENAI_API_KEY",      "Whisper/OpenAI"),
+        ("GOOGLE_CLOUD_API_KEY","Google TTS/YouTube"),
+        ("CRICKET_API_KEY",     "Cricket"),
+        ("WEATHER_API_KEY",     "Weather"),
+        ("NEWS_API_KEY",        "News"),
+    ]
+    key_lines = []
+    for env_var, label in key_checks:
+        present = bool(os.environ.get(env_var))
+        key_lines.append(f"{'✅' if present else '❌'} {label}")
+    lines.append("\n".join(key_lines))
+
+    # DB write queue depth
+    if _DB_WRITE_QUEUE is not None:
+        lines.append(f"📬 DB queue depth: {_DB_WRITE_QUEUE.qsize()}")
+
+    # Current IST time
+    from datetime import timezone, timedelta
+    ist = datetime.datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    lines.append(f"🕐 IST: {ist.strftime('%d %b %Y %H:%M')}")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    logger.info("OUT | user_id=%s | type=status", user_id)
+
 
 async def handle_policy_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/policy — sends the short privacy summary. Senior can request full policy by replying."""
@@ -1714,6 +1835,7 @@ def main() -> None:
 
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("status", handle_status_command))
     app.add_handler(CommandHandler("help", handle_help_command))
     app.add_handler(CommandHandler("policy", handle_policy_command))
     app.add_handler(CommandHandler("familycode", handle_familycode))

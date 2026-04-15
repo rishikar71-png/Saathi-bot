@@ -300,7 +300,8 @@ def _build_system_prompt(user_context: dict) -> str:
     user_profile_section = (
         f"---\n\n"
         f"CURRENT USER\n\n"
-        f"You are speaking with {name}. They call you {bot_name}.\n"
+        f"YOUR NAME IS {bot_name}. The person you are talking to is named {name}.\n"
+        f"CRITICAL: Never address {name} as '{bot_name}'. '{bot_name}' is YOUR name. '{name}' is THEIR name.\n"
         f"Language preference: {language_label}\n"
         f"Relationship style: {persona_description}\n\n"
         f"What you know about {name}:\n"
