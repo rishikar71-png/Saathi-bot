@@ -1567,6 +1567,7 @@ async def adminreset_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     result = admin_reset_user(target_telegram_id)
     _invalidate_user_cache(target_telegram_id)
+    _LIVE_SESSION_STORE.pop(target_telegram_id, None)
     await update.message.reply_text(result)
 
 

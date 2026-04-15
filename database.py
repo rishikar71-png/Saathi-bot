@@ -1158,11 +1158,35 @@ def admin_reset_user(telegram_id: int) -> str:
         if not row:
             return f"User {telegram_id} not found in DB."
         user_id = row[0]
+        # Reset all related data tables
         c.execute("DELETE FROM diary_entries WHERE user_id = ?", (user_id,))
         c.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
         c.execute("DELETE FROM health_logs WHERE user_id = ?", (user_id,))
         c.execute("DELETE FROM session_log WHERE user_id = ?", (user_id,))
         c.execute("DELETE FROM session_messages WHERE user_id = ?", (user_id,))
+        c.execute("DELETE FROM medicine_reminders WHERE user_id = ?", (user_id,))
+        c.execute("DELETE FROM heartbeat_log WHERE user_id = ?", (user_id,))
+        c.execute("DELETE FROM protocol_log WHERE user_id = ?", (user_id,))
+        # Reset the users row itself — most important step
+        c.execute("""
+            UPDATE users SET
+                onboarding_complete = 0,
+                onboarding_step = 0,
+                setup_mode = NULL,
+                handoff_step = 0,
+                name = NULL,
+                bot_name = NULL,
+                persona = NULL,
+                language = 'en',
+                city = NULL,
+                spouse_name = NULL,
+                medicines_raw = NULL,
+                days_since_first_message = 0,
+                pending_memory_question_id = NULL,
+                pending_memory_question_text = NULL,
+                pending_memory_question_theme = NULL
+            WHERE user_id = ?
+        """, (user_id,))
         conn.commit()
         return f"Reset complete for user {telegram_id}."
 
