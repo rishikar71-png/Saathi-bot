@@ -176,21 +176,57 @@ The libsql embedded replica file (`saathi.db`) on Railway's ephemeral disk got c
 
 ---
 
+---
+
+### Session Log: April 15, 2026 (continued) — DB Architecture Overhaul
+
+#### Root cause diagnosed: Turso is broken by design for this use case
+Full post-mortem written as `Saathi_DB_Technical_Briefing_Apr15.docx` and reviewed by GPT-4o and Gemini. Core finding: libsql's `commit()` is local-only — it never called `sync()`, so Turso cloud was always empty. Every "malformed" error + recovery cascade was triggered by the empty cloud replica being synced over local state. GPT and Gemini both independently confirmed the fix: remove Turso, use sqlite3 + Railway Volume.
+
+#### Commits this session (in addition to Apr 15 earlier commits):
+- `e34351c` — malformed detection in `_Connection.execute()` triggers immediate reset
+- `e3c7b9f` — "no such table" recovery: re-runs schema migrations on empty DB after reset
+- `654af62` — **WAL mode, guarded reset, startup verify** (the three items GPT+Gemini flagged as critical before pilot)
+
+#### What `654af62` does:
+1. **WAL mode** (`database.py`): `PRAGMA journal_mode=WAL` + `synchronous=NORMAL` on every sqlite3 connect. Allows concurrent readers + one writer — prevents "database is locked" under asyncio + scheduler thread access.
+2. **Guarded reset** (`database.py`): `_reset_connection()` now checks whether Turso or sqlite3 is in use. Turso path: still deletes local replica (cloud is source of truth). sqlite3 path: nulls connection only — NEVER deletes the file. Without this, a runtime malformed on Railway Volume = total data loss.
+3. **Integrity check path-awareness** (`database.py`): On startup malformed check, Turso path deletes and resyncs; sqlite3 path logs CRITICAL but preserves the file (WAL recovery may succeed).
+4. **Startup DB verify** (`main.py`): `SELECT 1 FROM users LIMIT 1` after init_db() — catches "no such table" before any scheduler fires or traffic arrives. Logs CRITICAL on failure.
+
+#### The ONE remaining action Rishi must take on Railway dashboard:
+**Delete `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` env vars.** This removes libsql from the boot path entirely. The bot will use stable sqlite3 from that point on. Then add a Railway Volume (1GB, mount at `/app`, set `DB_PATH=/app/saathi.db`, deploy strategy → Recreate). Without the Volume, DB still resets on container restart — but at least it won't corrupt. Volume is pre-pilot requirement.
+
+---
+
+## Also Done This Session — Global Workflow Protocol
+
+A global high-stakes decision protocol was written to `~/.claude/CLAUDE.md`. It applies to all projects (Saathi, CMO System, Graphic Designer, any future work) automatically. Key rules: Claude flags high-stakes decisions before any work begins, gets explicit yes/no on whether to seek second opinions from GPT and Gemini, produces a three-column comparison table when second opinions come back, waits for typed agreement before proceeding. Session close process also encoded there. Root cause of the Turso decision documented — Claude pattern-matched to wrong solution category and failed to present Railway Volume as an alternative.
+
+**In the next CMO System and Graphic Designer sessions: add one-line pointer to `~/.claude/CLAUDE.md` at the top of those CLAUDE.md files.**
+
+---
+
 ## What To Do Next Session
+
+### Step 0 — Railway dashboard actions (Rishi does these, not code)
+1. **Delete** `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` env vars on Railway → bot redeploys clean
+2. **Add Railway Volume**: Infrastructure tab → Volume → Mount path `/app` → set `DB_PATH=/app/saathi.db` env var → change deploy strategy to "Recreate" (not rolling)
+3. After deploy: `/status` on Telegram — all 7 keys ✅, no "malformed" in logs
 
 ### Step 1 — Verify bot is healthy (5 min)
 1. Send `/status` on Telegram. All 7 keys should be ✅.
 2. Send "hello" — placeholder should appear in <2 seconds.
 3. Send "how are you" — should get a normal warm response, NOT a one-word disengaged reply.
-4. Send "and cricket?" — check Railway logs for `APIS | cricket tracked match | raw_date=...` to see what date format CricAPI is returning.
-5. Watch Railway logs for any `SCHEDULER | ... failed: database disk image is malformed` — if those appear, the runtime reset isn't working.
+4. Send "and cricket?" — check Railway logs for `APIS | cricket tracked match | raw_date=...` to confirm date format.
+5. Watch Railway logs for `STARTUP | DB schema verified OK` — confirms WAL + schema working.
 
 ### Step 2 — Complete Module 19 testing
-Run the remaining test groups from `module_15_test_protocol.md`:
+Run remaining test groups from `module_15_test_protocol.md`:
 - Full onboarding flow (child-led, self-setup, confusion branch)
-- Protocol 1 triggers (Hindi crisis phrases: "jeena nahi chahta", "khatam kar loon")
+- Protocol 1 triggers (Hindi: "jeena nahi chahta", "khatam kar loon")
 - Protocol 3 triggers (financial: "mujhe apni property deni hai bete ko")
-- Memory question bank (may need to manually trigger — normally Wednesday/Sunday only)
+- Memory question bank (manually trigger if needed — normally Wednesday/Sunday only)
 - Morning ritual at correct time
 - Voice input (send a Hindi voice note)
 - Emergency command ("I fell", "bachao")
@@ -198,18 +234,19 @@ Run the remaining test groups from `module_15_test_protocol.md`:
 
 ### Step 3 — Build Module 20: Pilot Prep
 Not started. Key tasks:
-1. **Pilot user selection** — who are the 20 users? Adult children + their parents? If yes, how many parent-child pairs?
-2. **Onboarding guide** — simple one-page doc for adult children on how to set up Saathi for their parent (WhatsApp-style simple language)
-3. **Feedback mechanism** — how will pilot users give feedback? Simple Google Form? WhatsApp group?
-4. **Monitoring** — Railway logs are sufficient for now. Consider setting up an alert if the bot crashes.
-5. **Reset tooling** — test `/adminreset` works cleanly before sharing with pilot users
-6. **Privacy policy** — confirm `/policy` command returns the correct document before sharing externally
+1. **Pilot user selection** — who are the 20 users? Adult children + their parents?
+2. **Onboarding guide** — simple one-page doc for adult children (WhatsApp-style language)
+3. **Feedback mechanism** — Google Form? WhatsApp group?
+4. **Monitoring** — Railway logs sufficient for now; alert on crash optional
+5. **Reset tooling** — test `/adminreset` works cleanly before sharing
+6. **Privacy policy** — confirm `/policy` command returns correct document
 
 ---
 
 ## Known Open Questions (don't resolve without data)
-- **IPL cricket date format** — check Railway logs after next test to confirm what `raw_date` CricAPI actually returns
-- **DB runtime malformed** — monitor whether `get_connection()` health check successfully catches and resets runtime corruption, or whether a deeper libsql issue remains
-- **Over-reliance limiters** — Week 6 decision after pilot data (do not build in MVP)
+- **Turso env var deletion** — Rishi must do this on Railway dashboard before next session
+- **Railway Volume** — must be added before pilot (pre-pilot blocker)
+- **IPL cricket date format** — check Railway logs after next test
+- **Over-reliance limiters** — Week 6 decision after pilot data
 - **ElevenLabs voice cloning** — deferred to v2
 - **WhatsApp migration** — deferred to v2

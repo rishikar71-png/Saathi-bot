@@ -780,6 +780,7 @@ async def _run_pipeline(
             # Never try to detect mode from an unsolicited first message.
             from database import update_user_fields as _uuf
             _uuf(user_id, setup_mode="pending")
+            _invalidate_user_cache(user_id)
             await update.message.reply_text(
                 get_opening_detection_question(), parse_mode="Markdown"
             )
