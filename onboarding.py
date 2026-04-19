@@ -203,12 +203,37 @@ SELF_SETUP_DAY_1_QUESTIONS = [
 ]
 
 # Day 2 questions — asked after the bridge question (now or next day)
+# Revised 19 Apr 2026: every question is load-bearing. wake_time/sleep_time
+# and cricket-only question dropped (unused or lossy). Emergency contact
+# added so self-setup users get safety features and family bridge access.
 SELF_SETUP_DAY_2_QUESTIONS = [
-    "Do you take any medicines regularly? I can remind you if you'd like.",
-    "What time do you usually wake up?",
-    "What time do you usually go to sleep?",
+    # Q6 — Medicines (proper format — feeds reminder parser)
+    (
+        "Do you take any medicines regularly?\n\n"
+        "If yes, please list them with their times — e.g. "
+        "'metformin 8am and 8pm, BP tablet at night'.\n\n"
+        "If not, just say 'no'."
+    ),
+    # Q7 — Morning check-in time
+    "What time in the morning would you like me to say hello? (e.g. 8am or 9 baje)",
+    # Q8 — Afternoon check-in time
+    "And what time in the afternoon? (e.g. 1pm or 2 baje)",
+    # Q9 — Evening check-in time
+    "What time in the evening works for a chat? (e.g. 7pm or 8 baje)",
+    # Q10 — News interests (open — replaces cricket yes/no)
+    (
+        "What news topics do you enjoy following — cricket, Bollywood, "
+        "local news, politics, business, religion, or something else?\n\n"
+        "(Or say 'skip' if you'd prefer to pass on news.)"
+    ),
+    # Q11 — Music preferences
     "What kind of music do you enjoy?",
-    "Do you follow cricket?",
+    # Q12 — Emergency contact (Rishi's phrasing, 19 Apr 2026)
+    (
+        "Would you like to add someone from your family or a close friend "
+        "I should contact in an emergency? Share a name and phone number — "
+        "or say 'skip' if you'd rather not."
+    ),
 ]
 
 # Bridge question — asked after Day 1 (step 5) is answered. User chooses now or tomorrow.
@@ -635,14 +660,11 @@ def _handle_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> 
         return SELF_SETUP_BRIDGE_QUESTION
 
     # End of Day 2 → fully complete
-    if next_step > day1_len + day2_len:  # > 10
+    if next_step > day1_len + day2_len:  # > 12
         update_user_fields(user_id, self_setup_bridge_state=None)
         complete_onboarding(user_id)
         logger.info("ONBOARDING | user_id=%s | self-setup fully complete", user_id)
-        return (
-            "That's everything — thank you for telling me. 🙏\n\n"
-            "I'll be here whenever you'd like to talk."
-        )
+        return _build_self_setup_completion_message(user_id, ctx)
 
     # Day 2 question in progress — advance and return next question
     advance_onboarding_step(user_id, next_step)
@@ -703,8 +725,9 @@ def maybe_resume_day2_bridge(user_id: int, deferred_date: Optional[str]) -> Opti
 
 def _save_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
     """Save self-setup mode answers.
-    Day 1: steps 1–5 (name, bot name, city, language, family).
-    Day 2: steps 6–10 (medicines, wake, sleep, music, cricket).
+    Day 1 (steps 1–5): name, bot name, city, language, family members.
+    Day 2 (steps 6–12): medicines, morning/afternoon/evening check-in times,
+                        news interests, music preferences, emergency contact.
     """
     t = text.strip()
     tl = t.lower()
@@ -729,25 +752,48 @@ def _save_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> No
                 add_family_members_bulk(user_id, names, "family")
 
     # --- Day 2 ---
-    elif step == 6:  # Medicines (free text)
-        if tl not in ("no", "nahi", "none", "nothing", "no.", "nil"):
+    elif step == 6:  # Medicines + times (free text → reminder parser)
+        if tl not in ("no", "nahi", "none", "nothing", "no.", "nil", "skip"):
             update_user_fields(user_id, medicines_raw=t)
-    elif step == 7:  # Wake time
+    elif step == 7:  # Morning check-in time
         hhmm = _parse_single_time(t)
         if hhmm:
-            update_user_fields(user_id, wake_time=hhmm, morning_checkin_time=hhmm)
-    elif step == 8:  # Sleep time
+            update_user_fields(user_id, morning_checkin_time=hhmm)
+    elif step == 8:  # Afternoon check-in time
         hhmm = _parse_single_time(t)
         if hhmm:
-            update_user_fields(user_id, sleep_time=hhmm, evening_checkin_time=hhmm)
-    elif step == 9:  # Music preferences
+            update_user_fields(user_id, afternoon_checkin_time=hhmm)
+    elif step == 9:  # Evening check-in time
+        hhmm = _parse_single_time(t)
+        if hhmm:
+            update_user_fields(user_id, evening_checkin_time=hhmm)
+    elif step == 10:  # News interests (open, replaces cricket yes/no)
+        if tl not in ("no", "nahi", "none", "nothing", "no.", "nil", "skip",
+                      "not interested"):
+            update_user_fields(user_id, news_interests=t)
+    elif step == 11:  # Music preferences
         if tl not in ("no", "nahi", "none", "nothing", "no.", "nil", "skip"):
             update_user_fields(user_id, music_preferences=t)
-    elif step == 10:  # Cricket interest (yes/no)
-        yes_signals = ("yes", "haan", "ha", "han", "yeah", "y", "sure",
-                       "bilkul", "of course", "ofcourse", "zaroor")
-        if any(s in tl for s in yes_signals):
-            update_user_fields(user_id, news_interests="cricket")
+    elif step == 12:  # Emergency contact — name + phone
+        skip_signals = ("skip", "no", "nahi", "none", "nothing", "no.", "nil",
+                        "no thanks", "later")
+        if tl not in skip_signals:
+            phone_match = re.search(r"[\d]{10,}", t.replace(" ", "").replace("-", ""))
+            phone = phone_match.group() if phone_match else ""
+            name  = re.sub(r"[\d\-—:,+\s]+$", "", t).strip().strip("—:,").strip()
+            final_name = name or t
+            save_emergency_contact(user_id, final_name, phone)
+            ctx["emergency_name"] = final_name
+            # Opting in to a contact = opting in to safety features.
+            # weekly_report_opt_in defaults on per Option A (19 Apr 2026):
+            # the family-code offer in the completion message serves as consent.
+            update_user_fields(
+                user_id,
+                heartbeat_consent=1,
+                heartbeat_enabled=1,
+                escalation_opted_in=1,
+                weekly_report_opt_in=1,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -880,6 +926,60 @@ def _build_completion_message(user_id: int, ctx: dict) -> str:
     )
 
 
+def _get_emergency_contact_name(user_id: int) -> Optional[str]:
+    """DB-backed lookup — survives process restarts between bridge defer/resume."""
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT name FROM family_members "
+                "WHERE user_id = ? AND role = 'emergency' "
+                "ORDER BY id DESC LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            return row["name"] if row else None
+    except Exception:
+        return None
+
+
+def _build_self_setup_completion_message(user_id: int, ctx: dict) -> str:
+    """
+    Completion message for self-setup mode.
+    If an emergency contact was provided, append the family-code offer
+    (Option A, 19 Apr 2026) so the senior can optionally share the code
+    with that person to enable weekly updates + message relay.
+    """
+    base = (
+        "That's everything — thank you for telling me. 🙏\n\n"
+        "I'll be here whenever you'd like to talk."
+    )
+
+    # Prefer ctx (current session), fall back to DB (resume-from-defer case)
+    emergency_name = ctx.get("emergency_name") or _get_emergency_contact_name(user_id)
+    if not emergency_name:
+        return base
+
+    # Generate the linking code the senior can share
+    try:
+        from family import get_or_create_linking_code
+        code = get_or_create_linking_code(user_id)
+    except Exception as e:
+        logger.warning("ONBOARDING | family code generation failed: %s", e)
+        return base
+
+    if not code or code == "ERROR":
+        return base
+
+    return (
+        "That's everything — thank you for telling me. 🙏\n\n"
+        f"One last thing, if you'd like: if you'd like {emergency_name} to also "
+        f"get a gentle weekly update from me, or be able to send you a quick message "
+        f"through me anytime, have them send me this code:\n\n"
+        f"*{code}*\n\n"
+        "No rush — they can do this whenever.\n\n"
+        "I'll be here whenever you'd like to talk."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Parsers
 # ---------------------------------------------------------------------------
@@ -925,11 +1025,15 @@ def _parse_persona(text: str) -> str:
 
 
 def _parse_single_time(text: str) -> str:
-    """Extract a single time from free-form text like '8am', '9 baje', '21:00'.
-    Returns 'HH:MM' string, or None if unparseable."""
+    """Extract a single time from free-form text like '8am', '6.30', '9 baje', '21:00'.
+    Returns 'HH:MM' string, or None if unparseable.
+    Accepts colon OR dot as separator (Indian English commonly writes '6.30')."""
     import re as _re
     t = text.strip().lower()
+    # Order matters: 'midnight' must be checked BEFORE 'night' (substring),
+    # and 'noon' before anything containing 'n'.
     _aliases = {
+        "midnight": "00:00", "noon": "12:00",
         "subah": "08:00", "morning": "08:00", "breakfast": "08:00",
         "dopahar": "13:00", "afternoon": "13:00", "lunch": "13:00",
         "shaam": "18:00", "evening": "18:00",
@@ -938,7 +1042,8 @@ def _parse_single_time(text: str) -> str:
     for alias, hhmm in _aliases.items():
         if alias in t:
             return hhmm
-    m = _re.search(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm|baje)?", t, _re.IGNORECASE)
+    # Accept ':' or '.' as minute separator (e.g. '6.30', '6:30', '6')
+    m = _re.search(r"(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm|baje)?", t, _re.IGNORECASE)
     if not m:
         return None
     hour = int(m.group(1))
