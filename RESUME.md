@@ -207,46 +207,65 @@ A global high-stakes decision protocol was written to `~/.claude/CLAUDE.md`. It 
 
 ---
 
+## Session Log: April 19, 2026 — Railway Volume + adminreset bug chain
+
+### What was done
+1. **Railway Volume added** — Mount path `/data` (not `/app` — `/app` is where Railway puts the code, mounting a volume there hides `main.py`). `DB_PATH=/data/saathi.db` env var set.
+2. **Turso env vars deleted** by Rishi before session. Bot now uses sqlite3 + Railway Volume path.
+3. **Cache invalidation bug chain fixed** (4 separate gaps):
+   - After `setup_mode="pending"` set → `_invalidate_user_cache` missing → onboarding loop
+   - After `handle_mode_detection` → `_invalidate_user_cache` missing → same loop
+   - After handoff step updates → `_invalidate_user_cache` missing → handoff loop
+   - `/adminreset` → cache invalidation happened after a throwing call, never fired
+4. **adminreset DB bugs fixed**:
+   - Was not resetting the `users` row at all (only deleting diary/memories/etc.)
+   - Added `PRAGMA foreign_keys = OFF` before deletes to avoid constraint violations
+   - Wrapped cache invalidation in `finally` block so it always fires even on DB exception
+   - Comprehensive table list added (messages, ritual_log, user_activity_patterns)
+5. **Debug logging added** to `_get_user_with_cache` and `_invalidate_user_cache` to show cache hits/misses and invalidations.
+
+### State at session close
+- Last commit fixes the adminreset FOREIGN KEY error and the finally-block cache gap.
+- **adminreset was NOT confirmed working** — session closed before testing final commit.
+- Debug `CACHE |` log lines are still in the code — remove them once reset is confirmed.
+
+---
+
 ## What To Do Next Session
 
-### Step 0 — Railway dashboard actions (Rishi does these, not code)
-1. **Delete** `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` env vars on Railway → bot redeploys clean
-2. **Add Railway Volume**: Infrastructure tab → Volume → Mount path `/app` → set `DB_PATH=/app/saathi.db` env var → change deploy strategy to "Recreate" (not rolling)
-3. After deploy: `/status` on Telegram — all 7 keys ✅, no "malformed" in logs
+### Step 0 — Confirm adminreset works (5 min)
+1. `/adminreset 8711370451`
+2. "hello" → should get the opening detection question ("setting up for yourself or family member?")
+3. If it works: remove the debug `CACHE |` log lines from `_get_user_with_cache` and `_invalidate_user_cache` in `main.py`, push.
+4. If it still fails: paste Railway logs — the `CACHE |` lines will show exactly what's happening.
 
-### Step 1 — Verify bot is healthy (5 min)
-1. Send `/status` on Telegram. All 7 keys should be ✅.
-2. Send "hello" — placeholder should appear in <2 seconds.
-3. Send "how are you" — should get a normal warm response, NOT a one-word disengaged reply.
-4. Send "and cricket?" — check Railway logs for `APIS | cricket tracked match | raw_date=...` to confirm date format.
-5. Watch Railway logs for `STARTUP | DB schema verified OK` — confirms WAL + schema working.
+### Step 1 — Test onboarding flows (15 min)
+- **Self setup:** "hello" → "myself" → answer questions → confirm onboarding completes
+- **Child-led:** `/adminreset` → "hello" → "family member" → run through 18-question flow → confirm handoff to senior works
+- **Confusion branch:** `/adminreset` → first message = "who is this?" → confirm warm confusion response before handoff
 
 ### Step 2 — Complete Module 19 testing
-Run remaining test groups from `module_15_test_protocol.md`:
-- Full onboarding flow (child-led, self-setup, confusion branch)
-- Protocol 1 triggers (Hindi: "jeena nahi chahta", "khatam kar loon")
-- Protocol 3 triggers (financial: "mujhe apni property deni hai bete ko")
-- Memory question bank (manually trigger if needed — normally Wednesday/Sunday only)
-- Morning ritual at correct time
+- Protocol 1 (Hindi: "jeena nahi chahta", "khatam kar loon")
+- Protocol 3 (financial: "mujhe apni property deni hai bete ko")
 - Voice input (send a Hindi voice note)
 - Emergency command ("I fell", "bachao")
-- Family bridge (use `/familycode`, register as family, send a message)
+- Family bridge (`/familycode` → register → relay message)
+- Morning ritual (check ritual fires at correct IST time)
+- Memory question bank (Wednesday/Sunday — or manually trigger)
 
 ### Step 3 — Build Module 20: Pilot Prep
-Not started. Key tasks:
-1. **Pilot user selection** — who are the 20 users? Adult children + their parents?
-2. **Onboarding guide** — simple one-page doc for adult children (WhatsApp-style language)
-3. **Feedback mechanism** — Google Form? WhatsApp group?
-4. **Monitoring** — Railway logs sufficient for now; alert on crash optional
-5. **Reset tooling** — test `/adminreset` works cleanly before sharing
-6. **Privacy policy** — confirm `/policy` command returns correct document
+- **Pilot user selection** — who are the 20 users? Adult children + their parents?
+- **Onboarding guide** — simple one-page doc for adult children (WhatsApp-style language)
+- **Feedback mechanism** — Google Form? WhatsApp group?
+- **Reset tooling** — confirm `/adminreset` works cleanly before sharing with pilot users
+- **Privacy policy** — confirm `/policy` command returns correct document
 
 ---
 
 ## Known Open Questions (don't resolve without data)
-- **Turso env var deletion** — Rishi must do this on Railway dashboard before next session
-- **Railway Volume** — must be added before pilot (pre-pilot blocker)
-- **IPL cricket date format** — check Railway logs after next test
+- **adminreset confirmation** — test at start of next session
+- **Debug CACHE log lines** — remove once adminreset confirmed working
+- **IPL cricket date format** — check Railway logs during testing
 - **Over-reliance limiters** — Week 6 decision after pilot data
 - **ElevenLabs voice cloning** — deferred to v2
 - **WhatsApp migration** — deferred to v2

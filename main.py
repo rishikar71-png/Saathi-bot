@@ -131,12 +131,7 @@ async def _get_user_with_cache(user_id: int):
     """Return user row from memory (<1ms) or Turso (slow, first call only)."""
     cached = _USER_CACHE.get(user_id)
     if cached is not None:
-        logging.getLogger(__name__).info(
-            "CACHE | HIT user_id=%s | onboarding_complete=%s | setup_mode=%s",
-            user_id, cached.get("onboarding_complete"), cached.get("setup_mode"),
-        )
         return cached
-    logging.getLogger(__name__).info("CACHE | MISS user_id=%s — fetching from DB", user_id)
     try:
         row = await asyncio.to_thread(get_or_create_user, user_id)
     except Exception as _cache_err:
@@ -160,12 +155,7 @@ async def _get_user_with_cache(user_id: int):
 
 def _invalidate_user_cache(user_id: int) -> None:
     """Drop cached row so next access re-reads from DB."""
-    was_present = user_id in _USER_CACHE
     _USER_CACHE.pop(user_id, None)
-    logging.getLogger(__name__).info(
-        "CACHE | invalidated user_id=%s | was_present=%s | cache_keys=%s",
-        user_id, was_present, list(_USER_CACHE.keys()),
-    )
 
 
 # ---------------------------------------------------------------------------
