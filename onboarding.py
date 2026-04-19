@@ -253,20 +253,22 @@ def detect_bridge_answer(text: str) -> str:
     RULE: Unclear answers default to 'later' — never force questions on a user who didn't consent.
     """
     t = text.lower().strip()
-    # 'later' signals take priority — explicit "tomorrow" must never be misread as yes
-    later_signals = (
-        "tomorrow", "later", "kal", "baad mein", "baad", "not now",
-        "abhi nahi", "nahi abhi", "nahi", "no",
-    )
-    for s in later_signals:
-        if s in t:
+    # Multi-word 'later' phrases — substring match is safe here
+    later_phrases = ("not now", "baad mein", "abhi nahi", "nahi abhi")
+    for p in later_phrases:
+        if p in t:
             return "later"
-    # Word-boundary yes match — avoid substring false positives
+    # Single-word signals — word-boundary match to avoid false positives
+    # (e.g. "no" must NOT match "now", "baad" must NOT match random substrings)
     words = set(re.findall(r"\w+", t))
+    later_words = {"tomorrow", "later", "kal", "baad", "nahi", "no"}
     yes_words = {
         "yes", "now", "sure", "haan", "ha", "han", "okay", "ok",
         "abhi", "yeah", "yup", "bilkul", "theek",
     }
+    # 'later' takes priority when both appear — ambiguity preserves user agency
+    if words & later_words:
+        return "later"
     if words & yes_words:
         return "yes"
     # Unclear → safer default is 'later'
