@@ -1128,6 +1128,7 @@ async def _run_pipeline(
             if datetime.now(timezone.utc) - triggered > timedelta(minutes=60):
                 from database import update_user_fields as _uuf_p3
                 _uuf_p3(user_id, protocol3_active=0, protocol3_triggered_at=None)
+                _invalidate_user_cache(user_id)  # drop stale main-cache row
                 _p3_active = 0
         except Exception:
             pass  # on parse error, leave flag as-is
@@ -1155,6 +1156,10 @@ async def _run_pipeline(
                 protocol3_active=1,
                 protocol3_triggered_at=datetime.now(timezone.utc).isoformat(),
             )
+            # Drop stale main-cache row so the next message within the 5-min
+            # cache window sees protocol3_active=1 and doesn't re-fire the
+            # keyword check on a follow-up financial message.
+            _invalidate_user_cache(user_id)
             logger.info("OUT | user_id=%s | type=protocol3", user_id)
             return
         # If no P3 trigger, fall through to DeepSeek normally
@@ -1577,6 +1582,20 @@ async def handle_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         args = context.args
         code = args[0] if args else ""
         success, reply = join_by_code(code, user_id)
+
+        # Cache invalidation on successful join:
+        # Before /join, this user_id may have been cached as "not a family member"
+        # (None) by _senior_for_family_cached, and/or as a senior row by
+        # _get_user_with_cache (since any first contact auto-creates a users row).
+        # Both caches must be dropped so the next message from this user correctly
+        # routes through the family-relay path instead of being treated as a senior.
+        if success:
+            _FAMILY_CACHE.pop(user_id, None)
+            _invalidate_user_cache(user_id)
+            logger.info(
+                "FAMILY | caches invalidated after /join | user_id=%s", user_id,
+            )
+
         await update.message.reply_text(reply, parse_mode="Markdown")
         logger.info(
             "OUT | user_id=%s | type=join | code=%s | success=%s",

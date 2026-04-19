@@ -143,6 +143,37 @@ _VAGUE_MESSAGES = re.compile(
     re.IGNORECASE,
 )
 
+# Generic filler words. If EVERY word in the message is in this set, the
+# request carries no artist/title/genre signal and we should fall back to
+# the user's stored music_preferences.  This catches phrasings the
+# _VAGUE_MESSAGES regex misses — e.g. "get me a good song to listen to",
+# "can you play something nice for me", "mujhe ek accha gana sunao".
+_GENERIC_MUSIC_FILLERS = {
+    # English
+    "a", "an", "the", "any", "some", "something", "anything", "one",
+    "song", "songs", "music", "tune", "tunes", "melody",
+    "good", "nice", "sweet", "soft", "slow", "fast",
+    "please", "kindly",
+    "play", "hear", "listen", "listening", "sing", "put", "on",
+    "get", "give", "find",
+    "me", "for", "to", "let", "us",
+    "can", "could", "would", "you", "i", "want", "wanna", "like",
+    # Hindi/Hinglish
+    "kuch", "koi", "ek", "accha", "acha", "achha", "achcha",
+    "mujhe", "aap", "zara", "bas",
+    "gana", "gaana", "gaane", "sangeet",
+    "sunao", "suno", "sunna", "sunni", "bajao", "baja", "do",
+    "chahta", "chahti", "chahiye", "hai", "hain", "hoon", "hu",
+}
+
+
+def _is_all_filler(text: str) -> bool:
+    """True if every alphabetic word in the message is a generic filler."""
+    words = re.findall(r"[A-Za-z\u0900-\u097F]+", text.lower())
+    if not words:
+        return False
+    return all(w in _GENERIC_MUSIC_FILLERS for w in words)
+
 
 def detect_music_request(text: str, music_preferences: str = "") -> str | None:
     """
@@ -164,7 +195,10 @@ def detect_music_request(text: str, music_preferences: str = "") -> str | None:
         return None
 
     # Vague request — use user's preferences if available, else a warm default
-    if _VAGUE_MESSAGES.match(text.strip()):
+    # Two ways to be vague:
+    #   (a) message is in the hardcoded _VAGUE_MESSAGES list, OR
+    #   (b) every word is a generic filler ("get me a good song to listen to")
+    if _VAGUE_MESSAGES.match(text.strip()) or _is_all_filler(text):
         if music_preferences:
             return f"{music_preferences} Indian songs"
         return "old Hindi songs evergreen classics"

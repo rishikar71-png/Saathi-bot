@@ -354,6 +354,17 @@ def get_unacknowledged_for_escalation() -> list:
     1. All 3 attempts have been sent (reminder_attempt >= 3).
     2. Still unacknowledged after the 3rd attempt, and 30+ min since last send.
     3. User has explicitly opted in to family escalation (escalation_opted_in = 1).
+
+    Family recipient selection (fix 19 Apr 2026):
+    The original JOIN restricted to `is_setup_user = 1`, which is only set by
+    child-led onboarding. Self-setup users save their emergency contact with
+    role='emergency' (no is_setup_user flag), and family members who /join
+    later have role='family' (also no is_setup_user flag). Both paths were
+    silently dropped from the escalation query.
+
+    New rule: pick any family_member with a non-null telegram_user_id,
+    preferring is_setup_user first, then role='family' (joined via code),
+    then role='emergency'.
     """
     with get_connection() as conn:
         return conn.execute(
@@ -365,7 +376,20 @@ def get_unacknowledged_for_escalation() -> list:
             FROM medicine_reminders r
             JOIN users u ON u.user_id = r.user_id
             LEFT JOIN family_members fm
-                   ON fm.user_id = r.user_id AND fm.is_setup_user = 1
+                   ON fm.id = (
+                       SELECT id FROM family_members
+                       WHERE user_id = r.user_id
+                         AND telegram_user_id IS NOT NULL
+                       ORDER BY
+                           CASE
+                               WHEN is_setup_user = 1 THEN 0
+                               WHEN role = 'family'  THEN 1
+                               WHEN role = 'emergency' THEN 2
+                               ELSE 3
+                           END,
+                           id
+                       LIMIT 1
+                   )
             WHERE r.is_active = 1
               AND COALESCE(u.account_status, 'active') = 'active'
               AND r.last_sent_at IS NOT NULL
@@ -512,15 +536,22 @@ async def _send_reminder(bot, row) -> None:
     logger.info("REMINDER | sent | user_id=%s | medicine=%r", user_id, medicine)
 
 
-async def _escalate_to_family(bot, row) -> None:
-    """Send a warm alert to the family member's Telegram account."""
+async def _escalate_to_family(bot, row) -> bool:
+    """
+    Send a warm alert to the family member's Telegram account.
+    Returns True if the message was sent, False if skipped or failed.
+    The bool is used to gate mark_family_alerted — we must not stamp
+    family_alerted_at when no alert actually went through, or the
+    reminder will be excluded from the next escalation tick.
+    """
     family_id = row["family_telegram_id"]
     if not family_id:
-        logger.info(
-            "REMINDER | no family telegram_id | user_id=%s | skipping escalation",
+        logger.warning(
+            "REMINDER | escalation skipped — no family telegram_id | user_id=%s | "
+            "(family member has not /joined via linking code)",
             row["user_id"],
         )
-        return
+        return False
 
     name = row["name"] or "aapke ghar ka"
     sal = (row["preferred_salutation"] or "").strip()
@@ -541,10 +572,12 @@ async def _escalate_to_family(bot, row) -> None:
             "REMINDER | family alerted | user_id=%s | family_id=%s",
             row["user_id"], family_id,
         )
+        return True
     except Exception as e:
         logger.error(
             "REMINDER | family alert failed | family_id=%s | %s", family_id, e,
         )
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -573,7 +606,12 @@ async def check_and_send_reminders(bot) -> None:
     # Escalate unacknowledged reminders to family
     for row in get_unacknowledged_for_escalation():
         try:
-            await _escalate_to_family(bot, row)
-            mark_family_alerted(row["id"])
+            sent = await _escalate_to_family(bot, row)
+            # Only stamp family_alerted_at when the alert actually went through.
+            # If we stamp on a skip, the reminder is excluded from future escalation
+            # ticks and silently stops retrying — a senior could miss medicine
+            # family-wide without anyone knowing.
+            if sent:
+                mark_family_alerted(row["id"])
         except Exception as e:
             logger.error("REMINDER | escalation failed | id=%s | %s", row["id"], e)

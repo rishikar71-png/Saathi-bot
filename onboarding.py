@@ -780,8 +780,17 @@ def _save_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> No
         if tl not in skip_signals:
             phone_match = re.search(r"[\d]{10,}", t.replace(" ", "").replace("-", ""))
             phone = phone_match.group() if phone_match else ""
-            name  = re.sub(r"[\d\-—:,+\s]+$", "", t).strip().strip("—:,").strip()
-            final_name = name or t
+            # Strip leading affirmations ("yes.", "sure,", "haan", "okay") before
+            # extracting the name.  These survive the trailing-junk regex below.
+            stripped = re.sub(
+                r"^(yes|yeah|yup|yep|sure|okay|ok|haan|ha|han|bilkul|theek|thik)"
+                r"[\s\.\,\-—:!]+",
+                "",
+                t,
+                flags=re.IGNORECASE,
+            )
+            name = re.sub(r"[\d\-—:,+\s]+$", "", stripped).strip().strip("—:,").strip()
+            final_name = name or stripped.strip() or t
             save_emergency_contact(user_id, final_name, phone)
             ctx["emergency_name"] = final_name
             # Opting in to a contact = opting in to safety features.

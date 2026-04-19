@@ -112,15 +112,19 @@ async def alert_emergency_contacts(bot, user_id: int, user_row) -> int:
     Only fires if escalation_opted_in = 1.
     """
     if not user_row["escalation_opted_in"]:
-        logger.info(
+        # WARNING (not INFO) — during the pilot we need to know when a safety
+        # path tried to fire and was blocked. Triage of "no alert sent" requires
+        # the skip reason to be visible at WARNING level, not buried in INFO.
+        logger.warning(
             "SAFETY | family alert skipped — escalation_opted_in=0 | user_id=%s", user_id
         )
         return 0
 
     contacts = _get_family_contacts_with_telegram(user_id)
     if not contacts:
-        logger.info(
-            "SAFETY | family alert skipped — no contacts with telegram_user_id | user_id=%s",
+        logger.warning(
+            "SAFETY | family alert skipped — no contacts with telegram_user_id | user_id=%s "
+            "(family member has not /joined via linking code)",
             user_id,
         )
         return 0
@@ -338,6 +342,11 @@ def _get_inactivity_candidates() -> list:
     """
     Return users with heartbeat_consent=1 who have sent at least one message,
     along with their last inbound message time and user profile.
+
+    Deceased/inactive users are filtered out (account_status check) — rituals
+    and reminders already guard on this, but this query was missing it. A
+    deceased user in the 30-day pre-deletion window would otherwise receive
+    inactivity check-in nudges.
     """
     with get_connection() as conn:
         return conn.execute(
@@ -346,6 +355,7 @@ def _get_inactivity_candidates() -> list:
             FROM users u
             WHERE u.onboarding_complete = 1
               AND u.heartbeat_consent = 1
+              AND COALESCE(u.account_status, 'active') = 'active'
               AND EXISTS (
                   SELECT 1 FROM messages m
                   WHERE m.user_id = u.user_id AND m.direction = 'in'
