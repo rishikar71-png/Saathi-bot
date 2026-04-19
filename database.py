@@ -1183,7 +1183,11 @@ def admin_reset_user(telegram_id: int) -> str:
         conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
         conn.execute("PRAGMA foreign_keys = ON")
         conn.commit()
-        return f"Reset complete for user {telegram_id}."
+    # Drop cached row — without this, get_or_create_user() returns stale data
+    # for up to 5 minutes (TTL), causing greeting to show the old name AND
+    # save_message_record to fail with FOREIGN KEY since the users row is gone.
+    invalidate_user_cache(telegram_id)
+    return f"Reset complete for user {telegram_id}."
 
 
 # ---------------------------------------------------------------------------
