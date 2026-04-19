@@ -202,7 +202,7 @@ SELF_SETUP_DAY_1_QUESTIONS = [
     "Is there anyone I should know about — family members you talk to often?",
 ]
 
-# Day 2 questions — asked naturally in second session
+# Day 2 questions — asked after the bridge question (now or next day)
 SELF_SETUP_DAY_2_QUESTIONS = [
     "Do you take any medicines regularly? I can remind you if you'd like.",
     "What time do you usually wake up?",
@@ -211,6 +211,25 @@ SELF_SETUP_DAY_2_QUESTIONS = [
     "Do you follow cricket?",
 ]
 
+# Bridge question — asked after Day 1 (step 5) is answered. User chooses now or tomorrow.
+SELF_SETUP_BRIDGE_QUESTION = (
+    "Thank you. 🙏\n\n"
+    "I'd love to know a few more things so I can be most useful — just 5 more questions. "
+    "Shall we do them now, or would you prefer I ask tomorrow?\n\n"
+    "Reply: *now* or *tomorrow*"
+)
+
+SELF_SETUP_BRIDGE_DEFERRED_REPLY = (
+    "Of course — we'll pick it up tomorrow. 🙏\n\n"
+    "I'll be around today if you'd like to chat about anything else."
+)
+
+SELF_SETUP_BRIDGE_RECHECK = (
+    "Good to see you again.\n\n"
+    "Yesterday I mentioned a few more questions — shall we do them now? Just 5 short ones.\n\n"
+    "Reply: *now* or *later*"
+)
+
 
 def _self_setup_question(step: int) -> Optional[str]:
     """Return the self-setup question for the given step (1-indexed). None if done."""
@@ -218,6 +237,40 @@ def _self_setup_question(step: int) -> Optional[str]:
     if 1 <= step <= len(all_q):
         return all_q[step - 1]
     return None
+
+
+def _today_ist_str() -> str:
+    """Return today's IST date as YYYY-MM-DD (for deferred-date comparison)."""
+    from datetime import datetime, timezone, timedelta
+    ist = timezone(timedelta(hours=5, minutes=30))
+    return datetime.now(tz=ist).strftime("%Y-%m-%d")
+
+
+def detect_bridge_answer(text: str) -> str:
+    """
+    Parse user's yes/later response to the bridge question.
+    Returns 'yes' (wants to continue now) or 'later' (tomorrow).
+    RULE: Unclear answers default to 'later' — never force questions on a user who didn't consent.
+    """
+    t = text.lower().strip()
+    # 'later' signals take priority — explicit "tomorrow" must never be misread as yes
+    later_signals = (
+        "tomorrow", "later", "kal", "baad mein", "baad", "not now",
+        "abhi nahi", "nahi abhi", "nahi", "no",
+    )
+    for s in later_signals:
+        if s in t:
+            return "later"
+    # Word-boundary yes match — avoid substring false positives
+    words = set(re.findall(r"\w+", t))
+    yes_words = {
+        "yes", "now", "sure", "haan", "ha", "han", "okay", "ok",
+        "abhi", "yeah", "yup", "bilkul", "theek",
+    }
+    if words & yes_words:
+        return "yes"
+    # Unclear → safer default is 'later'
+    return "later"
 
 
 # ---------------------------------------------------------------------------
@@ -559,35 +612,108 @@ def handle_onboarding_answer(user_id: int, step: int, text: str) -> str:
 
 
 def _handle_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> str:
-    """Handle answers in self-setup mode (questions spread across 2 days)."""
+    """
+    Handle answers in self-setup mode.
+    Steps 1–5 = Day 1. After step 5 → bridge question (now/tomorrow).
+    Steps 6–10 = Day 2 (only reached via 'yes' to bridge or next-day resume).
+    After step 10 → onboarding fully complete.
+    """
     _save_self_setup_answer(user_id, step, text, ctx)
     logger.info("ONBOARDING | user_id=%s | mode=self | step=%d answered", user_id, step)
 
     next_step = step + 1
-    next_q = _self_setup_question(next_step)
+    day1_len = len(SELF_SETUP_DAY_1_QUESTIONS)
+    day2_len = len(SELF_SETUP_DAY_2_QUESTIONS)
 
-    if next_q is None or next_step > len(SELF_SETUP_DAY_1_QUESTIONS):
-        # Day 1 complete — set onboarding_complete so senior enters normal pipeline
+    # End of Day 1 → ask bridge question, wait for yes/later.
+    # Do NOT call complete_onboarding — onboarding_complete stays 0 until bridge resolves.
+    if next_step == day1_len + 1:  # == 6
+        update_user_fields(user_id, self_setup_bridge_state="asked")
+        logger.info("ONBOARDING | user_id=%s | self-setup day 1 done → bridge asked", user_id)
+        return SELF_SETUP_BRIDGE_QUESTION
+
+    # End of Day 2 → fully complete
+    if next_step > day1_len + day2_len:  # > 10
+        update_user_fields(user_id, self_setup_bridge_state=None)
         complete_onboarding(user_id)
-        logger.info("ONBOARDING | user_id=%s | self-setup day 1 complete", user_id)
+        logger.info("ONBOARDING | user_id=%s | self-setup fully complete", user_id)
         return (
-            "That's everything for now — thank you! 🙏\n\n"
-            "I'll be here whenever you'd like to talk. No need to reply straightaway."
+            "That's everything — thank you for telling me. 🙏\n\n"
+            "I'll be here whenever you'd like to talk."
         )
 
+    # Day 2 question in progress — advance and return next question
     advance_onboarding_step(user_id, next_step)
-    return next_q
+    next_q = _self_setup_question(next_step)
+    return next_q or "Let's continue."
+
+
+def handle_bridge_answer(user_id: int, text: str) -> str:
+    """
+    Called when setup_mode='self' AND self_setup_bridge_state='asked'.
+    Parses yes/later and routes:
+      - 'yes'    → clear state, advance to step 6, ask Day 2 q1
+      - 'later'  → set state='deferred', store today's IST date, mark onboarding_complete=1
+                   so user can chat freely today. Re-check fires on next day.
+    """
+    answer = detect_bridge_answer(text)
+    day1_len = len(SELF_SETUP_DAY_1_QUESTIONS)
+
+    if answer == "yes":
+        update_user_fields(
+            user_id,
+            self_setup_bridge_state=None,
+            onboarding_step=day1_len + 1,  # step 6
+        )
+        logger.info("ONBOARDING | user_id=%s | bridge=yes → Day 2 q1", user_id)
+        return _self_setup_question(day1_len + 1)
+
+    # 'later' path
+    update_user_fields(
+        user_id,
+        self_setup_bridge_state="deferred",
+        self_setup_deferred_date=_today_ist_str(),
+        onboarding_complete=1,  # let user chat freely today
+    )
+    logger.info("ONBOARDING | user_id=%s | bridge=later → deferred", user_id)
+    return SELF_SETUP_BRIDGE_DEFERRED_REPLY
+
+
+def maybe_resume_day2_bridge(user_id: int, deferred_date: Optional[str]) -> Optional[str]:
+    """
+    Called on every inbound message when setup_mode='self' AND bridge_state='deferred'.
+    If today's IST date > deferred_date → re-ask the bridge question and flip state back to 'asked'.
+    Returns the re-check message, or None if it's still the same day (user chats normally).
+    """
+    if not deferred_date:
+        return None
+    today = _today_ist_str()
+    if today > deferred_date:
+        update_user_fields(
+            user_id,
+            self_setup_bridge_state="asked",
+            onboarding_complete=0,  # roll back so bridge-answer handler can fire
+        )
+        logger.info("ONBOARDING | user_id=%s | deferred date passed → re-ask bridge", user_id)
+        return SELF_SETUP_BRIDGE_RECHECK
+    return None
 
 
 def _save_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
-    """Save self-setup mode answers (Day 1 questions only)."""
+    """Save self-setup mode answers.
+    Day 1: steps 1–5 (name, bot name, city, language, family).
+    Day 2: steps 6–10 (medicines, wake, sleep, music, cricket).
+    """
     t = text.strip()
+    tl = t.lower()
+
+    # --- Day 1 ---
     if step == 1:  # What would you like me to call you?
         name = t.title()
         ctx["senior_name"] = name
         update_user_fields(user_id, name=name)
     elif step == 2:  # What would you like to call me?
-        bot_name = t.title() if t.lower() not in ("saathi", "default") else "Saathi"
+        bot_name = t.title() if tl not in ("saathi", "default") else "Saathi"
         ctx["bot_name"] = bot_name
         update_user_fields(user_id, bot_name=bot_name)
     elif step == 3:  # City
@@ -595,10 +721,31 @@ def _save_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> No
     elif step == 4:  # Language
         update_user_fields(user_id, language=_parse_language(t))
     elif step == 5:  # Family members
-        if t.lower() not in ("no", "none", "nahi", "nobody"):
+        if tl not in ("no", "none", "nahi", "nobody"):
             names = [n.strip().title() for n in re.split(r"[,\n]", t) if n.strip()]
             if names:
                 add_family_members_bulk(user_id, names, "family")
+
+    # --- Day 2 ---
+    elif step == 6:  # Medicines (free text)
+        if tl not in ("no", "nahi", "none", "nothing", "no.", "nil"):
+            update_user_fields(user_id, medicines_raw=t)
+    elif step == 7:  # Wake time
+        hhmm = _parse_single_time(t)
+        if hhmm:
+            update_user_fields(user_id, wake_time=hhmm, morning_checkin_time=hhmm)
+    elif step == 8:  # Sleep time
+        hhmm = _parse_single_time(t)
+        if hhmm:
+            update_user_fields(user_id, sleep_time=hhmm, evening_checkin_time=hhmm)
+    elif step == 9:  # Music preferences
+        if tl not in ("no", "nahi", "none", "nothing", "no.", "nil", "skip"):
+            update_user_fields(user_id, music_preferences=t)
+    elif step == 10:  # Cricket interest (yes/no)
+        yes_signals = ("yes", "haan", "ha", "han", "yeah", "y", "sure",
+                       "bilkul", "of course", "ofcourse", "zaroor")
+        if any(s in tl for s in yes_signals):
+            update_user_fields(user_id, news_interests="cricket")
 
 
 # ---------------------------------------------------------------------------

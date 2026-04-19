@@ -29,6 +29,8 @@ from onboarding import (
     get_resume_prompt,
     handle_onboarding_answer,
     handle_mode_detection,
+    handle_bridge_answer,
+    maybe_resume_day2_bridge,
     get_handoff_message,
     get_setup_child_name,
     is_confused_senior,
@@ -770,6 +772,26 @@ async def _run_pipeline(
             # Do NOT return — let the message continue through the full pipeline
             # so DeepSeek can respond warmly to what the senior just shared.
 
+    # --- Self-setup deferred bridge: check if it's a new day ---
+    # Fires even when onboarding_complete=1, because 'later' marks the user
+    # complete-for-today but we want to re-ask Day 2 questions the next day.
+    _setup_mode_row = user_row["setup_mode"] if "setup_mode" in user_row.keys() else None
+    _bridge_state_row = (
+        user_row["self_setup_bridge_state"]
+        if "self_setup_bridge_state" in user_row.keys() else None
+    )
+    _deferred_date_row = (
+        user_row["self_setup_deferred_date"]
+        if "self_setup_deferred_date" in user_row.keys() else None
+    )
+    if _setup_mode_row == "self" and _bridge_state_row == "deferred":
+        recheck = maybe_resume_day2_bridge(user_id, _deferred_date_row)
+        if recheck is not None:
+            _invalidate_user_cache(user_id)
+            await update.message.reply_text(recheck, parse_mode="Markdown")
+            logger.info("OUT | user_id=%s | type=bridge_recheck", user_id)
+            return
+
     # --- Onboarding gate ---
     if not user_row["onboarding_complete"]:
         setup_mode = user_row["setup_mode"] if "setup_mode" in user_row.keys() else None
@@ -793,6 +815,18 @@ async def _run_pipeline(
             _invalidate_user_cache(user_id)
             await update.message.reply_text(next_msg, parse_mode="Markdown")
             logger.info("OUT | user_id=%s | type=mode_detection | mode=%s", user_id, mode)
+            return
+
+        # --- Self-setup bridge: waiting for now/later answer ---
+        bridge_state = (
+            user_row["self_setup_bridge_state"]
+            if "self_setup_bridge_state" in user_row.keys() else None
+        )
+        if setup_mode == "self" and bridge_state == "asked":
+            reply = handle_bridge_answer(user_id, text)
+            _invalidate_user_cache(user_id)
+            await update.message.reply_text(reply, parse_mode="Markdown")
+            logger.info("OUT | user_id=%s | type=bridge_answer", user_id)
             return
 
         reply = handle_onboarding_answer(user_id, user_row["onboarding_step"], text)

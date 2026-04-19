@@ -838,6 +838,10 @@ _USERS_NEW_COLUMNS = [
     # Module 6 two-mode fix — self-setup day tracking
     "ALTER TABLE users ADD COLUMN self_setup_day1_complete INTEGER DEFAULT 0",
     "ALTER TABLE users ADD COLUMN self_setup_day2_complete INTEGER DEFAULT 0",
+    # Self-setup Day 2 bridge — user agency: "now" vs "tomorrow"
+    # States: NULL (not asked), 'asked' (waiting for yes/later), 'deferred' (they said tomorrow)
+    "ALTER TABLE users ADD COLUMN self_setup_bridge_state TEXT DEFAULT NULL",
+    "ALTER TABLE users ADD COLUMN self_setup_deferred_date TEXT DEFAULT NULL",
     # Module 5 Protocol 3 context fix — prevents re-fire loop
     "ALTER TABLE users ADD COLUMN protocol3_active INTEGER DEFAULT 0",
     "ALTER TABLE users ADD COLUMN protocol3_triggered_at TEXT DEFAULT NULL",
