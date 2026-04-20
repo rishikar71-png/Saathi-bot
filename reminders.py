@@ -434,44 +434,126 @@ _MED_NAME_RE = re.compile(
 )
 
 
+_MED_PARSE_PROMPT = """You are parsing a senior's free-text answer about their medicines into structured data.
+
+The answer may include:
+- Affirmations ("yes", "sure", "haan") that should be ignored
+- Multiple medicines separated by "and", commas, or just spaces
+- Each medicine has one or more times (e.g. "8am", "after dinner", "morning")
+- Two medicines can share a time ("plavix and pan D at 8 AM" = both at 8 AM)
+- Times may be vague ("morning", "after dinner", "before bed", "raat")
+
+Return a JSON array of {{"name": "...", "time": "..."}} pairs. One entry per (medicine, time) combination.
+Use the senior's spelling for the medicine name (proper-case it).
+Keep the time in the senior's words (e.g. "8 AM", "after dinner", "morning").
+If no medicine + time can be extracted, return [].
+
+Examples:
+INPUT: "yes. plavix and pan D at 8 AM and Rosouvastatin after dinner"
+OUTPUT: [{{"name": "Plavix", "time": "8 AM"}}, {{"name": "Pan D", "time": "8 AM"}}, {{"name": "Rosouvastatin", "time": "after dinner"}}]
+
+INPUT: "metformin 8am and 8pm, atorvastatin at night"
+OUTPUT: [{{"name": "Metformin", "time": "8 AM"}}, {{"name": "Metformin", "time": "8 PM"}}, {{"name": "Atorvastatin", "time": "at night"}}]
+
+INPUT: "no medicines"
+OUTPUT: []
+
+Now parse this answer. Return ONLY the JSON array, no other text:
+INPUT: "{raw}"
+OUTPUT:"""
+
+
+def _deepseek_parse_medicines(medicines_raw: str) -> list[tuple[str, str]]:
+    """
+    Parse medicine text via DeepSeek into [(name, time), ...] pairs.
+    Returns [] on any failure — caller should fall back to regex parser.
+    """
+    try:
+        from deepseek import _get_client
+        import json
+
+        prompt = _MED_PARSE_PROMPT.format(raw=medicines_raw.replace('"', "'"))
+        response = _get_client().chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=400,
+        )
+        raw = response.choices[0].message.content.strip()
+        # Strip markdown code fence if DeepSeek wraps the JSON
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list):
+            return []
+        out = []
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            time = str(item.get("time", "")).strip()
+            if name and time:
+                out.append((name.title(), time))
+        return out
+    except Exception as e:
+        logger.warning("REMINDER | DeepSeek parse failed, will fall back to regex: %s", e)
+        return []
+
+
+def _regex_parse_medicines(medicines_raw: str) -> list[tuple[str, str]]:
+    """Fallback regex-based parser (legacy behavior)."""
+    out = []
+    entries = re.split(r"[,;]", medicines_raw)
+    for entry in entries:
+        entry = entry.strip()
+        if not entry or entry.lower() in ("no", "none", "nahi", "nil"):
+            continue
+        times = _TIME_TOKEN_RE.findall(entry)
+        if not times:
+            continue
+        med_match = _MED_NAME_RE.match(entry)
+        if med_match:
+            med_name = med_match.group(1).strip().title()
+        else:
+            words = re.split(r"\s+\d", entry, maxsplit=1)[0].strip().split()
+            med_name = " ".join(words[:2]).title() if words else "Medicine"
+        for time_str in times:
+            out.append((med_name, time_str))
+    return out
+
+
 def seed_reminders_from_raw(user_id: int, medicines_raw: str) -> int:
     """
     Parse free-form medicine text from onboarding (stored in users.medicines_raw)
     and create rows in medicine_reminders.
 
-    Example inputs:
-      "metformin 8am and 8pm, atorvastatin at night"
-      "BP tablet morning, thyroid pill 7am"
+    Primary parser is DeepSeek (handles affirmations, multi-medicine "and"
+    splits, shared times). Falls back to regex if DeepSeek fails or returns
+    nothing.
 
     Returns the number of reminders successfully created.
     """
-    entries = re.split(r"[,;]", medicines_raw)
+    if not medicines_raw or medicines_raw.strip().lower() in (
+        "no", "none", "nahi", "nil", "no.", "skip"
+    ):
+        return 0
+
+    pairs = _deepseek_parse_medicines(medicines_raw)
+    if not pairs:
+        logger.info("REMINDER | falling back to regex parser for user_id=%s", user_id)
+        pairs = _regex_parse_medicines(medicines_raw)
+
     count = 0
+    for med_name, time_str in pairs:
+        rid = add_reminder(user_id, med_name, time_str)
+        if rid:
+            count += 1
 
-    for entry in entries:
-        entry = entry.strip()
-        if not entry or entry.lower() in ("no", "none", "nahi", "nil"):
-            continue
-
-        times = _TIME_TOKEN_RE.findall(entry)
-        if not times:
-            logger.warning("REMINDER | seed | no time found in: %r", entry)
-            continue
-
-        med_match = _MED_NAME_RE.match(entry)
-        if med_match:
-            med_name = med_match.group(1).strip().title()
-        else:
-            # Best-effort: first word(s) before first digit
-            words = re.split(r"\s+\d", entry, maxsplit=1)[0].strip().split()
-            med_name = " ".join(words[:2]).title() if words else "Medicine"
-
-        for time_str in times:
-            rid = add_reminder(user_id, med_name, time_str)
-            if rid:
-                count += 1
-
-    logger.info("REMINDER | seeded %d reminders for user_id=%s", count, user_id)
+    logger.info(
+        "REMINDER | seeded %d reminders for user_id=%s | pairs=%s",
+        count, user_id, pairs,
+    )
     return count
 
 

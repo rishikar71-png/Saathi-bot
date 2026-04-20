@@ -5,6 +5,7 @@ import re
 import logging
 import time
 from collections import deque
+from datetime import datetime, timezone
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -65,6 +66,8 @@ from end_of_life import (
 from family import (
     get_or_create_linking_code,
     join_by_code,
+    lookup_senior_by_code,
+    complete_join_for_senior,
     relay_message_to_senior,
     build_relay_confirmation,
     check_and_send_weekly_report,
@@ -639,6 +642,172 @@ async def _async_reply(
 
 
 # ---------------------------------------------------------------------------
+# Bare-code auto-detect (Bug 3 fix, 20 Apr 2026)
+#
+# A family member may paste a 6-char linking code without the /join prefix.
+# Previously this dropped them into the onboarding flow as if they were a
+# new senior. Now:
+#   - If a valid family_linking_code is sent, show a confirmation question
+#     ("Is this Rishi's Saathi? yes/no") before registering them as family.
+#   - A 'yes' reply registers via complete_join_for_senior. A 'no' cancels.
+#   - TTL: 10 minutes — an unanswered confirmation expires automatically.
+#   - The confirmation guards against typo/misread-code collisions so family
+#     doesn't accidentally join a stranger's Saathi.
+# ---------------------------------------------------------------------------
+
+_BARE_CODE_RE = re.compile(r"^[A-Z0-9]{6}$")
+_JOIN_AFFIRM_RE = re.compile(
+    r"^(yes|yeah|yep|yup|y|sure|okay|ok|haan|ha|han|hanji|haanji|ji|"
+    r"confirm|correct|right|bilkul)[\s\.\!\?]*$",
+    re.IGNORECASE,
+)
+_JOIN_DECLINE_RE = re.compile(
+    r"^(no|nope|nah|n|cancel|nahi|galat|wrong|not)[\s\.\!\?]*$",
+    re.IGNORECASE,
+)
+_PENDING_JOIN_TTL_SEC = 600  # 10 minutes
+
+
+def _pending_join_is_fresh(asked_at_str: str) -> bool:
+    """Return True if the pending join confirmation is still within TTL."""
+    if not asked_at_str:
+        return False
+    try:
+        asked_at = datetime.fromisoformat(asked_at_str)
+        if asked_at.tzinfo is None:
+            asked_at = asked_at.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - asked_at).total_seconds()
+        return age <= _PENDING_JOIN_TTL_SEC
+    except Exception:
+        return False
+
+
+async def _handle_bare_code_flow(user_id: int, text: str, user_row, update: Update) -> bool:
+    """
+    Handle bare (no-slash) family linking codes.
+
+    Returns True if the message was consumed (caller should return from pipeline).
+    Returns False if this message isn't a code-flow message — normal onboarding
+    should continue.
+    """
+    from database import update_user_fields as _uuf
+
+    stripped = (text or "").strip()
+
+    # Read pending fields safely — they may not exist on very old rows
+    try:
+        pending_senior_id = user_row["pending_join_senior_id"] if "pending_join_senior_id" in user_row.keys() else None
+    except Exception:
+        pending_senior_id = None
+    try:
+        pending_asked_at = user_row["pending_join_asked_at"] if "pending_join_asked_at" in user_row.keys() else None
+    except Exception:
+        pending_asked_at = None
+
+    # --- Branch A: there's a pending confirmation, resolve it ---
+    if pending_senior_id:
+        # Expired pending — clear it silently and fall through to Branch B
+        if not _pending_join_is_fresh(pending_asked_at):
+            _uuf(user_id, pending_join_senior_id=None, pending_join_asked_at=None)
+            _invalidate_user_cache(user_id)
+            logger.info("JOIN | pending expired | user_id=%s", user_id)
+            # Fall through to Branch B below (maybe this message is a new code)
+        else:
+            # Pending is fresh — interpret as yes/no/other
+            # Re-resolve senior name from DB (don't trust a stale cache)
+            try:
+                from database import get_or_create_user as _get_senior
+                senior_row = await asyncio.to_thread(_get_senior, pending_senior_id)
+                senior_name = (senior_row["name"] if senior_row else None) or "your family member"
+            except Exception:
+                senior_name = "your family member"
+
+            if _JOIN_AFFIRM_RE.match(stripped):
+                # Register as family
+                success, welcome_msg = await asyncio.to_thread(
+                    complete_join_for_senior, pending_senior_id, user_id,
+                )
+                # Clear pending state
+                _uuf(user_id, pending_join_senior_id=None, pending_join_asked_at=None)
+                _invalidate_user_cache(user_id)
+                # Invalidate family cache so the next message from this user
+                # is recognised as a family member
+                _FAMILY_CACHE.pop(user_id, None)
+                try:
+                    await update.message.reply_text(welcome_msg, parse_mode="Markdown")
+                except Exception:
+                    await update.message.reply_text(welcome_msg)
+                logger.info(
+                    "JOIN | confirmed via bare code | user_id=%s | senior_id=%s",
+                    user_id, pending_senior_id,
+                )
+                return True
+
+            if _JOIN_DECLINE_RE.match(stripped):
+                # Cancel pending
+                _uuf(user_id, pending_join_senior_id=None, pending_join_asked_at=None)
+                _invalidate_user_cache(user_id)
+                await update.message.reply_text(
+                    "No problem — I've cancelled that. "
+                    "If you have a different code, feel free to send it. 🙏"
+                )
+                logger.info(
+                    "JOIN | declined via bare code | user_id=%s | senior_id=%s",
+                    user_id, pending_senior_id,
+                )
+                return True
+
+            # Neither yes nor no — re-prompt once, don't consume the message
+            # as code flow unless it's a clean new 6-char code
+            new_code_candidate = stripped.upper()
+            if not _BARE_CODE_RE.match(new_code_candidate):
+                await update.message.reply_text(
+                    f"Just to confirm — is this *{senior_name}*'s Saathi?\n\n"
+                    f"Please reply *yes* to connect, or *no* to cancel.",
+                    parse_mode="Markdown",
+                )
+                return True
+            # Else: fall through to Branch B to treat as a fresh code
+
+    # --- Branch B: is this a fresh code? ---
+    candidate = stripped.upper()
+    if not _BARE_CODE_RE.match(candidate):
+        return False
+
+    senior = await asyncio.to_thread(lookup_senior_by_code, candidate)
+    if not senior:
+        # Looks like a code shape but doesn't match — don't consume; let
+        # onboarding handle it (e.g., a senior typing their own name in caps
+        # by coincidence won't be blocked by this).
+        return False
+
+    # Valid code — store pending confirmation and ask
+    now_iso = datetime.now(timezone.utc).isoformat()
+    try:
+        _uuf(
+            user_id,
+            pending_join_senior_id=senior["senior_user_id"],
+            pending_join_asked_at=now_iso,
+        )
+        _invalidate_user_cache(user_id)
+    except Exception as e:
+        logger.error("JOIN | failed to store pending | user_id=%s | err=%s", user_id, e)
+        return False
+
+    senior_name = senior["senior_name"]
+    await update.message.reply_text(
+        f"This code will connect you to *{senior_name}*'s Saathi.\n\n"
+        f"Is that correct? Reply *yes* to connect, or *no* to cancel.",
+        parse_mode="Markdown",
+    )
+    logger.info(
+        "JOIN | pending created | user_id=%s | senior_id=%s",
+        user_id, senior["senior_user_id"],
+    )
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Shared message pipeline — Protocol 1 → Protocol 3 → DeepSeek
 # Called by both handle_text and receive_voice after text is available.
 # ---------------------------------------------------------------------------
@@ -771,6 +940,18 @@ async def _run_pipeline(
             )
             # Do NOT return — let the message continue through the full pipeline
             # so DeepSeek can respond warmly to what the senior just shared.
+
+    # --- Bare-code auto-detect (Bug 3 fix, 20 Apr 2026) ---
+    # A brand-new user may paste a family linking code without /join. If we
+    # have a pending confirmation from a previous turn, resolve it here.
+    # Otherwise, if this message looks like a code and matches a real
+    # family_linking_code in DB, ask for confirmation before registering.
+    # Both branches run BEFORE the onboarding gate so codes never get routed
+    # into the senior onboarding flow.
+    if not user_row["onboarding_complete"]:
+        _consumed = await _handle_bare_code_flow(user_id, text, user_row, update)
+        if _consumed:
+            return
 
     # --- Self-setup deferred bridge: check if it's a new day ---
     # Fires even when onboarding_complete=1, because 'later' marks the user

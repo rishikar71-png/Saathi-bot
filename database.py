@@ -856,6 +856,11 @@ _USERS_NEW_COLUMNS = [
     "ALTER TABLE users ADD COLUMN pending_memory_question_id INTEGER DEFAULT NULL",
     "ALTER TABLE users ADD COLUMN pending_memory_question_text TEXT DEFAULT NULL",
     "ALTER TABLE users ADD COLUMN pending_memory_question_theme TEXT DEFAULT NULL",
+    # 20 Apr 2026 — bare-code auto-detect: when a brand-new user pastes a
+    # family linking code without "/join", we ask "Is this X's Saathi?"
+    # before registering. The pending senior_id is held here until yes/no.
+    "ALTER TABLE users ADD COLUMN pending_join_senior_id INTEGER DEFAULT NULL",
+    "ALTER TABLE users ADD COLUMN pending_join_asked_at TEXT DEFAULT NULL",
 ]
 
 

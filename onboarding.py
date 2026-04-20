@@ -47,6 +47,57 @@ _ctx: dict[int, dict] = {}
 
 
 # ---------------------------------------------------------------------------
+# Shared helper: extract a clean contact name from free-text answers like
+#   "yes. my wife - ishween 9833192304"
+#   "my son rahul, 9876543210"
+#   "sure, daughter priya - 8765..."
+# Used by BOTH the child-led emergency contact step (step 8) and the
+# self-setup emergency contact step (step 12).
+# ---------------------------------------------------------------------------
+_CONTACT_AFFIRMATION_RE = re.compile(
+    r"^(yes|yeah|yup|yep|sure|okay|ok|haan|ha|han|hanji|haanji|ji|"
+    r"bilkul|theek|thik)[\s\.\,\-—:!]+",
+    re.IGNORECASE,
+)
+
+# Relation qualifiers that often precede a name. We strip the qualifier itself
+# (not the name). "my wife - ishween" → "ishween". Handles optional possessives
+# ("my", "mera", "meri"), optional copulas ("is", "hai", "name"), and common
+# separators (space, dash, colon).
+_CONTACT_QUALIFIER_RE = re.compile(
+    r"^("
+    r"(it'?s?\s+)?"
+    r"(my|mera|meri|mere)\s+"
+    r"(wife|husband|son|daughter|brother|sister|mother|father|mom|mum|dad|"
+    r"papa|mummy|beta|beti|bhai|behen|bahen|pati|patni|biwi|"
+    r"wife's\s+name|son's\s+name|daughter's\s+name|child|kid)"
+    r"(\s+(is|hai|name|named|called))?"
+    r"[\s\-—:,]*"
+    r")+",
+    re.IGNORECASE,
+)
+
+
+def _extract_contact_name(text: str) -> str:
+    """
+    Strip leading affirmations, relation qualifiers, and trailing phone/noise
+    from a free-text emergency contact answer. Returns the bare name.
+
+    Example: "yes. my wife - ishween 9833192304" -> "Ishween"
+    """
+    t = text.strip()
+    # 1. Strip leading affirmations ("yes.", "sure,", "haan", "okay")
+    t = _CONTACT_AFFIRMATION_RE.sub("", t)
+    # 2. Strip relation qualifiers ("my wife -", "my son is", "it's my daughter")
+    t = _CONTACT_QUALIFIER_RE.sub("", t)
+    # 3. Strip trailing digits, dashes, whitespace (phone number + separators)
+    t = re.sub(r"[\d\-—:,+\s]+$", "", t).strip()
+    # 4. Strip leftover punctuation on edges
+    t = t.strip("—:,-. ").strip()
+    return t.title() if t else ""
+
+
+# ---------------------------------------------------------------------------
 # ARCHETYPE SIGNAL DETECTION — runs after senior's 3rd-5th message
 # during the First 7 Days. Adjusts Saathi's onboarding tone only.
 # NOT permanent classification. No archetype label stored in DB.
@@ -780,17 +831,9 @@ def _save_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> No
         if tl not in skip_signals:
             phone_match = re.search(r"[\d]{10,}", t.replace(" ", "").replace("-", ""))
             phone = phone_match.group() if phone_match else ""
-            # Strip leading affirmations ("yes.", "sure,", "haan", "okay") before
-            # extracting the name.  These survive the trailing-junk regex below.
-            stripped = re.sub(
-                r"^(yes|yeah|yup|yep|sure|okay|ok|haan|ha|han|bilkul|theek|thik)"
-                r"[\s\.\,\-—:!]+",
-                "",
-                t,
-                flags=re.IGNORECASE,
-            )
-            name = re.sub(r"[\d\-—:,+\s]+$", "", stripped).strip().strip("—:,").strip()
-            final_name = name or stripped.strip() or t
+            # Use the shared contact-name extractor: strips affirmations,
+            # relation qualifiers ("my wife -"), and trailing phone noise.
+            final_name = _extract_contact_name(t) or t
             save_emergency_contact(user_id, final_name, phone)
             ctx["emergency_name"] = final_name
             # Opting in to a contact = opting in to safety features.
@@ -852,8 +895,10 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
     elif step == 8:
         phone_match = re.search(r"[\d]{10,}", t.replace(" ", "").replace("-", ""))
         phone = phone_match.group() if phone_match else ""
-        name  = re.sub(r"[\d\-—:,+\s]+$", "", t).strip().strip("—:,").strip()
-        save_emergency_contact(user_id, name or t, phone)
+        # Use the shared contact-name extractor: strips affirmations,
+        # relation qualifiers ("my wife -"), and trailing phone noise.
+        name = _extract_contact_name(t) or t
+        save_emergency_contact(user_id, name, phone)
 
     elif step == 9:
         if t.lower() not in ("none", "no", "nahi", "nothing", "no.", "nil"):
@@ -980,9 +1025,9 @@ def _build_self_setup_completion_message(user_id: int, ctx: dict) -> str:
 
     return (
         "That's everything — thank you for telling me. 🙏\n\n"
-        f"One last thing, if you'd like: if you'd like {emergency_name} to also "
-        f"get a gentle weekly update from me, or be able to send you a quick message "
-        f"through me anytime, have them send me this code:\n\n"
+        f"One last thing, if you'd like: if {emergency_name} would also "
+        f"like to get a gentle weekly update from me, or be able to send you a "
+        f"quick message through me anytime, have them send me this code:\n\n"
         f"*{code}*\n\n"
         "No rush — they can do this whenever.\n\n"
         "I'll be here whenever you'd like to talk."

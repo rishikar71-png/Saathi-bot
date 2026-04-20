@@ -23,6 +23,7 @@ import logging
 import random
 import string
 from datetime import datetime, timezone, timedelta
+from typing import Optional
 
 from database import get_connection, update_user_fields
 
@@ -71,38 +72,55 @@ def get_or_create_linking_code(user_id: int) -> str:
         return "ERROR"
 
 
-def join_by_code(code: str, family_telegram_id: int) -> tuple:
+def lookup_senior_by_code(code: str) -> Optional[dict]:
     """
-    Link a family member's Telegram user_id to a senior's profile.
+    Resolve a linking code to {senior_user_id, senior_name, language} without
+    registering anything. Used by the bare-code auto-detect flow to show a
+    confirmation question before calling join_by_code().
 
-    Returns (success: bool, message: str) to send back to the family member.
+    Returns None if the code doesn't match or the senior is not active.
     """
-    code = code.strip().upper()
+    code = (code or "").strip().upper()
     if not code:
-        return False, (
-            "Please send the code your family member shared with you.\n"
-            "Example: /join ABC123"
-        )
-
+        return None
     try:
         with get_connection() as conn:
-            senior_row = conn.execute(
+            row = conn.execute(
                 "SELECT user_id, name, language, account_status FROM users "
                 "WHERE family_linking_code = ?",
                 (code,),
             ).fetchone()
+        if not row:
+            return None
+        if row["account_status"] and row["account_status"] != "active":
+            return None
+        return {
+            "senior_user_id": row["user_id"],
+            "senior_name":    row["name"] or "your family member",
+            "language":       row["language"] or "english",
+        }
+    except Exception as e:
+        logger.error("FAMILY | lookup_senior_by_code failed: %s", e)
+        return None
 
-        if not senior_row:
-            return False, (
-                "That code doesn't match any Saathi profile. "
-                "Please check the code and try again. 🙏"
-            )
 
-        if senior_row["account_status"] and senior_row["account_status"] != "active":
-            return False, "This profile is no longer active. Please check with your family."
+def complete_join_for_senior(senior_user_id: int, family_telegram_id: int) -> tuple:
+    """
+    Register the family_telegram_id as a family member of senior_user_id, and
+    return (success, welcome_message). Assumes the senior row was already
+    validated as active by the caller (usually via lookup_senior_by_code).
 
-        senior_user_id = senior_row["user_id"]
-        senior_name = senior_row["name"] or "your family member"
+    Extracted from join_by_code() so the bare-code auto-detect path (which has
+    already done the lookup to show a confirmation question) doesn't have to
+    re-resolve the code.
+    """
+    try:
+        with get_connection() as conn:
+            senior_row = conn.execute(
+                "SELECT name FROM users WHERE user_id = ?",
+                (senior_user_id,),
+            ).fetchone()
+        senior_name = (senior_row["name"] if senior_row else None) or "your family member"
 
         # Check if already linked
         with get_connection() as conn:
@@ -146,8 +164,31 @@ def join_by_code(code: str, family_telegram_id: int) -> tuple:
         )
 
     except Exception as e:
-        logger.error("FAMILY | join_by_code failed: %s", e)
+        logger.error("FAMILY | complete_join_for_senior failed: %s", e)
         return False, "Something went wrong. Please try again in a moment. 🙏"
+
+
+def join_by_code(code: str, family_telegram_id: int) -> tuple:
+    """
+    Link a family member's Telegram user_id to a senior's profile.
+
+    Returns (success: bool, message: str) to send back to the family member.
+    """
+    code = code.strip().upper()
+    if not code:
+        return False, (
+            "Please send the code your family member shared with you.\n"
+            "Example: /join ABC123"
+        )
+
+    senior = lookup_senior_by_code(code)
+    if not senior:
+        return False, (
+            "That code doesn't match any Saathi profile. "
+            "Please check the code and try again. 🙏"
+        )
+
+    return complete_join_for_senior(senior["senior_user_id"], family_telegram_id)
 
 
 # ---------------------------------------------------------------------------
