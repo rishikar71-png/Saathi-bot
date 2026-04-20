@@ -1169,18 +1169,32 @@ async def _run_pipeline(
         text, music_preferences=user_context.get("music_preferences") or ""
     )
     if music_query:
+        lang = (user_context.get("language") or "english").lower()
         try:
             title, url = find_music(music_query)
-            reply = build_music_message(title, url, language=user_context.get("language") or "english")
-            await update.message.reply_text(reply, parse_mode="Markdown")
+            reply = build_music_message(title, url, language=lang)
+            # Plain text (no parse_mode). Telegram auto-linkifies URLs; using
+            # Markdown mode breaks on YouTube IDs containing `_` or `*` (which
+            # the parser treats as unclosed italic/bold entities → 400 error).
+            await update.message.reply_text(reply)
             save_message_record(user_id, "out", reply)
             logger.info("OUT | user_id=%s | type=music | query=%r", user_id, music_query)
-        except Exception as yt_err:
-            logger.warning("YOUTUBE | user_id=%s | failed: %s", user_id, yt_err)
-            await update.message.reply_text(
-                "Koshish ki lekin abhi koi gaana nahi mil raha. "
-                "Thodi der mein dobara try karein! 🙏"
-            )
+        except Exception as music_err:
+            logger.warning("MUSIC | user_id=%s | failed: %s", user_id, music_err)
+            if lang in ("hindi", "hinglish"):
+                err_msg = (
+                    "Abhi koi gaana nahi mil raha. "
+                    "Thodi der mein dobara try karein! 🙏"
+                )
+            else:
+                err_msg = (
+                    "Couldn't find a song just now. "
+                    "Please try again in a moment! 🙏"
+                )
+            try:
+                await update.message.reply_text(err_msg)
+            except Exception:
+                logger.exception("MUSIC | also failed to send error message")
         return
 
     # --- Send placeholder BEFORE any slow operations ---
