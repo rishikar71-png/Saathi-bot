@@ -70,8 +70,8 @@ _CONTACT_QUALIFIER_RE = re.compile(
     r"(my|mera|meri|mere)\s+"
     r"(wife|husband|son|daughter|brother|sister|mother|father|mom|mum|dad|"
     r"papa|mummy|beta|beti|bhai|behen|bahen|pati|patni|biwi|"
-    r"wife's\s+name|son's\s+name|daughter's\s+name|child|kid)"
-    r"(\s+(is|hai|name|named|called))?"
+    r"wife's\s+name|son's\s+name|daughter's\s+name|child|kid)\b"
+    r"(\s+(is|hai|name|named|called)\b)?"
     r"[\s\-—:,]*"
     r")+",
     re.IGNORECASE,
