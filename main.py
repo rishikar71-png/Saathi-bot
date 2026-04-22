@@ -909,12 +909,33 @@ async def _run_pipeline(
     # in the last 2 hours that is still unacknowledged.
     if user_row["onboarding_complete"] and is_acknowledgement(text):
         if mark_reminder_acknowledged(user_id):
-            ack_reply = (
-                "Shukriya! Dawai le li — bahut achha kiya. "
-                "Apna khayal rakhein. 🙏"
-            )
+            _ack_lang = (user_row["language"] or "english").lower()
+            if _ack_lang == "hindi":
+                ack_reply = (
+                    "Shukriya! Dawai le li — bahut achha kiya. "
+                    "Apna khayal rakhein. 🙏"
+                )
+            elif _ack_lang == "hinglish":
+                ack_reply = (
+                    "Thank you! Dawai le li — that's great. "
+                    "Apna khayal rakhein. 🙏"
+                )
+            else:
+                ack_reply = (
+                    "Thank you — glad you've taken it. "
+                    "Take care. 🙏"
+                )
             await update.message.reply_text(ack_reply)
-            logger.info("OUT | user_id=%s | type=reminder_ack", user_id)
+            # Also save to session history so DeepSeek sees the right-language
+            # context on the next turn. Without this, the next short reply
+            # (e.g. "ok") gets routed to short-reply disengagement with a
+            # mismatched previous-turn language in the history.
+            try:
+                save_session_turn(user_id, "user", text)
+                save_session_turn(user_id, "assistant", ack_reply)
+            except Exception:
+                pass
+            logger.info("OUT | user_id=%s | type=reminder_ack | lang=%s", user_id, _ack_lang)
             return
 
     # --- Pending family-term capture (child-led /familycode lazy-ask, 22 Apr 2026) ---
@@ -1621,16 +1642,26 @@ async def _run_pipeline(
     if _is_short_disengaged and not _is_mid_session_greeting:
         _dis_lang = (user_context.get("language") or "english").lower()
         _dis_lang_label = {"hindi": "Hindi", "hinglish": "Hinglish"}.get(_dis_lang, "English")
+        # Example MUST match the target language — previously we showed both
+        # "'Theek hai.' or 'Alright.'" regardless of language, and DeepSeek
+        # sometimes picked the Hindi example even when told English-only.
+        _dis_example = {
+            "hindi":    "'Theek hai.' or 'Haan.'",
+            "hinglish": "'Theek hai.' or 'Alright.'",
+        }.get(_dis_lang, "'Alright.' or 'Got it.'")
         text = (
             f"[HARD OVERRIDE — apply before anything else:\n"
-            f"1. Respond in {_dis_lang_label} only.\n"
+            f"1. Respond in {_dis_lang_label} only. Do NOT mix languages.\n"
             f"2. One short, warm, non-questioning sentence. Stop there.\n"
             f"3. Ask nothing. No follow-up. No observations about how they seem.\n"
             f"4. This is a disengaged reply — do not try to extend the conversation.\n"
-            f"5. Correct: 'Theek hai.' or 'Alright.' — Incorrect: 'Interesting — what do you think about...?']\n\n"
+            f"5. Correct: {_dis_example} — Incorrect: 'Interesting — what do you think about...?']\n\n"
             f"Senior's message: {_original_text}"
         )
-        logger.info("PIPELINE | user_id=%s | short_reply_disengagement triggered", user_id)
+        logger.info(
+            "PIPELINE | user_id=%s | short_reply_disengagement triggered | lang=%s",
+            user_id, _dis_lang,
+        )
 
     # --- DeepSeek (async, non-blocking) ---
     # _async_reply runs call_deepseek in a thread pool so the event loop stays
