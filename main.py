@@ -917,6 +917,59 @@ async def _run_pipeline(
             logger.info("OUT | user_id=%s | type=reminder_ack", user_id)
             return
 
+    # --- Pending family-term capture (child-led /familycode lazy-ask, 22 Apr 2026) ---
+    # If /familycode was just invoked on a child-led account with no stored
+    # family_term, we asked "what do you call <senior>?". The very next
+    # message (within 10 min) is treated as that answer: saved to DB,
+    # invite block built, reply sent. No fall-through — the message is
+    # consumed entirely and does NOT reach DeepSeek (the answer is a term
+    # like "Papa", not a conversational input).
+    if user_row["onboarding_complete"] and _pending_term_is_fresh(user_id):
+        raw_term = (text or "").strip()
+        # Strip trailing punctuation/emoji and cap length — defensive only.
+        raw_term = re.sub(r"[\.\!\?\n]+$", "", raw_term).strip()
+        if not raw_term or len(raw_term) > 40:
+            # Unusable answer → clear pending, let message flow through normally
+            # so the senior isn't stuck in a loop if they typed something else.
+            _PENDING_FAMILY_TERM_ASK.pop(user_id, None)
+            logger.warning(
+                "FAMILYCODE_TERM | unusable answer | user_id=%s | len=%d",
+                user_id, len(raw_term),
+            )
+        else:
+            try:
+                from database import update_user_fields as _uuf_term
+                _uuf_term(user_id, family_term=raw_term)
+                _invalidate_user_cache(user_id)
+                _PENDING_FAMILY_TERM_ASK.pop(user_id, None)
+                # Re-fetch code (idempotent — returns the already-stored one)
+                code = get_or_create_linking_code(user_id)
+                from family import build_family_invite_block_third_person
+                invite_block = build_family_invite_block_third_person(
+                    family_term=raw_term, code=code
+                )
+                reply = (
+                    f"Got it — I'll refer to them as *{raw_term}* in the "
+                    f"message.\n\n"
+                    f"{_build_familycode_reply(code, invite_block)}"
+                )
+                await update.message.reply_text(reply, parse_mode="Markdown")
+                logger.info(
+                    "OUT | user_id=%s | type=familycode_term_saved | term=%s | code=%s",
+                    user_id, raw_term, code,
+                )
+                return
+            except Exception as _term_err:
+                _PENDING_FAMILY_TERM_ASK.pop(user_id, None)
+                logger.error(
+                    "FAMILYCODE_TERM | save failed | user_id=%s | err=%s",
+                    user_id, _term_err,
+                )
+                await update.message.reply_text(
+                    "Something went wrong saving that. Please type /familycode again. 🙏"
+                )
+                return
+
     # --- Memory question response capture ---
     # If this user was sent a memory question and has not yet responded, capture
     # their next message as the response. Save it to the memories table with full
@@ -1741,6 +1794,53 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         raise
 
 
+# ---------------------------------------------------------------------------
+# /familycode pending-term lazy-ask (22 Apr 2026)
+# ---------------------------------------------------------------------------
+# In child-led setups the adult child forwards the family-code message to
+# another family member. Using the senior's first name in that message would
+# read as scam/spam (Indian cultural register: adult children use relational
+# terms like "Papa" / "Mom" / "Rishi Uncle", never first names).
+#
+# We don't want to burden self-setup onboarding with an extra question, so
+# the relational term is asked LAZILY the first time /familycode is invoked
+# on a child-led account where `family_term` is NULL. The senior's next
+# message is captured as the term, saved to DB, and the invite block is
+# built and returned.
+#
+# State lives in-memory: acceptable to lose on process restart (the user
+# simply sees the same question again next /familycode call). 10-min TTL
+# so a stale ask from yesterday never steals a normal message.
+# ---------------------------------------------------------------------------
+
+_PENDING_FAMILY_TERM_ASK: dict[int, float] = {}  # user_id → unix ts
+_PENDING_FAMILY_TERM_TTL_SEC = 600  # 10 minutes
+
+
+def _pending_term_is_fresh(user_id: int) -> bool:
+    ts = _PENDING_FAMILY_TERM_ASK.get(user_id)
+    if ts is None:
+        return False
+    if (time.time() - ts) > _PENDING_FAMILY_TERM_TTL_SEC:
+        _PENDING_FAMILY_TERM_ASK.pop(user_id, None)
+        return False
+    return True
+
+
+def _build_familycode_reply(code: str, invite_block: str) -> str:
+    """Shared wrapping for the /familycode reply across both variants."""
+    return (
+        f"Your family code is *{code}*.\n\n"
+        f"To add a family member, copy the message below and forward it "
+        f"to them on WhatsApp, iMessage, or however you usually chat:\n\n"
+        f"— — —\n\n"
+        f"{invite_block}\n\n"
+        f"— — —\n\n"
+        f"The same code works for more than one person — forward it to "
+        f"anyone you'd like to link. 🙏"
+    )
+
+
 async def handle_familycode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/familycode — senior requests a linking code to share with family."""
     user_id = update.effective_user.id
@@ -1754,16 +1854,59 @@ async def handle_familycode(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             return
 
         code = get_or_create_linking_code(user_id)
-        senior_name = user_row["name"] or "aap"
-        reply = (
-            f"Your family code is:  *{code}*\n\n"
-            f"Share this with your family member. They should message this bot "
-            f"with:\n/join {code}\n\n"
-            f"Once they join, they can send you messages through me, and they'll "
-            f"receive a brief weekly update on how you're doing. 🙏"
+        if not code or code == "ERROR":
+            await update.message.reply_text("Something went wrong. Please try again. 🙏")
+            return
+
+        # Route by how Saathi was set up: self-setup → first-person; child-led → third-person.
+        _setup_mode = user_row["setup_mode"] if "setup_mode" in user_row.keys() else None
+
+        from family import (
+            build_family_invite_block_first_person,
+            build_family_invite_block_third_person,
         )
-        await update.message.reply_text(reply, parse_mode="Markdown")
-        logger.info("OUT | user_id=%s | type=familycode | code=%s", user_id, code)
+
+        if _setup_mode == "self":
+            # Self-setup — senior is speaking for themselves.
+            invite_block = build_family_invite_block_first_person(code=code)
+            await update.message.reply_text(
+                _build_familycode_reply(code, invite_block), parse_mode="Markdown"
+            )
+            logger.info("OUT | user_id=%s | type=familycode | mode=self | code=%s", user_id, code)
+            return
+
+        # Child-led (or unknown → treat as child-led by default).
+        _family_term = user_row["family_term"] if "family_term" in user_row.keys() else None
+        _family_term = (_family_term or "").strip()
+
+        if _family_term:
+            invite_block = build_family_invite_block_third_person(
+                family_term=_family_term, code=code
+            )
+            await update.message.reply_text(
+                _build_familycode_reply(code, invite_block), parse_mode="Markdown"
+            )
+            logger.info(
+                "OUT | user_id=%s | type=familycode | mode=child_led | term=%s | code=%s",
+                user_id, _family_term, code,
+            )
+            return
+
+        # Child-led and no term yet → lazy-ask.
+        _PENDING_FAMILY_TERM_ASK[user_id] = time.time()
+        senior_name = user_row["name"] or "them"
+        await update.message.reply_text(
+            f"Quick question before I give you the message to forward — "
+            f"what do you call {senior_name}?\n\n"
+            f"(For example: *Papa*, *Dad*, *Mummy*, *Rishi Uncle* — "
+            f"whatever you'd naturally say when talking about {senior_name} "
+            f"to another family member.)",
+            parse_mode="Markdown",
+        )
+        logger.info(
+            "OUT | user_id=%s | type=familycode_term_ask | senior_name=%s",
+            user_id, senior_name,
+        )
     except Exception as e:
         logger.error("ERR | user_id=%s | /familycode error: %s", user_id, e)
         await update.message.reply_text("Something went wrong. Please try again. 🙏")
@@ -2156,12 +2299,26 @@ async def post_init(application: Application) -> None:
     """
     Called by PTB once the asyncio event loop is running.
     Starts the DB write queue worker — must run inside the event loop
-    because asyncio.Queue() and create_task() require it.
+    because asyncio.Queue() and create_task() require it. Also caches
+    the bot's Telegram username for the forward-ready family invite block.
     """
     global _DB_WRITE_QUEUE
     _DB_WRITE_QUEUE = asyncio.Queue()
     asyncio.create_task(_db_writer_worker())
     logger.info("STARTUP | DB write queue started")
+
+    # Cache the bot's Telegram username. Used by build_family_invite_block()
+    # so the forward-ready block says "search for @RealBotName" instead of a
+    # placeholder. One-time call per deploy; get_me() failure logs an error
+    # and the helper falls back to 'Saathi' (still usable, just less precise).
+    try:
+        from family import set_cached_bot_username
+        me = await application.bot.get_me()
+        set_cached_bot_username(me.username or "")
+    except Exception as e:
+        logger.error(
+            "STARTUP | bot.get_me() failed — invite block will use fallback: %s", e
+        )
 
 
 def main() -> None:

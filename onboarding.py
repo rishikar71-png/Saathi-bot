@@ -1016,6 +1016,9 @@ def _build_completion_message(user_id: int, ctx: dict) -> str:
         f"A couple of things you might want to do:\n"
         f"• Save this Telegram contact on their phone as *{bot_name}*\n"
         f"• Let them know their companion is ready and waiting for them\n\n"
+        f"If you'd like to link another family member later (the other "
+        f"parent, a sibling, anyone), type /familycode anytime and I'll give "
+        f"you a short message you can forward to them.\n\n"
         f"You've given them something really special. 🌟"
         f"{FAMILY_SETUP_POLICY_SECTIONS}"
     )
@@ -1042,6 +1045,11 @@ def _build_self_setup_completion_message(user_id: int, ctx: dict) -> str:
     If an emergency contact was provided, append the family-code offer
     (Option A, 19 Apr 2026) so the senior can optionally share the code
     with that person to enable weekly updates + message relay.
+
+    Self-setup is FIRST-PERSON — the senior is forwarding the block
+    themselves. The body speaks as the senior ("I've started using
+    Saathi..."). No relational term needed (first person dodges the
+    pronoun/gender problem entirely).
     """
     base = (
         "That's everything — thank you for telling me. 🙏\n\n"
@@ -1064,15 +1072,36 @@ def _build_self_setup_completion_message(user_id: int, ctx: dict) -> str:
     if not code or code == "ERROR":
         return base
 
+    from family import build_family_invite_block_first_person
+    invite_block = build_family_invite_block_first_person(
+        code=code,
+        recipient_name=emergency_name,
+    )
+
     return (
         "That's everything — thank you for telling me. 🙏\n\n"
-        f"One last thing, if you'd like: if {emergency_name} would also "
-        f"like to get a gentle weekly update from me, or be able to send you a "
-        f"quick message through me anytime, have them send me this code:\n\n"
-        f"*{code}*\n\n"
-        "No rush — they can do this whenever.\n\n"
-        "I'll be here whenever you'd like to talk."
+        f"Would you like {emergency_name} to get a short weekly note about "
+        f"how you're doing, and be able to send you a quick message through "
+        f"me anytime?\n\n"
+        f"If so, copy the message below and forward it to {emergency_name} "
+        f"on WhatsApp, iMessage, or however you usually chat:\n\n"
+        f"— — —\n\n"
+        f"{invite_block}\n\n"
+        f"— — —\n\n"
+        "No rush. I'll be here whenever you'd like to talk."
     )
+
+
+def _get_senior_name_from_db(user_id: int) -> Optional[str]:
+    """DB fallback for senior's name — survives process restart during bridge defer."""
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT name FROM users WHERE user_id = ?", (user_id,),
+            ).fetchone()
+            return row["name"] if row and row["name"] else None
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------

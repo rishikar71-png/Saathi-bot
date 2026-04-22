@@ -861,6 +861,13 @@ _USERS_NEW_COLUMNS = [
     # before registering. The pending senior_id is held here until yes/no.
     "ALTER TABLE users ADD COLUMN pending_join_senior_id INTEGER DEFAULT NULL",
     "ALTER TABLE users ADD COLUMN pending_join_asked_at TEXT DEFAULT NULL",
+    # 22 Apr 2026 — /familycode third-person forward block for child-led setups.
+    # Stores the relational term the adult child uses for the senior
+    # ("Papa" / "Dad" / "Mummy" / "Rishi Uncle" / etc.). Asked lazily the
+    # first time /familycode is invoked in a child-led account, reused
+    # forever afterward. NULL for self-setup accounts (they use the
+    # first-person block, which needs no term).
+    "ALTER TABLE users ADD COLUMN family_term TEXT DEFAULT NULL",
 ]
 
 

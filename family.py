@@ -20,6 +20,7 @@ NEVER send weekly report without at least one registered family member.
 """
 
 import logging
+import os
 import random
 import string
 from datetime import datetime, timezone, timedelta
@@ -28,6 +29,149 @@ from typing import Optional
 from database import get_connection, update_user_fields
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Bot username cache — populated by main.post_init() on startup via
+# set_cached_bot_username(). Used by build_family_invite_block() so the
+# forward-ready block can tell a recipient which bot to search for in
+# Telegram. Falls back to 'Saathi' (no @) if never set — defensive only;
+# post_init runs before any user traffic arrives.
+# ---------------------------------------------------------------------------
+
+_BOT_USERNAME: Optional[str] = None
+
+
+def set_cached_bot_username(username: str) -> None:
+    """Called once at startup from main.post_init() after bot.get_me()."""
+    global _BOT_USERNAME
+    _BOT_USERNAME = username.lstrip("@") if username else None
+    logger.info("FAMILY | bot_username cached: %s", _BOT_USERNAME)
+
+
+def get_cached_bot_username() -> str:
+    """Returns cached bot username, or 'Saathi' as a defensive fallback."""
+    return _BOT_USERNAME or "Saathi"
+
+
+# ---------------------------------------------------------------------------
+# Forward-ready invite block — two variants.
+#
+# SELF-SETUP (first-person): the senior themselves is forwarding the message
+# to someone they already know — usually their spouse / sibling / a close
+# friend who was saved as the emergency contact at onboarding. Written as
+# the senior speaking directly ("I've started using Saathi...").
+#
+# CHILD-LED (third-person): the adult child who set Saathi up for their
+# parent is forwarding the message to another family member — the other
+# parent, a sibling, an uncle, a close family friend. The adult child
+# would NEVER refer to their parent by first name in this register — it's
+# always the relational term ("Papa" / "Dad" / "Mummy" / "Rishi Uncle" /
+# etc). Using the first name would read as a scam/spam signal to the
+# recipient. We pass in the `family_term` the adult child supplied and
+# reuse it three times in the body — this avoids needing to know the
+# senior's gender, avoids pronoun ambiguity, and keeps the tone natural.
+#
+# Both variants honour the family-reference-handling rule in CLAUDE.md:
+# affection framing, no "emergency contact" / "worried about you" register,
+# no obligation. The family member then searches @{bot_username} in
+# Telegram, hits Start, sends the code — the bare-code flow in main.py
+# catches it and registers them.
+#
+# Video link (TELEGRAM_SETUP_VIDEO_URL env var) is appended if set, so
+# family members unfamiliar with Telegram get a short walkthrough.
+# ---------------------------------------------------------------------------
+
+def _video_line() -> str:
+    """Append a short 'if you're new to Telegram' pointer when env var is set."""
+    url = os.environ.get("TELEGRAM_SETUP_VIDEO_URL", "").strip()
+    return f"\n\n(If you're new to Telegram: {url})" if url else ""
+
+
+def build_family_invite_block_first_person(
+    code: str,
+    recipient_name: Optional[str] = None,
+) -> str:
+    """
+    SELF-SETUP variant — the senior is forwarding this themselves.
+    Speaks in first person ("I've started using Saathi...").
+
+    code             — the 6-char family linking code.
+    recipient_name   — first name of the person being invited (usually the
+                       emergency contact captured at self-setup). If omitted,
+                       greeting falls back to 'Hi there'.
+    """
+    bot_username = get_cached_bot_username()
+    rn = (recipient_name or "").strip()
+    greeting = f"Hi {rn}" if rn else "Hi there"
+    return (
+        f"{greeting} — I've started using Saathi, a little companion "
+        f"that chats with me through the day. I'd like you to be the "
+        f"person it reaches out to if anything ever comes up, and you'd "
+        f"get a short weekly note about how I'm doing.\n\n"
+        f"If you're open to it: open Telegram, search for @{bot_username}, "
+        f"tap Start, and send the code {code}.\n\n"
+        f"No rush, and you can stop anytime."
+        f"{_video_line()}"
+    )
+
+
+def build_family_invite_block_third_person(
+    family_term: str,
+    code: str,
+    recipient_name: Optional[str] = None,
+) -> str:
+    """
+    CHILD-LED variant — the adult child is forwarding this to another
+    family member. The `family_term` is the relational term the adult
+    child uses for the senior ("Papa" / "Dad" / "Mummy" / "Rishi Uncle"
+    / etc.). We reuse it three times to sidestep pronoun/gender issues
+    and keep the register natural for Indian families.
+
+    family_term      — how the forwarder addresses the senior ("Papa").
+                       MUST be non-empty; caller lazy-asks and saves.
+    code             — the 6-char family linking code.
+    recipient_name   — first name of the family member being invited, if
+                       known. Often omitted in the /familycode flow, so
+                       greeting falls back to 'Hi there'.
+    """
+    bot_username = get_cached_bot_username()
+    rn = (recipient_name or "").strip()
+    greeting = f"Hi {rn}" if rn else "Hi there"
+    term = (family_term or "").strip() or "Our family member"
+    return (
+        f"{greeting} — {term} has started using Saathi, a little companion "
+        f"that chats with {term} through the day. {term} would like you to "
+        f"be the person it reaches out to if anything ever comes up, and "
+        f"you'd get a short weekly note about how {term}'s doing.\n\n"
+        f"If you're open to it: open Telegram, search for @{bot_username}, "
+        f"tap Start, and send the code {code}.\n\n"
+        f"No rush, and you can stop anytime."
+        f"{_video_line()}"
+    )
+
+
+# Back-compat shim — the 20 Apr call site in onboarding.py originally
+# imported build_family_invite_block (third-person, no family_term). We
+# keep the name exported so any stragglers don't break, but new callers
+# should use the explicit first/third person helpers above.
+def build_family_invite_block(
+    senior_name: str,
+    code: str,
+    recipient_name: Optional[str] = None,
+) -> str:
+    """DEPRECATED — prefer the explicit first/third person helpers."""
+    logger.warning(
+        "FAMILY | build_family_invite_block() deprecated — "
+        "use first_person / third_person variants instead"
+    )
+    # Fall back to third-person with senior_name as the term. This is the
+    # old behaviour; new code should never reach this.
+    return build_family_invite_block_third_person(
+        family_term=senior_name,
+        code=code,
+        recipient_name=recipient_name,
+    )
 
 
 # ---------------------------------------------------------------------------
