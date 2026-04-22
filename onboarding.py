@@ -99,6 +99,81 @@ def _extract_contact_name(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Address (display) helper — 22 Apr 2026
+#
+# preferred_salutation is how Saathi addresses the senior in conversation.
+# It is NOT an honorific appended to the first name — it is the full display
+# string the family uses ("Ma" / "Papa" / "Durga Ji" / "Rameshji" / "Dadi").
+#
+# name is kept as the reference identity (used for DB joins, system prompt
+# identity, memory references like "her name is Durga").
+#
+# Default when the child skips step 2: "{first_name} Ji" (respectful Indian
+# register — "Durga Ji", "Ramesh Ji"). Senior can override at handoff step 1
+# (writes to preferred_salutation, leaves name untouched).
+# ---------------------------------------------------------------------------
+
+def _default_address(senior_name: str) -> str:
+    """Default display address when the child didn't specify one."""
+    n = (senior_name or "").strip()
+    if not n or n == "your loved one":
+        return "your loved one"
+    return f"{n} Ji"
+
+
+def _address(ctx: dict) -> str:
+    """Return the display address to use when talking ABOUT the senior."""
+    salutation = (ctx.get("salutation") or "").strip()
+    if salutation:
+        return salutation
+    return _default_address(ctx.get("senior_name", ""))
+
+
+# ---------------------------------------------------------------------------
+# Step 0 helper — parse "rishi 9819787322" into (name, phone) so we can
+# capture the setup person's phone once and offer it as the default emergency
+# contact at step 8.
+# ---------------------------------------------------------------------------
+
+def _parse_setup_person(text: str) -> tuple[str, str]:
+    """
+    Extract (name, phone) from step 0's free-text reply. The child may type
+    just a name ("Rishi") or name + phone ("Rishi 9819787322" / "rishi, 98197 87322").
+    Name is title-cased. Phone is digits only (10+ digits required).
+    """
+    t = (text or "").strip()
+    # Find a 10+ digit run (allow spaces/dashes inside the input).
+    compact = re.sub(r"[\s\-—]", "", t)
+    phone_match = re.search(r"\d{10,}", compact)
+    phone = phone_match.group() if phone_match else ""
+    # Name is whatever remains after stripping digits + separators from edges.
+    name_raw = re.sub(r"[\d\-—:,+]+", " ", t)
+    name_raw = re.sub(r"\s+", " ", name_raw).strip(" -—:,.")
+    return name_raw.title(), phone
+
+
+# ---------------------------------------------------------------------------
+# Step 10 (medicines) — detect "I don't know yet / she'll tell me later"
+# so we warm-ack instead of silently failing.
+# ---------------------------------------------------------------------------
+
+_MEDICINE_UNKNOWN_SIGNALS = (
+    "don't know", "dont know", "do not know", "not sure", "unsure",
+    "i'll check", "ill check", "will check", "check later",
+    "will fill", "need to fill", "needs to fill", "will let you know",
+    "tell you later", "find out", "figure out", "get back",
+    "pata nahi", "maalum nahi", "malum nahi", "nahi pata",
+    "bata nahi", "pata karke", "pooch ke",
+)
+
+
+def _is_medicines_unknown(text: str) -> bool:
+    """True if the child is deferring — e.g. 'I don't know, she'll tell me'."""
+    tl = (text or "").lower()
+    return any(sig in tl for sig in _MEDICINE_UNKNOWN_SIGNALS)
+
+
+# ---------------------------------------------------------------------------
 # ARCHETYPE SIGNAL DETECTION — runs after senior's 3rd-5th message
 # during the First 7 Days. Adjusts Saathi's onboarding tone only.
 # NOT permanent classification. No archetype label stored in DB.
@@ -374,17 +449,32 @@ def detect_bridge_answer(text: str) -> str:
 #   4 = Message 4 sent — handoff complete, full DeepSeek pipeline from here
 # ---------------------------------------------------------------------------
 
-def get_handoff_message(handoff_step: int, child_name: str = "Someone") -> str:
+def get_handoff_message(
+    handoff_step: int,
+    child_name: str = "Someone",
+    bot_name: str = "Saathi",
+) -> str:
     """
     Returns the appropriate handoff message for the given step.
 
     handoff_step=0: Message 1 — calm first contact, no question
-    handoff_step=1: Message 2 — ask senior's preferred name
+    handoff_step=1: Message 2 — ask senior's preferred address
     handoff_step=2: Message 3 — ask what they'd like to call the bot
     handoff_step=3: Message 4 — open invitation, complete handoff
+
+    22 Apr 2026: bot_name is now threaded through. The child chooses a bot
+    name at step 16 of onboarding ('sage' / 'Meera' / 'Gopal' / etc.); that
+    name must be the one the senior hears in the first handoff message.
+    Hardcoding 'Saathi' here ignored their choice.
+
+    child_name is title-cased defensively — setup person's stored name may be
+    lowercased if they typed it that way ('rishi') and we want the senior to
+    see 'Rishi' in the very first message.
     """
+    cn = (child_name or "Someone").strip().title() or "Someone"
+    bn = (bot_name or "Saathi").strip() or "Saathi"
     messages = {
-        0: f"Namaste. {child_name} asked me to be in touch. I'm Saathi — I'm here whenever you'd like to talk.",
+        0: f"Namaste. {cn} asked me to be in touch. I'm {bn} — I'm here whenever you'd like to talk.",
         1: "Can I ask you something? What would you like me to call you?",
         2: "And what would you like to call me? You can choose any name.",
         3: "I'm really glad we're talking. We can chat about anything — your day, memories, music, cricket, whatever you feel like. Would you like me to tell you something interesting, or would you like to tell me about your day?",
@@ -499,6 +589,11 @@ def _q(step: int, ctx: dict) -> str:
     setup   = ctx.get("setup_name", "")
     senior  = ctx.get("senior_name", "your loved one")
     first   = setup.split()[0] if setup else ""
+    # Display address — "{name} Ji" by default, or whatever the child typed at step 2.
+    # Used from step 3 onwards when addressing/referring to the senior.
+    addr    = _address(ctx)
+    # Step 2 primes the default in its own wording so the child knows they can just skip.
+    addr_preview = _default_address(senior) if senior and senior != "your loved one" else "your loved one"
 
     questions = {
         1: (
@@ -506,83 +601,88 @@ def _q(step: int, ctx: dict) -> str:
             f"What is your loved one's name? (First name is fine.)"
         ),
         2: (
-            f"How should I address {senior}? "
-            f"For example: 'Ji', 'Uncle', 'Aunty', 'Dadi', 'Nana' — "
-            f"whatever salutation would feel natural to them."
+            f"What does {addr_preview} like to be called by family? "
+            f"Whatever feels natural — 'Ma', 'Papa', 'Dadi', 'Nana', "
+            f"'Rameshji', 'Aunty' — or a full name if you prefer.\n\n"
+            f"If you're not sure, just say 'skip' and I'll call {addr_preview}."
         ),
-        3: f"Which city does {senior} live in?",
+        3: f"Which city does {addr} live in?",
         4: (
-            f"What language does {senior} feel most comfortable speaking in?\n\n"
+            f"What language does {addr} feel most comfortable speaking in?\n\n"
             f"For example: Hindi, English, Hinglish, Tamil, Telugu, Bengali, "
             f"Marathi, Gujarati, Punjabi — or a mix."
         ),
         5: (
-            f"Is {senior}'s spouse with them? If yes, what is their spouse's name? "
+            f"Is {addr}'s spouse with them? If yes, what is their spouse's name? "
             f"If not, just say 'no' or 'passed away'."
         ),
         6: (
-            f"What are the names of {senior}'s children? "
+            f"What are the names of {addr}'s children? "
             f"(You can include yourself — just list them separated by commas.)"
         ),
         7: (
-            f"Does {senior} have any grandchildren? "
+            f"Does {addr} have any grandchildren? "
             f"If yes, what are their names? If not, just say 'no'."
         ),
-        8: (
-            f"Who should I contact in an emergency? "
-            f"Please share a name and phone number. "
-            f"For example: 'Priya — 9876543210'."
-        ),
+        8: _q_emergency_contact(ctx),
         9: (
-            f"Does {senior} have any health conditions I should be aware of? "
+            f"Does {addr} have any health conditions I should be aware of? "
             f"For example: diabetes, blood pressure, heart condition, arthritis, knee pain.\n\n"
             f"This helps me be more thoughtful in conversation. "
             f"You can say 'none' if there are none."
         ),
         10: (
-            f"Does {senior} take any medicines regularly?\n\n"
+            f"Does {addr} take any medicines regularly?\n\n"
             f"If yes, which ones and at what times? "
             f"For example: 'metformin 8am and 8pm, atorvastatin at night'.\n\n"
-            f"If no medicines, just say 'no'."
+            f"If no medicines, just say 'no'. "
+            f"If you'd like to add them later, just say 'I don't know yet'."
         ),
         11: (
-            f"What kind of music does {senior} love? "
+            f"What kind of music does {addr} love? "
             f"(Old Bollywood, classical, ghazals, devotional, folk — "
             f"whatever comes to mind.)"
         ),
+        # Step 12 — MERGED topics + news interests (22 Apr 2026).
+        # One answer populates both favourite_topics and news_interests columns.
         12: (
-            f"What topics does {senior} enjoy talking about? "
-            f"(Cricket, cooking, history, movies, religion, travel, "
-            f"grandchildren, politics — anything that lights them up.)"
+            f"What topics does {addr} enjoy — in conversation or in the news?\n\n"
+            f"For example: cricket, Bollywood, cooking, history, movies, "
+            f"religion, travel, grandchildren, politics, business — anything "
+            f"that lights them up."
         ),
         13: (
-            f"What is {senior}'s religion or faith, if any? "
+            f"What is {addr}'s religion or faith, if any? "
             f"This helps me be respectful of their beliefs and mark "
             f"the right festivals and occasions. "
             f"You can say 'prefer not to say'."
         ),
+        # Step 14 RETIRED — merged into step 12 above. handle_onboarding_answer
+        # skips 12 → 15 directly. This entry stays as a defensive fallthrough
+        # for any user row already sitting at step 14 when this deploys.
         14: (
-            f"What news topics does {senior} like to follow? "
-            f"For example: cricket scores, Bollywood, local news, national politics, "
-            f"business, religion. (Or say 'not interested' if they prefer to skip news.)"
+            f"What is {addr}'s religion or faith, if any? "
+            f"This helps me be respectful of their beliefs and mark "
+            f"the right festivals and occasions. "
+            f"You can say 'prefer not to say'."
         ),
         15: (
-            f"How should I approach {senior}? I can be:\n\n"
+            f"How should I approach {addr}? I can be:\n\n"
             f"• *Friend* — warm, peer-to-peer, easy\n"
             f"• *Caring Child* — respectful, attentive, gentle\n"
             f"• *Grandchild* — playful, devoted, full of love\n"
             f"• *Assistant* — helpful, calm, practical\n\n"
-            f"Which feels most right for {senior}?"
+            f"Which feels most right for {addr}?"
         ),
         16: (
-            f"What name would you like {senior} to call me? "
+            f"What name would you like {addr} to call me? "
             f"I go by Saathi by default — but they can name me "
             f"whatever feels personal and warm to them. "
             f"Meera, Gopal, Kamla — anything. "
             f"(Or just say 'Saathi' to keep the default.)"
         ),
         17: (
-            f"What time in the morning would you like me to check in with {senior}?\n\n"
+            f"What time in the morning would you like me to check in with {addr}?\n\n"
             f"(For example: '8am' or '9 baje')"
         ),
         18: (
@@ -594,13 +694,43 @@ def _q(step: int, ctx: dict) -> str:
             f"(For example: '7pm' or '8 baje')"
         ),
         20: (
-            f"Last one — I can do a gentle check-in with {senior} three times "
+            f"Last one — I can do a gentle check-in with {addr} three times "
             f"a day (morning, afternoon, evening) and quietly let you know "
             f"if they don't respond. It's a simple safety net called a heartbeat check.\n\n"
             f"Would you like to enable this? (yes / no)"
         ),
     }
     return questions[step]
+
+
+def _q_emergency_contact(ctx: dict) -> str:
+    """
+    Step 8 question — offers the setup person as the default emergency contact
+    when we captured a phone at step 0. Avoids making the child type their own
+    name + number twice in a 5-minute flow.
+    """
+    setup_name  = (ctx.get("setup_name") or "").strip()
+    setup_phone = (ctx.get("setup_phone") or "").strip()
+    first = setup_name.split()[0] if setup_name else ""
+
+    if first and setup_phone:
+        return (
+            f"Who should I contact in an emergency?\n\n"
+            f"Shall I use you — *{first}, {setup_phone}*? "
+            f"Reply 'yes' to confirm, or share a different name and number "
+            f"(e.g. 'Priya — 9876543210')."
+        )
+    if first and not setup_phone:
+        return (
+            f"Who should I contact in an emergency?\n\n"
+            f"Shall I use you, *{first}*? If yes, please share your phone number. "
+            f"Or share a different name and number (e.g. 'Priya — 9876543210')."
+        )
+    return (
+        "Who should I contact in an emergency? "
+        "Please share a name and phone number. "
+        "For example: 'Priya — 9876543210'."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -611,10 +741,11 @@ def get_resume_prompt(user_id: int, step: int, setup_mode: str = None) -> str:
     if setup_mode == "self":
         q = _self_setup_question(step)
         return q or "We're almost done — just a few more things to set up."
-    ctx = _ctx.get(user_id, {})
-    senior = ctx.get("senior_name", "your loved one")
+    ctx = _ctx.setdefault(user_id, {})
+    _rehydrate_family_ctx(user_id, ctx)
+    addr = _address(ctx)
     return (
-        f"We're still setting {senior} up — let's continue from where we left off.\n\n"
+        f"We're still setting {addr} up — let's continue from where we left off.\n\n"
         + _q(step, ctx)
     )
 
@@ -658,6 +789,43 @@ def handle_mode_detection(user_id: int, text: str):
         return ("self", f"{MODE_2_FIRST_MESSAGE}\n\n{first_q}")
 
 
+def _rehydrate_family_ctx(user_id: int, ctx: dict) -> None:
+    """
+    Populate ctx from the DB so later questions can render the senior's
+    address, reuse the setup person's name/phone, etc. across process
+    restarts. ctx is module-level in-memory state — this is the one-line
+    guard against losing it mid-onboarding.
+    """
+    if "senior_name" in ctx and "salutation" in ctx and "setup_name" in ctx:
+        return
+    try:
+        with get_connection() as conn:
+            urow = conn.execute(
+                "SELECT name, preferred_salutation, bot_name FROM users "
+                "WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            if urow:
+                if urow["name"]:
+                    ctx.setdefault("senior_name", urow["name"])
+                if urow["preferred_salutation"]:
+                    ctx.setdefault("salutation", urow["preferred_salutation"])
+                if urow["bot_name"]:
+                    ctx.setdefault("bot_name", urow["bot_name"])
+            srow = conn.execute(
+                "SELECT name, phone FROM family_members "
+                "WHERE user_id = ? AND is_setup_user = 1 LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            if srow:
+                if srow["name"]:
+                    ctx.setdefault("setup_name", srow["name"])
+                if srow["phone"]:
+                    ctx.setdefault("setup_phone", srow["phone"])
+    except Exception as e:
+        logger.warning("ONBOARDING | rehydrate failed for user_id=%s: %s", user_id, e)
+
+
 def handle_onboarding_answer(user_id: int, step: int, text: str) -> str:
     """
     Save the answer for the current step, advance, and return the next message.
@@ -681,6 +849,9 @@ def handle_onboarding_answer(user_id: int, step: int, text: str) -> str:
         return _handle_self_setup_answer(user_id, step, text, ctx)
 
     # --- Family / child-led flow ---
+    # Rehydrate ctx so later questions can use the senior's address + reuse
+    # setup person's name/phone on emergency contact step.
+    _rehydrate_family_ctx(user_id, ctx)
 
     # Language step gate (pilot scope: English / Hindi / Hinglish only).
     # If the answer is an unsupported language, do NOT save and do NOT
@@ -692,10 +863,19 @@ def handle_onboarding_answer(user_id: int, step: int, text: str) -> str:
         )
         return POLITE_UNSUPPORTED_LANGUAGE_MESSAGE
 
+    # Step 10 medicine-unknown branch — warm ack, stay on step 10 logic,
+    # but advance so the flow continues. The deferred flag is surfaced in
+    # the completion message.
     _save_answer(user_id, step, text, ctx)
     logger.info("ONBOARDING | user_id=%s | mode=family | step=%d answered", user_id, step)
 
     next_step = step + 1
+
+    # Step 14 is retired — news_interests is populated at step 12.
+    # Anyone reaching step 13 advances straight to 15.
+    if next_step == 14:
+        next_step = 15
+
     if next_step > 20:
         complete_onboarding(user_id)
         # handoff_step starts at 0 — senior hasn't been greeted yet
@@ -889,10 +1069,18 @@ def _save_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> No
 
 def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
     t = text.strip()
+    tl = t.lower()
 
     if step == 0:
-        ctx["setup_name"] = t
-        save_setup_person(user_id, t)
+        # Parse "rishi 9819787322" into name + phone. Title-case name so the
+        # handoff greeting to the senior reads 'Rishi' not 'rishi'.
+        name, phone = _parse_setup_person(t)
+        if not name:
+            # Fallback if parsing collapsed to empty — keep original input.
+            name = t.title()
+        ctx["setup_name"]  = name
+        ctx["setup_phone"] = phone
+        save_setup_person(user_id, name, phone)
 
     elif step == 1:
         name = t.title()
@@ -900,7 +1088,21 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
         update_user_fields(user_id, name=name)
 
     elif step == 2:
-        update_user_fields(user_id, preferred_salutation=t)
+        # preferred_salutation = full display address used by Saathi when
+        # addressing/referring to the senior. Stored AS-IS (no title-casing)
+        # so 'Ji' stays 'Ji', 'Rameshji' stays 'Rameshji', etc.
+        # Skip signals → fall back to default "{name} Ji".
+        skip_signals = (
+            "skip", "no", "nahi", "none", "no preference",
+            "koi nahi", "koi bhi", "whatever", "anything",
+            "no idea", "not sure", "dont know", "don't know",
+        )
+        if tl in skip_signals or not t:
+            salutation = _default_address(ctx.get("senior_name", ""))
+        else:
+            salutation = t  # as-typed
+        ctx["salutation"] = salutation
+        update_user_fields(user_id, preferred_salutation=salutation)
 
     elif step == 3:
         canonical = canonicalize_city(t)
@@ -915,8 +1117,8 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
         update_user_fields(user_id, language=_parse_language(t))
 
     elif step == 5:
-        if t.lower() in ("no", "no.", "nahi", "nahi.", "nahin", "passed away",
-                         "nahi hain", "nahi hai", "deceased", "expired"):
+        if tl in ("no", "no.", "nahi", "nahi.", "nahin", "passed away",
+                  "nahi hain", "nahi hai", "deceased", "expired"):
             update_user_fields(user_id, spouse_name=None)
         else:
             update_user_fields(user_id, spouse_name=t)
@@ -928,40 +1130,96 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
             add_family_members_bulk(user_id, names, "child")
 
     elif step == 7:
-        if t.lower() not in ("no", "no.", "none", "nahi", "nahin", "nope"):
+        if tl not in ("no", "no.", "none", "nahi", "nahin", "nope"):
             names = [n.strip().title() for n in t.split(",") if n.strip()]
             if names:
                 add_family_members_bulk(user_id, names, "grandchild")
 
     elif step == 8:
-        phone_match = re.search(r"[\d]{10,}", t.replace(" ", "").replace("-", ""))
+        # Default-to-setup-person path — "yes" / "use me" / same first name
+        # reuses the setup person's captured name + phone.
+        setup_name  = (ctx.get("setup_name") or "").strip()
+        setup_phone = (ctx.get("setup_phone") or "").strip()
+        setup_first = setup_name.split()[0].lower() if setup_name else ""
+
+        affirm_signals = (
+            "yes", "yes.", "yeah", "yup", "yep", "sure", "okay", "ok",
+            "haan", "ha", "han", "haanji", "ji", "hanji", "bilkul",
+            "use me", "me", "myself", "use you", "use yourself",
+            "same", "same as above", "that's me", "thats me",
+            "confirm", "confirmed", "correct",
+        )
+        # Child affirms AND we have phone → reuse setup person.
+        if tl in affirm_signals and setup_first and setup_phone:
+            save_emergency_contact(user_id, setup_name.title(), setup_phone)
+            logger.info("ONBOARDING | user_id=%s | step 8 reused setup person as emergency", user_id)
+            return
+        # Child affirms + supplies phone in the same reply (e.g. "yes 9819787322"
+        # or "sure, 9819787322"). Strict check: after stripping the leading
+        # affirmation + separator, the remainder must be ONLY digits/separators.
+        # Otherwise they're giving a different contact ("yes someone else 9876...")
+        # and we must NOT reuse the setup person's name.
+        if setup_first:
+            affirm_strip_re = re.compile(
+                r"^(yes|yeah|yup|yep|sure|okay|ok|haan|ha|han|haanji|hanji|ji|"
+                r"bilkul|confirm|confirmed|correct|same)[\s\.\,\-—:!]+",
+                re.IGNORECASE,
+            )
+            stripped = affirm_strip_re.sub("", t)
+            if stripped != t and re.fullmatch(r"[\d\s\-—\+\(\)]+", stripped or ""):
+                phone_match = re.search(r"\d{10,}", re.sub(r"[\s\-—]", "", t))
+                if phone_match:
+                    save_emergency_contact(user_id, setup_name.title(), phone_match.group())
+                    logger.info("ONBOARDING | user_id=%s | step 8 reused setup name + new phone", user_id)
+                    return
+        # Otherwise, parse fresh name + phone from the reply (original behaviour).
+        phone_match = re.search(r"\d{10,}", t.replace(" ", "").replace("-", ""))
         phone = phone_match.group() if phone_match else ""
-        # Use the shared contact-name extractor: strips affirmations,
-        # relation qualifiers ("my wife -"), and trailing phone noise.
         name = _extract_contact_name(t) or t
         save_emergency_contact(user_id, name, phone)
 
     elif step == 9:
-        if t.lower() not in ("none", "no", "nahi", "nothing", "no.", "nil"):
+        if tl not in ("none", "no", "nahi", "nothing", "no.", "nil"):
             update_user_fields(user_id, health_sensitivities=t)
 
     elif step == 10:
-        if t.lower() not in ("no", "nahi", "none", "nothing", "no.", "nil"):
+        # "I don't know yet" handler — don't silent-fail, flag for follow-up
+        # via completion message. medicines_raw stays NULL; the completion
+        # message reminds the child how to add medicines later.
+        if _is_medicines_unknown(t):
+            ctx["medicines_deferred"] = True
+            logger.info("ONBOARDING | user_id=%s | step 10 medicines deferred ('%s')", user_id, t[:40])
+            return
+        if tl not in ("no", "nahi", "none", "nothing", "no.", "nil"):
             update_user_fields(user_id, medicines_raw=t)
 
     elif step == 11:
         update_user_fields(user_id, music_preferences=t)
 
     elif step == 12:
-        update_user_fields(user_id, favourite_topics=t)
+        # MERGED (22 Apr 2026) — one answer, two columns.
+        # favourite_topics → DeepSeek conversation context.
+        # news_interests   → fetch_news() query filter.
+        # Acceptable risk: if the answer is non-news-fetchable
+        # ('grandchildren, cooking'), news headlines silently degrade. Not a
+        # crash. Pilot learning will tell us whether to split back to two
+        # questions or add a small DeepSeek classifier in v1.1.
+        if tl not in ("not interested", "none", "no", "nahi", "skip"):
+            update_user_fields(
+                user_id,
+                favourite_topics=t,
+                news_interests=t,
+            )
 
     elif step == 13:
-        if t.lower() != "prefer not to say":
+        if tl != "prefer not to say":
             update_user_fields(user_id, religion=t)
 
     elif step == 14:
-        if t.lower() not in ("not interested", "none", "no", "nahi", "skip"):
-            update_user_fields(user_id, news_interests=t)
+        # Step 14 RETIRED — news_interests now populated at step 12.
+        # This branch is a no-op kept as a defensive fallthrough for any
+        # user row already sitting at step 14 when this change deploys.
+        pass
 
     elif step == 15:
         update_user_fields(user_id, persona=_parse_persona(t))
@@ -1005,14 +1263,25 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
 
 def _build_completion_message(user_id: int, ctx: dict) -> str:
     setup_name  = ctx.get("setup_name", "")
-    senior_name = ctx.get("senior_name", "your loved one")
     bot_name    = ctx.get("bot_name", "Saathi")
     first       = setup_name.split()[0] if setup_name else ""
+    # Display address — "Durga Ji" by default, or whatever the child chose at step 2.
+    addr        = _address(ctx)
+
+    # Optional gentle reminder when the child deferred medicines at step 10.
+    medicines_note = ""
+    if ctx.get("medicines_deferred"):
+        medicines_note = (
+            f"One small thing — you weren't sure about {addr}'s medicines earlier. "
+            f"No rush. Once you have the list, just type /medicines and I'll set "
+            f"up the reminders.\n\n"
+        )
 
     return (
         f"That's everything{', ' + first if first else ''}! 🙏\n\n"
-        f"I'm all set for {senior_name}. The next time they message me, "
+        f"I'm all set for {addr}. The next time they message me, "
         f"I'll greet them warmly and personally.\n\n"
+        f"{medicines_note}"
         f"A couple of things you might want to do:\n"
         f"• Save this Telegram contact on their phone as *{bot_name}*\n"
         f"• Let them know their companion is ready and waiting for them\n\n"

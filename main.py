@@ -1100,6 +1100,10 @@ async def _run_pipeline(
 
     if setup_mode == "family" and handoff_step is not None and handoff_step < 4:
         child_name = get_setup_child_name(user_id)
+        # Bot name chosen by the adult child at onboarding step 16. If they
+        # left the default, this is "Saathi". Threaded into message 0 so the
+        # senior hears the chosen name, not hardcoded "Saathi".
+        bot_name_for_handoff = user_row["bot_name"] if "bot_name" in user_row.keys() else "Saathi"
         replies = []
 
         if handoff_step == 0:
@@ -1109,32 +1113,34 @@ async def _run_pipeline(
                 replies.append(confusion_msg)
                 logger.info("OUT | user_id=%s | type=confusion_branch", user_id)
 
-            msg1 = get_handoff_message(0, child_name)
+            msg1 = get_handoff_message(0, child_name, bot_name=bot_name_for_handoff)
             replies.append(msg1)
             from database import update_user_fields
             update_user_fields(user_id, handoff_step=1)
             logger.info("OUT | user_id=%s | type=handoff | step=0", user_id)
 
         elif handoff_step == 1:
-            # Senior responded — ask their preferred name
-            msg2 = get_handoff_message(1, child_name)
+            # Senior responded — ask their preferred address
+            msg2 = get_handoff_message(1, child_name, bot_name=bot_name_for_handoff)
             replies.append(msg2)
             from database import update_user_fields
             update_user_fields(user_id, handoff_step=2)
             logger.info("OUT | user_id=%s | type=handoff | step=1", user_id)
 
         elif handoff_step == 2:
-            # Senior gave their name — save it, ask what to call the bot
-            name = text.strip().title()
-            if name and len(name) < 50:
-                from database import update_user_fields
-                update_user_fields(user_id, name=name, handoff_step=3)
+            # Senior gave their preferred address — save to preferred_salutation
+            # (NOT name — keep the identity field intact). The senior's answer
+            # here overrides whatever the child typed at onboarding step 2.
+            # Stored as-typed so "Ji" stays "Ji" and "Rameshji" stays "Rameshji".
+            address = text.strip()
+            from database import update_user_fields
+            if address and len(address) < 50:
+                update_user_fields(user_id, preferred_salutation=address, handoff_step=3)
             else:
-                from database import update_user_fields
                 update_user_fields(user_id, handoff_step=3)
-            msg3 = get_handoff_message(2, child_name)
+            msg3 = get_handoff_message(2, child_name, bot_name=bot_name_for_handoff)
             replies.append(msg3)
-            logger.info("OUT | user_id=%s | type=handoff | step=2 | name=%s", user_id, name)
+            logger.info("OUT | user_id=%s | type=handoff | step=2 | address=%s", user_id, address)
 
         elif handoff_step == 3:
             # Senior gave bot name — save it, send final welcome message
@@ -1145,7 +1151,7 @@ async def _run_pipeline(
             else:
                 from database import update_user_fields
                 update_user_fields(user_id, handoff_step=4)
-            msg4 = get_handoff_message(3, child_name)
+            msg4 = get_handoff_message(3, child_name, bot_name=bot_name_for_handoff)
             replies.append(msg4)
             logger.info("OUT | user_id=%s | type=handoff | step=3 | bot_name=%s", user_id, bot_name)
 

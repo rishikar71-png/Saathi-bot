@@ -996,15 +996,21 @@ def add_family_members_bulk(user_id: int, names: list, relationship: str) -> Non
         conn.commit()
 
 
-def save_setup_person(user_id: int, name: str) -> None:
-    """Record the adult child who performed onboarding in family_members."""
+def save_setup_person(user_id: int, name: str, phone: str = "") -> None:
+    """
+    Record the adult child who performed onboarding in family_members.
+
+    22 Apr 2026: phone is optional — step 0 now parses name + phone from
+    free-text input ("rishi 9819787322" -> name="Rishi", phone="9819787322").
+    Captured phone is then offered as the default emergency contact at step 8.
+    """
     with get_connection() as conn:
         conn.execute(
             """
-            INSERT INTO family_members (user_id, name, relationship, role, is_setup_user)
-            VALUES (?, ?, 'setup', 'family', 1)
+            INSERT INTO family_members (user_id, name, relationship, phone, role, is_setup_user)
+            VALUES (?, ?, 'setup', ?, 'family', 1)
             """,
-            (user_id, name.strip()),
+            (user_id, name.strip(), (phone or "").strip()),
         )
         conn.commit()
 
