@@ -158,12 +158,34 @@ def _parse_setup_person(text: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 _MEDICINE_UNKNOWN_SIGNALS = (
+    # Unknown / uncertain
     "don't know", "dont know", "do not know", "not sure", "unsure",
+    "no idea",
+    # Child defers to own follow-up
     "i'll check", "ill check", "will check", "check later",
     "will fill", "need to fill", "needs to fill", "will let you know",
     "tell you later", "find out", "figure out", "get back",
+    # Child defers to senior ("she'll tell you", "let her input them", etc.)
+    "will inform", "she'll inform", "she will inform", "he'll inform", "he will inform",
+    "will tell", "she'll tell", "she will tell", "he'll tell", "he will tell",
+    "will share", "she'll share", "she will share", "he'll share", "he will share",
+    "will send", "she'll send", "she will send", "he'll send", "he will send",
+    "will update", "she'll update", "she will update",
+    "she'll fill", "she will fill", "he'll fill", "he will fill",
+    "she'll input", "she will input", "he'll input", "he will input",
+    "she'll add", "she will add", "he'll add", "he will add",
+    "she'll do", "she will do", "he'll do", "he will do",
+    "she'll give", "she will give", "he'll give", "he will give",
+    "let her", "let him",  # "let her input them", "let her fill it", "let him tell you"
+    "ask her", "ask him",
+    "she knows", "he knows",
+    # Hindi / Hinglish
     "pata nahi", "maalum nahi", "malum nahi", "nahi pata",
     "bata nahi", "pata karke", "pooch ke",
+    "khud bata", "khud batayegi", "khud batayega",
+    "wo bata", "woh bata", "vo bata",
+    "baad mein bata", "baad me bata",
+    "khud fill", "khud bhar",
 )
 
 
@@ -609,8 +631,8 @@ def _q(step: int, ctx: dict) -> str:
         3: f"Which city does {addr} live in?",
         4: (
             f"What language does {addr} feel most comfortable speaking in?\n\n"
-            f"For example: Hindi, English, Hinglish, Tamil, Telugu, Bengali, "
-            f"Marathi, Gujarati, Punjabi — or a mix."
+            f"Right now I can chat in *Hindi*, *English*, or a mix of the two "
+            f"(*Hinglish*). Which is best for {addr}?"
         ),
         5: (
             f"Is {addr}'s spouse with them? If yes, what is their spouse's name? "
@@ -648,8 +670,8 @@ def _q(step: int, ctx: dict) -> str:
         12: (
             f"What topics does {addr} enjoy — in conversation or in the news?\n\n"
             f"For example: cricket, Bollywood, cooking, history, movies, "
-            f"religion, travel, grandchildren, politics, business — anything "
-            f"that lights them up."
+            f"religion, travel, children, grandchildren, family, politics, "
+            f"business — anything that lights them up."
         ),
         13: (
             f"What is {addr}'s religion or faith, if any? "
@@ -1273,8 +1295,8 @@ def _build_completion_message(user_id: int, ctx: dict) -> str:
     if ctx.get("medicines_deferred"):
         medicines_note = (
             f"One small thing — you weren't sure about {addr}'s medicines earlier. "
-            f"No rush. Once you have the list, just type /medicines and I'll set "
-            f"up the reminders.\n\n"
+            f"No rush. I'll gently ask {addr} about them once we've started "
+            f"chatting, so you don't need to do anything.\n\n"
         )
 
     return (

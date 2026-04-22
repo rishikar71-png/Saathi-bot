@@ -1934,10 +1934,10 @@ async def handle_familycode(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         senior_name = user_row["name"] or "them"
         await update.message.reply_text(
             f"Quick question before I give you the message to forward — "
-            f"what do you call {senior_name}?\n\n"
-            f"(For example: *Papa*, *Dad*, *Mummy*, *Rishi Uncle* — "
-            f"whatever you'd naturally say when talking about {senior_name} "
-            f"to another family member.)",
+            f"what does the person you're sending this to call {senior_name}?\n\n"
+            f"(For example: *Ma*, *Papa*, *Mummy*, *Dadi*, *Nani*, *Aunty*, "
+            f"*Maasi*, or *{senior_name} Ji* — whatever term they would "
+            f"naturally use for {senior_name}.)",
             parse_mode="Markdown",
         )
         logger.info(
