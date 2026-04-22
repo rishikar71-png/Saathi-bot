@@ -78,6 +78,7 @@ def _cache_set(key: str, value: Optional[str]) -> None:
 # Keep extending this as pilot surfaces more short forms / old names.
 # ---------------------------------------------------------------------------
 CITY_ALIASES: dict[str, str] = {
+    # --- India ---
     # Mumbai
     "mum": "Mumbai", "mumbai": "Mumbai", "bombay": "Mumbai", "bby": "Mumbai",
     # Delhi
@@ -117,7 +118,130 @@ CITY_ALIASES: dict[str, str] = {
     "guwahati": "Guwahati", "dehradun": "Dehradun",
     "shimla": "Shimla", "simla": "Shimla",
     "goa": "Panaji", "panaji": "Panaji", "panjim": "Panaji",
+
+    # --- Diaspora (added 22 Apr 2026 for pilot) ---
+    # USA — West Coast
+    "la": "Los Angeles", "los angeles": "Los Angeles", "l.a.": "Los Angeles",
+    "la ca": "Los Angeles", "losangeles": "Los Angeles",
+    "sf": "San Francisco", "san francisco": "San Francisco",
+    "san fran": "San Francisco", "bay area": "San Francisco", "sfo": "San Francisco",
+    "seattle": "Seattle", "sea": "Seattle",
+    # USA — East Coast
+    "ny": "New York", "nyc": "New York", "new york": "New York",
+    "new york city": "New York", "ny city": "New York", "newyork": "New York",
+    "boston": "Boston", "bos": "Boston",
+    "dc": "Washington", "washington": "Washington", "washington dc": "Washington",
+    "washington d.c.": "Washington", "washington, dc": "Washington",
+    # USA — Central / South
+    "chicago": "Chicago", "chi": "Chicago", "chitown": "Chicago",
+    "dallas": "Dallas", "dfw": "Dallas",
+    "houston": "Houston", "hou": "Houston",
+    "atlanta": "Atlanta", "atl": "Atlanta",
+    # Canada
+    "toronto": "Toronto", "to": "Toronto", "yyz": "Toronto",
+    "vancouver": "Vancouver", "van": "Vancouver", "yvr": "Vancouver",
+    # UK
+    "london": "London", "ldn": "London", "lon": "London",
+    # Gulf
+    "dubai": "Dubai", "dxb": "Dubai",
+    "abu dhabi": "Abu Dhabi", "auh": "Abu Dhabi",
+    "doha": "Doha",
+    # Southeast / East Asia
+    "singapore": "Singapore", "sg": "Singapore", "sgp": "Singapore",
+    "hong kong": "Hong Kong", "hk": "Hong Kong", "hkg": "Hong Kong",
+    # Australia / NZ
+    "syd": "Sydney", "sydney": "Sydney",
+    "mel": "Melbourne", "melbourne": "Melbourne", "mlb": "Melbourne",
+    "auckland": "Auckland", "akl": "Auckland",
+    # Europe (common diaspora)
+    "paris": "Paris", "berlin": "Berlin", "frankfurt": "Frankfurt",
+    "amsterdam": "Amsterdam", "ams": "Amsterdam",
+    "zurich": "Zurich", "zrh": "Zurich",
 }
+
+
+# ---------------------------------------------------------------------------
+# City → IANA timezone map. Keys MUST match canonical names in CITY_ALIASES
+# values (case-sensitive). Missing keys fall back to IST in get_iana_timezone.
+#
+# Added 22 Apr 2026 for diaspora pilot users. Before this, deepseek.py had
+# a hardcoded 5.5 offset for all Indian cities and rituals.py compared every
+# user's check-in time against a global IST clock — so an LA senior's 8am
+# briefing would fire at 8:00 IST = 7:30pm PDT the previous night.
+# ---------------------------------------------------------------------------
+
+CITY_TIMEZONE: dict[str, str] = {
+    # India — all share IST.
+    "Mumbai": "Asia/Kolkata",
+    "New Delhi": "Asia/Kolkata",
+    "Bengaluru": "Asia/Kolkata",
+    "Hyderabad": "Asia/Kolkata",
+    "Chennai": "Asia/Kolkata",
+    "Kolkata": "Asia/Kolkata",
+    "Pune": "Asia/Kolkata",
+    "Ahmedabad": "Asia/Kolkata",
+    "Jaipur": "Asia/Kolkata",
+    "Chandigarh": "Asia/Kolkata",
+    "Gurugram": "Asia/Kolkata",
+    "Noida": "Asia/Kolkata",
+    "Lucknow": "Asia/Kolkata",
+    "Indore": "Asia/Kolkata",
+    "Bhopal": "Asia/Kolkata",
+    "Nagpur": "Asia/Kolkata",
+    "Kochi": "Asia/Kolkata",
+    "Thiruvananthapuram": "Asia/Kolkata",
+    "Coimbatore": "Asia/Kolkata",
+    "Visakhapatnam": "Asia/Kolkata",
+    "Surat": "Asia/Kolkata",
+    "Vadodara": "Asia/Kolkata",
+    "Patna": "Asia/Kolkata",
+    "Ranchi": "Asia/Kolkata",
+    "Bhubaneswar": "Asia/Kolkata",
+    "Guwahati": "Asia/Kolkata",
+    "Dehradun": "Asia/Kolkata",
+    "Shimla": "Asia/Kolkata",
+    "Panaji": "Asia/Kolkata",
+
+    # USA
+    "Los Angeles": "America/Los_Angeles",
+    "San Francisco": "America/Los_Angeles",
+    "Seattle": "America/Los_Angeles",
+    "New York": "America/New_York",
+    "Boston": "America/New_York",
+    "Washington": "America/New_York",
+    "Atlanta": "America/New_York",
+    "Chicago": "America/Chicago",
+    "Dallas": "America/Chicago",
+    "Houston": "America/Chicago",
+
+    # Canada
+    "Toronto": "America/Toronto",
+    "Vancouver": "America/Vancouver",
+
+    # UK / Europe
+    "London": "Europe/London",
+    "Paris": "Europe/Paris",
+    "Berlin": "Europe/Berlin",
+    "Frankfurt": "Europe/Berlin",
+    "Amsterdam": "Europe/Amsterdam",
+    "Zurich": "Europe/Zurich",
+
+    # Gulf
+    "Dubai": "Asia/Dubai",
+    "Abu Dhabi": "Asia/Dubai",
+    "Doha": "Asia/Qatar",
+
+    # SE / East Asia
+    "Singapore": "Asia/Singapore",
+    "Hong Kong": "Asia/Hong_Kong",
+
+    # Australia / NZ
+    "Sydney": "Australia/Sydney",
+    "Melbourne": "Australia/Melbourne",
+    "Auckland": "Pacific/Auckland",
+}
+
+_IST_TZ = "Asia/Kolkata"
 
 
 def canonicalize_city(raw: str) -> str:
@@ -135,6 +259,24 @@ def canonicalize_city(raw: str) -> str:
     if not key:
         return ""
     return CITY_ALIASES.get(key, raw.strip().title())
+
+
+def get_iana_timezone(city: str) -> str:
+    """
+    Return the IANA timezone string for a city. Accepts either canonical form
+    ("Mumbai", "New York") or raw user input ("mum", "NY").
+
+    Falls back to 'Asia/Kolkata' (IST) if the city is unknown — this preserves
+    the pre-22-Apr-2026 behaviour for Indian users while giving diaspora users
+    correct local clocks.
+    """
+    if not city:
+        return _IST_TZ
+    # Try canonical match first, then alias resolution.
+    if city in CITY_TIMEZONE:
+        return CITY_TIMEZONE[city]
+    canonical = canonicalize_city(city)
+    return CITY_TIMEZONE.get(canonical, _IST_TZ)
 
 
 # ---------------------------------------------------------------------------

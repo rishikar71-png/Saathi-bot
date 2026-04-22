@@ -30,8 +30,10 @@ the existing ritual scheduler in rituals.py.
 import logging
 import random
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from database import get_connection, update_user_fields
+from apis import get_iana_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +59,16 @@ def _current_date() -> str:
 def _day_of_week() -> int:
     """Monday = 0, Sunday = 6."""
     return _ist_now().weekday()
+
+
+# Per-user timezone (for memory-prompt scheduling — Wed/Sun at morning check-in
+# must fire in the user's local clock, not IST).
+def _user_now(city: str) -> datetime:
+    iana = get_iana_timezone(city or "")
+    try:
+        return datetime.now(ZoneInfo(iana))
+    except ZoneInfoNotFoundError:
+        return _ist_now()
 
 
 # ---------------------------------------------------------------------------
@@ -559,7 +571,20 @@ async def send_memory_prompt(bot, user_id: int, language: str = "english") -> bo
     except Exception as tts_err:
         logger.warning("MEMORY_Q | TTS failed | user_id=%s | %s", user_id, tts_err)
 
-    today = _current_date()
+    # Dedupe key is the user's LOCAL date — must match the check in
+    # check_and_send_memory_prompts(), else diaspora users would get two
+    # prompts in a single local day around IST midnight.
+    user_city = ""
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT city FROM users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            if row:
+                user_city = row["city"] or ""
+    except Exception:
+        pass
+    today = _user_now(user_city).strftime("%Y-%m-%d")
 
     # Record in tracking tables
     with get_connection() as conn:
@@ -629,39 +654,48 @@ async def check_and_send_memory_prompts(bot) -> None:
     Called from check_and_send_rituals() every 60 seconds.
 
     Sends a memory question to eligible users on Wednesday (weekday 2)
-    and Sunday (weekday 6) only, at their morning check-in time (±1 minute
-    tolerance to handle scheduler jitter).
+    and Sunday (weekday 6) only, at their morning check-in time — evaluated
+    in EACH USER'S local timezone (not IST). Diaspora pilot users in LA/NY/
+    Melbourne get their prompt at 8am their time on their Wednesday/Sunday,
+    not on ours.
 
-    A user is eligible if:
+    A user is eligible if (in their local tz):
       - onboarding is complete
       - account is active
-      - today is Wednesday or Sunday
-      - they have NOT already received a memory prompt today
-      - their morning_checkin_time matches the current HH:MM
+      - today (local) is Wednesday or Sunday
+      - they have NOT already received a memory prompt today (local date)
+      - their morning_checkin_time matches the current local HH:MM
     """
-    today_weekday = _day_of_week()
-    if today_weekday not in (2, 6):  # 2 = Wednesday, 6 = Sunday
-        return
-
-    today = _current_date()
-    now_hhmm = _current_hhmm()
-
     with get_connection() as conn:
-        due_users = conn.execute(
+        all_users = conn.execute(
             """
-            SELECT u.user_id, u.language, u.morning_checkin_time
+            SELECT u.user_id, u.language, u.morning_checkin_time, u.city
             FROM users u
             WHERE u.onboarding_complete = 1
               AND COALESCE(u.account_status, 'active') = 'active'
-              AND u.morning_checkin_time = ?
-              AND NOT EXISTS (
-                  SELECT 1 FROM memory_prompt_log mpl
-                  WHERE mpl.user_id = u.user_id
-                    AND mpl.sent_date = ?
-              )
-            """,
-            (now_hhmm, today),
+              AND u.morning_checkin_time IS NOT NULL
+            """
         ).fetchall()
+
+        due_users = []
+        for row in all_users:
+            city = row["city"] or ""
+            local_now = _user_now(city)
+            if local_now.weekday() not in (2, 6):
+                continue
+            if local_now.strftime("%H:%M") != row["morning_checkin_time"]:
+                continue
+            local_today = local_now.strftime("%Y-%m-%d")
+            already = conn.execute(
+                """
+                SELECT 1 FROM memory_prompt_log
+                WHERE user_id = ? AND sent_date = ? LIMIT 1
+                """,
+                (row["user_id"], local_today),
+            ).fetchone()
+            if already:
+                continue
+            due_users.append(row)
 
     for row in due_users:
         user_id = row["user_id"]

@@ -1,33 +1,48 @@
 import os
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from openai import OpenAI
 from memory import get_relevant_memories
+from apis import get_iana_timezone
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Time awareness — user's local time based on city
+# Time awareness — user's local time based on city.
+#
+# 22 Apr 2026: switched from a hardcoded IST-only offset map to stdlib
+# zoneinfo + the shared city→IANA map in apis.CITY_TIMEZONE. Diaspora pilot
+# users in LA / NY / Melbourne now get their actual local clock; Indian users
+# continue to get IST (the default fallback). DST is handled automatically
+# by zoneinfo — no manual offset tracking needed.
 # ---------------------------------------------------------------------------
 
-_CITY_TIMEZONE_OFFSET = {
-    "mumbai": 5.5,
-    "delhi": 5.5,
-    "bangalore": 5.5,
-    "chennai": 5.5,
-    "kolkata": 5.5,
-    "hyderabad": 5.5,
-    "pune": 5.5,
-    "ahmedabad": 5.5,
-}
+_IST = ZoneInfo("Asia/Kolkata")
+
+
+def _user_tz(user: dict) -> ZoneInfo:
+    """
+    Return a ZoneInfo for the user's city. Falls back to IST if the city
+    isn't in our map or the IANA name is somehow invalid on this host.
+    """
+    city = (user.get("city") or "").strip()
+    iana = get_iana_timezone(city)
+    try:
+        return ZoneInfo(iana)
+    except ZoneInfoNotFoundError:
+        logger.warning("DEEPSEEK | unknown IANA tz '%s' for city '%s', using IST", iana, city)
+        return _IST
 
 
 def get_user_local_hour(user: dict) -> int:
-    city = (user.get("city") or "mumbai").lower().strip()
-    offset_hours = _CITY_TIMEZONE_OFFSET.get(city, 5.5)
-    utc_now = datetime.now(timezone.utc)
-    local_time = utc_now + timedelta(hours=offset_hours)
-    return local_time.hour
+    """Return the user's current local hour (0-23) based on their city timezone."""
+    return datetime.now(_user_tz(user)).hour
+
+
+def get_user_local_now(user: dict) -> datetime:
+    """Timezone-aware 'now' in the user's local zone — for date/time strings."""
+    return datetime.now(_user_tz(user))
 
 
 def get_time_of_day_label(hour: int) -> str:
@@ -281,14 +296,18 @@ def _build_system_prompt(user_context: dict) -> str:
     if user_context.get("memory_context"):
         context_lines.append(f"\n{user_context['memory_context']}")
     # Date + time injection — DeepSeek has no internal clock.
-    _ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    # Use the USER's local timezone (derived from their city), not a hardcoded
+    # IST offset — a senior in LA on Sunday evening must not be told it's
+    # already Monday morning.
+    _local_now = get_user_local_now(user_context)
+    _tz_label = _local_now.tzname() or "local"
     context_lines.append(
-        f"- Today's date: {_ist_now.strftime('%A, %d %B %Y')} (IST)"
+        f"- Today's date: {_local_now.strftime('%A, %d %B %Y')} ({_tz_label})"
     )
     if user_context.get("local_time_label"):
         context_lines.append(
             f"- User's current local time: {user_context['local_time_label']} "
-            f"({user_context.get('local_hour', '??'):02d}:00 IST approx)"
+            f"({user_context.get('local_hour', '??'):02d}:00 {_tz_label})"
         )
 
     user_context_block = (

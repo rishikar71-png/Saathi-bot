@@ -23,8 +23,10 @@ import io
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from database import get_connection, update_user_fields
+from apis import get_iana_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +34,8 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 
 # ---------------------------------------------------------------------------
-# IST helpers
+# IST helpers — used for "global" schedule ticks (nightly jobs, logs).
+# Per-user day-boundaries use _user_now() below.
 # ---------------------------------------------------------------------------
 
 def _ist_now() -> datetime:
@@ -54,6 +57,38 @@ def _current_hour() -> int:
 def _day_of_week() -> int:
     """0 = Monday, 6 = Sunday."""
     return _ist_now().weekday()
+
+
+# ---------------------------------------------------------------------------
+# Per-user timezone helpers — added 22 Apr 2026 for diaspora pilot users.
+# An LA senior's 8am morning briefing must fire at 8am PDT, not 8am IST
+# (which is 7:30pm PDT the previous evening). See apis.CITY_TIMEZONE.
+# ---------------------------------------------------------------------------
+
+def _user_now(city: str) -> datetime:
+    """Timezone-aware 'now' in the user's local zone. Falls back to IST."""
+    iana = get_iana_timezone(city or "")
+    try:
+        return datetime.now(ZoneInfo(iana))
+    except ZoneInfoNotFoundError:
+        logger.warning("RITUALS | unknown IANA tz '%s' for city '%s', using IST", iana, city)
+        return _ist_now()
+
+
+def _user_hhmm(city: str) -> str:
+    return _user_now(city).strftime("%H:%M")
+
+
+def _user_date(city: str) -> str:
+    return _user_now(city).strftime("%Y-%m-%d")
+
+
+def _user_hour(city: str) -> int:
+    return _user_now(city).hour
+
+
+def _user_dow(city: str) -> int:
+    return _user_now(city).weekday()
 
 
 # ---------------------------------------------------------------------------
@@ -272,16 +307,33 @@ def get_day_arc(days_since_first_message: int) -> dict:
 
 def record_first_message(user_id: int) -> None:
     """
-    Record the hour of the user's first message today.
+    Record the hour of the user's first message today in THEIR local timezone.
     Silently ignored if already recorded today (UNIQUE constraint).
-    Only records during waking hours (5am–11pm) to avoid skewing
+    Only records during waking hours (5am–11pm local) to avoid skewing
     the average with insomnia or late-night messages.
+
+    Local-clock filtering matters for diaspora users: an LA senior sending
+    their first message at 10am PDT = 10:30pm IST, which the old IST check
+    would have excluded as "late-night".
     """
-    hour = _current_hour()
+    # Look up the user's city so we can compute their local clock.
+    city = ""
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT city FROM users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            if row:
+                city = row["city"] or ""
+    except Exception:
+        pass  # fall through to IST default
+
+    local_now = _user_now(city)
+    hour = local_now.hour
     if hour < 5 or hour > 23:
         return  # outside waking window — don't skew the average
-    today = _current_date()
-    dow = _day_of_week()
+    today = local_now.strftime("%Y-%m-%d")
+    dow = local_now.weekday()
     try:
         with get_connection() as conn:
             conn.execute(
@@ -301,10 +353,17 @@ def record_first_message(user_id: int) -> None:
 # Ritual scheduling — query helpers
 # ---------------------------------------------------------------------------
 
-def _get_users_due_for_ritual(ritual_type: str, now_hhmm: str, today: str) -> list:
+def _get_users_due_for_ritual(ritual_type: str) -> list:
     """
     Return users whose check-in time for this ritual matches the current minute
-    and who have not yet received this ritual today.
+    IN THEIR OWN LOCAL TIMEZONE and who have not yet received this ritual today
+    (local date). Pre-22-Apr-2026 this compared all users against a single IST
+    clock, which silently broke for any user outside India.
+
+    Python-side filter rather than SQL because the match predicate depends on
+    each user's stored city. Pilot scale is small (<100 users) so the full
+    table scan once per minute is negligible; revisit if pilot grows beyond
+    a few thousand users.
     """
     time_column = {
         "morning":   "morning_checkin_time",
@@ -313,27 +372,43 @@ def _get_users_due_for_ritual(ritual_type: str, now_hhmm: str, today: str) -> li
     }[ritual_type]
 
     with get_connection() as conn:
-        return conn.execute(
+        all_rows = conn.execute(
             f"""
             SELECT u.user_id, u.name, u.preferred_salutation, u.language,
                    u.bot_name, u.religion, u.favourite_topics,
                    u.music_preferences, u.city, u.morning_checkin_time,
                    u.afternoon_checkin_time, u.evening_checkin_time,
                    u.news_interests,
+                   u.{time_column} AS target_time,
                    COALESCE(u.days_since_first_message, 1) AS days_since_first_message
             FROM users u
             WHERE u.onboarding_complete = 1
               AND COALESCE(u.account_status, 'active') = 'active'
-              AND u.{time_column} = ?
-              AND NOT EXISTS (
-                  SELECT 1 FROM ritual_log rl
-                  WHERE rl.user_id = u.user_id
-                    AND rl.ritual_type = ?
-                    AND rl.sent_date = ?
-              )
-            """,
-            (now_hhmm, ritual_type, today),
+              AND u.{time_column} IS NOT NULL
+            """
         ).fetchall()
+
+        due = []
+        for row in all_rows:
+            city = row["city"] or ""
+            local_hhmm = _user_hhmm(city)
+            if local_hhmm != row["target_time"]:
+                continue
+            local_today = _user_date(city)
+            # Per-user dedupe: has this ritual already gone out in the user's
+            # local date? (Avoids double-sending around local-midnight edges.)
+            already_sent = conn.execute(
+                """
+                SELECT 1 FROM ritual_log
+                WHERE user_id = ? AND ritual_type = ? AND sent_date = ?
+                LIMIT 1
+                """,
+                (row["user_id"], ritual_type, local_today),
+            ).fetchone()
+            if already_sent:
+                continue
+            due.append(row)
+        return due
 
 
 def _mark_ritual_sent(user_id: int, ritual_type: str, today: str) -> None:
@@ -632,17 +707,22 @@ async def check_and_send_rituals(bot) -> None:
     """
     Scheduler tick (every 60 seconds).
 
-    1. Send morning/afternoon/evening rituals to users whose time matches now.
-    2. Once daily at 00:05 IST, run the adaptive learning pass.
+    1. Send morning/afternoon/evening rituals to users whose check-in time
+       matches NOW in their own local timezone (not IST).
+    2. Once daily at 00:05 IST, run the adaptive learning pass, day counter
+       increment, and EOL data-deletion pass. (These are global bot-housekeeping
+       jobs and are intentionally tied to IST — the bot operates out of India.)
     """
-    now_hhmm = _current_hhmm()
-    today = _current_date()
+    now_hhmm = _current_hhmm()  # still used for the nightly-job gate only
 
     for ritual_type in ("morning", "afternoon", "evening"):
-        for row in _get_users_due_for_ritual(ritual_type, now_hhmm, today):
+        for row in _get_users_due_for_ritual(ritual_type):
             try:
                 await _send_ritual(bot, row, ritual_type)
-                _mark_ritual_sent(row["user_id"], ritual_type, today)
+                # Dedupe key is the user's LOCAL date — matches the filter in
+                # _get_users_due_for_ritual so a retry on the same local day
+                # won't double-send.
+                _mark_ritual_sent(row["user_id"], ritual_type, _user_date(row["city"] or ""))
             except Exception as e:
                 logger.error(
                     "RITUALS | send failed | user_id=%s | type=%s | %s",

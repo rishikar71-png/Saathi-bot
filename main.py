@@ -1823,6 +1823,66 @@ async def adminreset_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(result)
 
 
+async def setcity_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Admin-only command to correct a user's city (triggers a timezone re-derive
+    on the next message). Useful for travel ("my senior is in London for 3
+    weeks"), onboarding typos, and post-pilot corrections.
+
+    Usage: /setcity <telegram_id> <city>
+    Example: /setcity 123456789 Melbourne
+             /setcity 123456789 New York
+    """
+    if update.effective_user.id != 8711370451:
+        return
+    args = context.args or []
+    if len(args) < 2:
+        await update.message.reply_text(
+            "Usage: /setcity <telegram_id> <city>\n"
+            "Example: /setcity 123456789 Melbourne"
+        )
+        return
+    try:
+        target_telegram_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text("Invalid telegram_id — must be a number.")
+        return
+
+    raw_city = " ".join(args[1:]).strip()
+    if not raw_city:
+        await update.message.reply_text("City cannot be empty.")
+        return
+
+    from apis import canonicalize_city, CITY_ALIASES, get_iana_timezone
+    from database import update_user_fields
+    canonical = canonicalize_city(raw_city)
+    key = raw_city.lower()
+    known = key in CITY_ALIASES
+    iana = get_iana_timezone(canonical)
+
+    try:
+        update_user_fields(target_telegram_id, city=canonical)
+    except Exception as _e:
+        await update.message.reply_text(f"DB update failed: {_e}")
+        return
+    finally:
+        _invalidate_user_cache(target_telegram_id)
+
+    warning = "" if known else (
+        "\n\n⚠️ Warning: city not in alias map — stored as title-case. "
+        "Weather may not resolve; timezone will fall back to IST unless "
+        "the canonical name is also in CITY_TIMEZONE."
+    )
+    await update.message.reply_text(
+        f"✅ City updated for `{target_telegram_id}`:\n"
+        f"  input: `{raw_city}`\n"
+        f"  stored: `{canonical}`\n"
+        f"  timezone: `{iana}`"
+        f"{warning}",
+        parse_mode="Markdown",
+    )
+
+
 async def testapis_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Dev-only command: tests weather/news/cricket APIs live and reports results."""
     if update.effective_user.id != 8711370451:
@@ -2149,6 +2209,7 @@ def main() -> None:
     app.add_handler(CommandHandler("familycode", handle_familycode))
     app.add_handler(CommandHandler("join", handle_join))
     app.add_handler(CommandHandler("adminreset", adminreset_command))
+    app.add_handler(CommandHandler("setcity", setcity_command))
     app.add_handler(CommandHandler("testapis", testapis_command))
     app.add_handler(CallbackQueryHandler(handle_help_callback, pattern="^help_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
