@@ -153,11 +153,13 @@ def _parse_setup_person(text: str) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Step 10 (medicines) — detect "I don't know yet / she'll tell me later"
-# so we warm-ack instead of silently failing.
+# Deferral detection — "I don't have the details, ask the senior later".
+# Used at step 7 (grandkids) and step 10 (medicines). When detected, we
+# warm-ack + flag in ctx so Batch 2's ask-Ma-later mechanism can pick it up.
+# Without this guard, the raw text gets saved as a name / medicines string.
 # ---------------------------------------------------------------------------
 
-_MEDICINE_UNKNOWN_SIGNALS = (
+_DEFERRAL_TO_SENIOR_SIGNALS = (
     # Unknown / uncertain
     "don't know", "dont know", "do not know", "not sure", "unsure",
     "no idea",
@@ -189,10 +191,15 @@ _MEDICINE_UNKNOWN_SIGNALS = (
 )
 
 
-def _is_medicines_unknown(text: str) -> bool:
-    """True if the child is deferring — e.g. 'I don't know, she'll tell me'."""
+def _is_deferred_to_senior(text: str) -> bool:
+    """True if the child is deferring the detail to the senior — e.g. 'I don't know,
+    she'll tell me', 'let her input them', 'she will tell', 'pata nahi'."""
     tl = (text or "").lower()
-    return any(sig in tl for sig in _MEDICINE_UNKNOWN_SIGNALS)
+    return any(sig in tl for sig in _DEFERRAL_TO_SENIOR_SIGNALS)
+
+
+# Back-compat alias — preserve old name for any external callers. Remove post-Batch 3.
+_is_medicines_unknown = _is_deferred_to_senior
 
 
 # ---------------------------------------------------------------------------
@@ -1111,9 +1118,10 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
 
     elif step == 2:
         # preferred_salutation = full display address used by Saathi when
-        # addressing/referring to the senior. Stored AS-IS (no title-casing)
-        # so 'Ji' stays 'Ji', 'Rameshji' stays 'Rameshji', etc.
-        # Skip signals → fall back to default "{name} Ji".
+        # addressing/referring to the senior. Title-case at storage so
+        # "ma" → "Ma", "papa" → "Papa", "durga ji" → "Durga Ji".
+        # Single-word inputs already correctly cased (e.g. "Rameshji") stay
+        # unchanged. Skip signals fall back to default "{name} Ji".
         skip_signals = (
             "skip", "no", "nahi", "none", "no preference",
             "koi nahi", "koi bhi", "whatever", "anything",
@@ -1122,7 +1130,7 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
         if tl in skip_signals or not t:
             salutation = _default_address(ctx.get("senior_name", ""))
         else:
-            salutation = t  # as-typed
+            salutation = t.title()
         ctx["salutation"] = salutation
         update_user_fields(user_id, preferred_salutation=salutation)
 
@@ -1146,14 +1154,26 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
             update_user_fields(user_id, spouse_name=t)
 
     elif step == 6:
-        names = [n.strip().title() for n in t.split(",")
-                 if n.strip() and n.strip().lower() not in ("no", "none", "nahi")]
+        # Split on commas AND natural-language connectors (" and ", " aur ", " & ").
+        # Without this, "putu and mana" was stored as a single child "Putu And Mana".
+        raw_parts = re.split(r",|\s+and\s+|\s+aur\s+|\s+&\s+", t, flags=re.IGNORECASE)
+        names = [p.strip().title() for p in raw_parts
+                 if p.strip() and p.strip().lower() not in ("no", "none", "nahi")]
         if names:
             add_family_members_bulk(user_id, names, "child")
 
     elif step == 7:
+        # Deferral guard: "she will tell", "let her input them", "pata nahi" etc.
+        # must NOT be saved as a grandchild's name. Flag in ctx so Batch 2's
+        # ask-Ma-later mechanism can pick it up; save nothing for now.
+        if _is_deferred_to_senior(t):
+            ctx["grandkids_deferred"] = True
+            logger.info("ONBOARDING | user_id=%s | step 7 grandkids deferred ('%s')",
+                        user_id, t[:40])
+            return
         if tl not in ("no", "no.", "none", "nahi", "nahin", "nope"):
-            names = [n.strip().title() for n in t.split(",") if n.strip()]
+            raw_parts = re.split(r",|\s+and\s+|\s+aur\s+|\s+&\s+", t, flags=re.IGNORECASE)
+            names = [p.strip().title() for p in raw_parts if p.strip()]
             if names:
                 add_family_members_bulk(user_id, names, "grandchild")
 
@@ -1194,6 +1214,16 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
                     save_emergency_contact(user_id, setup_name.title(), phone_match.group())
                     logger.info("ONBOARDING | user_id=%s | step 8 reused setup name + new phone", user_id)
                     return
+        # Bare-phone-only reply (e.g. "9819787322" with no affirmation word).
+        # Without this branch, _extract_contact_name strips all digits and
+        # returns "", so `name = "" or t` saved the phone number AS the name.
+        # If the setup person has a name, treat bare phone as implicit affirm.
+        if setup_first and re.fullmatch(r"[\d\s\-—\+\(\)]+", t or ""):
+            phone_match = re.search(r"\d{10,}", re.sub(r"[\s\-—]", "", t))
+            if phone_match:
+                save_emergency_contact(user_id, setup_name.title(), phone_match.group())
+                logger.info("ONBOARDING | user_id=%s | step 8 bare-phone → reused setup name", user_id)
+                return
         # Otherwise, parse fresh name + phone from the reply (original behaviour).
         phone_match = re.search(r"\d{10,}", t.replace(" ", "").replace("-", ""))
         phone = phone_match.group() if phone_match else ""
@@ -1208,7 +1238,7 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
         # "I don't know yet" handler — don't silent-fail, flag for follow-up
         # via completion message. medicines_raw stays NULL; the completion
         # message reminds the child how to add medicines later.
-        if _is_medicines_unknown(t):
+        if _is_deferred_to_senior(t):
             ctx["medicines_deferred"] = True
             logger.info("ONBOARDING | user_id=%s | step 10 medicines deferred ('%s')", user_id, t[:40])
             return

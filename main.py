@@ -949,6 +949,10 @@ async def _run_pipeline(
         raw_term = (text or "").strip()
         # Strip trailing punctuation/emoji and cap length — defensive only.
         raw_term = re.sub(r"[\.\!\?\n]+$", "", raw_term).strip()
+        # Title-case so "ma" / "papa" / "dadi" render capitalized in the
+        # forward message. Single-word inputs already correctly cased
+        # ("Rameshji") stay unchanged; multi-word ("durga ji") → "Durga Ji".
+        raw_term = raw_term.title()
         if not raw_term or len(raw_term) > 40:
             # Unusable answer → clear pending, let message flow through normally
             # so the senior isn't stuck in a loop if they typed something else.
