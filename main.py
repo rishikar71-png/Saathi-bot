@@ -18,7 +18,8 @@ from telegram.ext import (
 from dotenv import load_dotenv
 from database import (
     init_db, run_startup_migrations, get_or_create_user, save_message_record,
-    save_session_turn, get_session_messages, admin_reset_user,
+    save_session_turn, get_session_messages, admin_reset_user, get_setup_person,
+    get_family_members,
 )
 from deepseek import call_deepseek, get_user_local_hour, get_time_of_day_label
 from protocol1 import check_protocol1
@@ -1176,6 +1177,27 @@ async def _run_pipeline(
     _local_hour = get_user_local_hour(dict(user_row))
     _time_label = get_time_of_day_label(_local_hour)
 
+    # Fetch the setup person (adult child who ran onboarding). Used by
+    # deepseek._build_system_prompt to substitute {SETUP_NAME} into the
+    # IDENTITY and FAMILY REFERENCES sections — prevents "Priya" leaks.
+    # Returns None for self-setup flow or onboarding-incomplete users.
+    _setup_person = get_setup_person(user_id)
+    _setup_name = (_setup_person or {}).get("name") if _setup_person else None
+
+    # Full family roster — inject structured list into the FAMILY block of the
+    # system prompt. Prevents DeepSeek from fabricating children/grandchildren
+    # names when the senior asks about them (the "Rahul and Anjali"
+    # hallucination seen in the 22 Apr live chatlog).
+    _family_members = get_family_members(user_id)
+
+    # preferred_salutation may be on user_row (if set by senior at handoff
+    # step 2 OR by child at onboarding step 2). Used by the FAMILY block so
+    # DeepSeek knows Durga is addressed as "Ma".
+    try:
+        _preferred_salutation = user_row["preferred_salutation"]
+    except (IndexError, KeyError):
+        _preferred_salutation = None
+
     user_context = {
         "user_id":                user_id,
         "name":                   user_row["name"],
@@ -1188,7 +1210,9 @@ async def _run_pipeline(
         "health_sensitivities":   user_row["health_sensitivities"],
         "music_preferences":      user_row["music_preferences"],
         "favourite_topics":       user_row["favourite_topics"],
-        "family_members":         None,  # TODO Module 7: inject from family_members table
+        "family_members":         _family_members,
+        "setup_name":             _setup_name,
+        "preferred_salutation":   _preferred_salutation,
         "archetype_adjustment":   archetype_adjustment,
         "local_hour":             _local_hour,
         "local_time_label":       _time_label,

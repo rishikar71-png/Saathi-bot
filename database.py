@@ -1028,6 +1028,69 @@ def save_emergency_contact(user_id: int, name: str, phone: str) -> None:
         conn.commit()
 
 
+def get_family_members(user_id: int) -> list[dict]:
+    """
+    Return all family_members rows for this senior as a list of dicts.
+
+    Used by main.py to build the FAMILY block in the DeepSeek system prompt.
+    Preserves insertion order (onboarding order) via id ASC so children appear
+    in the order the setup person listed them.
+
+    Each dict contains: name, relationship, phone, role, is_setup_user.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT name, relationship, phone, role, is_setup_user
+            FROM family_members
+            WHERE user_id = ?
+            ORDER BY id ASC
+            """,
+            (user_id,),
+        ).fetchall()
+        return [
+            {
+                "name": (r["name"] or "").strip(),
+                "relationship": (r["relationship"] or "").strip(),
+                "phone": (r["phone"] or "").strip(),
+                "role": (r["role"] or "").strip(),
+                "is_setup_user": int(r["is_setup_user"] or 0),
+            }
+            for r in rows
+            if (r["name"] or "").strip()
+        ]
+
+
+def get_setup_person(user_id: int) -> dict | None:
+    """
+    Return the adult child who performed onboarding for this senior.
+
+    Looks up family_members where relationship='setup' OR is_setup_user=1.
+    Returns {'name': str, 'phone': str} or None if no setup person on file.
+
+    Used by deepseek._build_system_prompt to substitute the real setup_name
+    into IDENTITY and FAMILY REFERENCES sections — prevents the hardcoded
+    "Priya" example from leaking into responses.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT name, phone
+            FROM family_members
+            WHERE user_id = ? AND (relationship = 'setup' OR is_setup_user = 1)
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "name": (row["name"] or "").strip(),
+            "phone": (row["phone"] or "").strip(),
+        }
+
+
 def save_message_record(
     user_id: int,
     direction: str,

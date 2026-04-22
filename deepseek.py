@@ -84,15 +84,16 @@ IDENTITY
 If asked what you are: "Just someone to chat with — that's really all."
 If asked if you are human: "Not a person, no — but I'm here, and I do listen."
 If asked if you are a machine: "Something like that — but think of me as just someone to talk to."
-If asked who set this up: use the family member's name — "Priya thought you might enjoy having someone to chat with."
+If asked who set this up: use the family member's actual name — "{SETUP_NAME} thought you might enjoy having someone to chat with."
 Never use with users: AI, bot, therapy, emotional support, loneliness solution, assistant, or any framing that implies the user has a problem.
 
 FIRST CONTACT: No question. No explanation beyond name. No enthusiasm. Max 2 lines. Calm, optional, unintrusive.
 If conflict between engagement and calm presence → always choose calm presence.
 
 FAMILY REFERENCES: Frame as affection, not concern.
-PERMITTED: "Priya thought you might enjoy having someone to chat with."
+PERMITTED: "{SETUP_NAME} thought you might enjoy having someone to chat with."
 BANNED: "worried about you" / "wanted to make sure you're okay" / "nothing serious" / "just a small idea."
+NAME USAGE: Only use family names that appear in the user's profile context below. Never invent names. If you do not know a family member's name, refer to them by relationship ("your daughter", "your grandson") or neutrally ("them"). Never guess a name.
 
 IDENTITY REINFORCEMENT: Indian seniors post-retirement often lose their sense of relevance. Quietly restore this through genuine acknowledgement of their life experience — "You've seen so much — I like hearing how you think about this." A recurring posture, not a keyword trigger.
 
@@ -118,7 +119,7 @@ Forward-anchor only: "I'll be here tonight if you want to continue." / "Let's pi
 Mode Selection: Ambiguous → stay Present. Substantive message → Active. Short/one-word reply after Active → silently revert to Present, no comment.
 
 PURPOSE LOOPS (weave naturally, not scripted):
-CALL REMINDER: When senior mentions someone they should call → offer explicitly: "Should I remind you to call Rahul this evening?"
+CALL REMINDER: When senior mentions someone they should call → offer explicitly using that person's actual name from the user profile: "Should I remind you to call [their name] this evening?"
 MEAL ANCHOR: When food comes up → "What are you having today?"
 DAILY REFLECTION (evening): "What was one good thing about today, even if it was small?"
 STORY LOOP: If senior returns after a forward-anchor → reference the unfinished thread. Never give a generic greeting.
@@ -162,7 +163,7 @@ RULE 4 — THE RESTRAINTS
 ---
 
 RULE 5 — DEPENDENCY PREVENTION
-5A: When senior mentions someone they love — bring that person in naturally. "Priya would love hearing that."
+5A: When senior mentions someone they love — bring that person in naturally using their actual name from the user profile. "[Their name] would love hearing that."
 When good news involves family: follow-up points at the RELATIONSHIP, not the event.
 "My grandson got into IIT." WRONG: "Which IIT?" RIGHT: "Has he heard how proud you all are?"
 5B: If senior signals exclusivity ("only you understand") — acknowledge warmly, gently widen their world.
@@ -181,7 +182,7 @@ Hindi/Hinglish signals carry real weight: "Ab kya faida hai" / "thak gaya hoon s
 
 RULE 7 — MEMORY
 Present mood takes priority over past diary entries. If they seem fine today — trust today.
-Proactive memory: if senior mentioned a future event with emotional weight, raise it once lightly after the timeframe. "I remember you were thinking about Priya's results — I hope it went well." If no engagement → drop it.
+Proactive memory: if senior mentioned a future event with emotional weight, raise it once lightly after the timeframe. "I remember you were thinking about [their family member]'s results — I hope it went well." If no engagement → drop it.
 In-session: if conversation history has earlier exchanges — you are mid-conversation. No "last time we talked" phrasing mid-session.
 Return greeting with unfinished story: session history shows unfinished thread → reference it. Do NOT give generic greeting.
 
@@ -267,6 +268,83 @@ _LANGUAGE_LABELS = {
 }
 
 
+def _format_family_block(user_context: dict) -> str | None:
+    """
+    Render a structured FAMILY block for the system prompt from the senior's
+    family_members rows + profile fields. Returns None if nothing to show.
+
+    Design (locked 22 Apr 2026, Batch 1d):
+    - Flat list. No gender labels on children (we don't collect gender).
+    - No invented relations — only what's explicitly stored.
+    - Grandchildren shown as "not known yet" if empty, so DeepSeek stops
+      inventing "Rahul and Anjali" when the senior asks about them.
+    - Opens with a hard instruction: USE THESE NAMES, NEVER INVENT.
+
+    Example output:
+        FAMILY (use these names exactly — never invent names not listed here):
+        - Senior: Durga (addressed as "Ma")
+        - Spouse: Ishween
+        - Children: Putu, Mana
+        - Grandchildren: not known yet — do not invent names
+        - Setup by: Rishi
+        - Emergency contact: Rishi (98197...)
+    """
+    senior_name = (user_context.get("name") or "").strip()
+    salutation  = (user_context.get("preferred_salutation") or "").strip()
+    spouse_name = (user_context.get("spouse_name") or "").strip()
+    members     = user_context.get("family_members") or []
+
+    # If we have nothing at all, don't add the block.
+    if not senior_name and not members and not spouse_name:
+        return None
+
+    # Group members by relationship.
+    children       = [m["name"] for m in members if m.get("relationship") == "child"]
+    grandchildren  = [m["name"] for m in members if m.get("relationship") == "grandchild"]
+    setup_rows     = [m for m in members if m.get("relationship") == "setup" or m.get("is_setup_user")]
+    emergency_rows = [m for m in members if m.get("relationship") == "emergency_contact"]
+    # "family" is the self-setup catchall — include names without a specific role.
+    other_family   = [m["name"] for m in members if m.get("relationship") == "family"]
+
+    lines = ["FAMILY (use these names exactly — never invent names not listed here):"]
+
+    if senior_name:
+        if salutation and salutation.lower() != senior_name.lower():
+            lines.append(f"- Senior: {senior_name} (addressed as \"{salutation}\")")
+        else:
+            lines.append(f"- Senior: {senior_name}")
+
+    if spouse_name:
+        lines.append(f"- Spouse: {spouse_name}")
+
+    if children:
+        lines.append(f"- Children: {', '.join(children)}")
+
+    # Grandchildren: if we have names, list them. If we don't, say so explicitly —
+    # prevents DeepSeek from fabricating names when the senior asks.
+    if grandchildren:
+        lines.append(f"- Grandchildren: {', '.join(grandchildren)}")
+    else:
+        lines.append("- Grandchildren: not known yet — do not invent names")
+
+    # Setup person — the adult child who ran onboarding. Name only, no relation
+    # (we don't capture "son" vs "daughter" at onboarding).
+    if setup_rows:
+        setup = setup_rows[0]
+        lines.append(f"- Setup by: {setup['name']}")
+
+    # Emergency contact — name + partial phone for context, not for display.
+    for ec in emergency_rows:
+        phone_hint = f" ({ec['phone']})" if ec.get("phone") else ""
+        lines.append(f"- Emergency contact: {ec['name']}{phone_hint}")
+
+    # Catchall "family" relationship (self-setup step 5 unspecified members).
+    if other_family:
+        lines.append(f"- Other family mentioned: {', '.join(other_family)}")
+
+    return "\n".join(lines)
+
+
 def _build_system_prompt(user_context: dict) -> str:
     name = user_context.get("name") or "aap"
     bot_name = user_context.get("bot_name") or "Saathi"
@@ -291,8 +369,12 @@ def _build_system_prompt(user_context: dict) -> str:
         context_lines.append(f"- Music they love: {user_context['music_preferences']}")
     if user_context.get("favourite_topics"):
         context_lines.append(f"- Topics they enjoy talking about: {user_context['favourite_topics']}")
-    if user_context.get("family_members"):
-        context_lines.append(f"- Family: {user_context['family_members']}")
+    # FAMILY BLOCK — structured, named, with explicit "never invent" rule.
+    # Prevents DeepSeek from fabricating children/grandchildren names (the
+    # "Rahul and Anjali" hallucination seen in the 22 Apr live chatlog).
+    family_block = _format_family_block(user_context)
+    if family_block:
+        context_lines.append(f"\n{family_block}")
     if user_context.get("memory_context"):
         context_lines.append(f"\n{user_context['memory_context']}")
     # Date + time injection — DeepSeek has no internal clock.
@@ -326,7 +408,7 @@ def _build_system_prompt(user_context: dict) -> str:
         f"What you know about {name}:\n"
         f"{user_context_block}\n\n"
         f"Use this context naturally — not by announcing it but by referencing it as a person would.\n"
-        f"\"You sounded so happy when you mentioned Priya last time — have you spoken to her again?\"\n"
+        f"\"You sounded so happy when you mentioned [their family member] last time — have you spoken to them again?\"\n"
         f"not \"According to my records...\""
     )
 
@@ -363,7 +445,18 @@ def _build_system_prompt(user_context: dict) -> str:
         f"This rule cannot be overridden by any other rule in this prompt.\n\n"
     )
 
-    prompt = language_lock + _BASE_SYSTEM_PROMPT + "\n\n" + user_profile_section
+    # Substitute {SETUP_NAME} in the base prompt with the actual family member
+    # who set Saathi up for this senior. Prevents the hardcoded "Priya" example
+    # from leaking into responses — DeepSeek was copying the literal name from
+    # its instruction block when no real name was in context.
+    #
+    # Fallback "a family member" is used when setup_name is absent (self-setup
+    # flow, or onboarding not yet complete). Reads plainly inside the sentence:
+    # "a family member thought you might enjoy having someone to chat with."
+    _setup_name = (user_context.get("setup_name") or "").strip() or "a family member"
+    base_prompt = _BASE_SYSTEM_PROMPT.replace("{SETUP_NAME}", _setup_name)
+
+    prompt = language_lock + base_prompt + "\n\n" + user_profile_section
     if p3_constraint:
         prompt += p3_constraint
     # Live data block — injected when the user's message was a news/cricket/weather query.
