@@ -515,6 +515,11 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             onboarding_complete     INTEGER DEFAULT 0,
             onboarding_step         INTEGER DEFAULT 0,
             last_active_at          TEXT,
+            -- Batch 2 — deferred-input tracking (see _USERS_NEW_COLUMNS for full notes)
+            pending_grandkids_names    INTEGER DEFAULT 0,
+            pending_medicines          INTEGER DEFAULT 0,
+            awaiting_pending_capture   TEXT    DEFAULT NULL,
+            pending_prompt_sent_at     TEXT    DEFAULT NULL,
             created_at              TEXT    DEFAULT (datetime('now')),
             updated_at              TEXT    DEFAULT (datetime('now'))
         )
@@ -868,6 +873,24 @@ _USERS_NEW_COLUMNS = [
     # forever afterward. NULL for self-setup accounts (they use the
     # first-person block, which needs no term).
     "ALTER TABLE users ADD COLUMN family_term TEXT DEFAULT NULL",
+    # 22 Apr 2026 (Batch 2) — deferred-input tracking.
+    # pending_grandkids_names: 1 when child deferred grandkids at step 7
+    #   ("she will tell u"). Cleared after names captured OR user says
+    #   "no grandkids" later. Child-led only — self-setup has no
+    #   grandchildren step (lumps into generic 'family').
+    # pending_medicines: 1 when child or senior deferred medicines
+    #   ("I don't know yet"). Cleared after medicines_raw populated.
+    # awaiting_pending_capture: 'grandkids' | 'medicines' | NULL.
+    #   Set when keyword trigger fires ("my grandkids came over today" +
+    #   pending flag). Next inbound message routed to capture handler.
+    #   Pattern matches existing pending_memory_question_* flags.
+    # pending_prompt_sent_at: ISO timestamp of the one-shot day-2 prompt,
+    #   so it never fires twice. Governing-principle rule: "someone who
+    #   is there, not someone who is trying" — do not nag.
+    "ALTER TABLE users ADD COLUMN pending_grandkids_names INTEGER DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN pending_medicines INTEGER DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN awaiting_pending_capture TEXT DEFAULT NULL",
+    "ALTER TABLE users ADD COLUMN pending_prompt_sent_at TEXT DEFAULT NULL",
 ]
 
 

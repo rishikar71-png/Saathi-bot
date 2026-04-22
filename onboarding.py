@@ -1048,7 +1048,15 @@ def _save_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> No
 
     # --- Day 2 ---
     elif step == 6:  # Medicines + times (free text → reminder parser)
-        if tl not in ("no", "nahi", "none", "nothing", "no.", "nil", "skip"):
+        # Batch 2 — same deferral detection as child-led step 10. "I don't
+        # know yet" / "pata nahi" should not be stored as medicines_raw;
+        # set pending_medicines so keyword trigger + day-2 prompt can catch it.
+        if _is_deferred_to_senior(t):
+            ctx["medicines_deferred"] = True
+            update_user_fields(user_id, pending_medicines=1)
+            logger.info("ONBOARDING | user_id=%s | self-setup step 6 medicines deferred ('%s')",
+                        user_id, t[:40])
+        elif tl not in ("no", "nahi", "none", "nothing", "no.", "nil", "skip"):
             update_user_fields(user_id, medicines_raw=t)
     elif step == 7:  # Morning check-in time
         hhmm = _parse_single_time(t, slot="morning")
@@ -1164,10 +1172,11 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
 
     elif step == 7:
         # Deferral guard: "she will tell", "let her input them", "pata nahi" etc.
-        # must NOT be saved as a grandchild's name. Flag in ctx so Batch 2's
-        # ask-Ma-later mechanism can pick it up; save nothing for now.
+        # must NOT be saved as a grandchild's name. Persist the pending flag
+        # (Batch 2) so keyword trigger + day-2 prompt can pick it up later.
         if _is_deferred_to_senior(t):
             ctx["grandkids_deferred"] = True
+            update_user_fields(user_id, pending_grandkids_names=1)
             logger.info("ONBOARDING | user_id=%s | step 7 grandkids deferred ('%s')",
                         user_id, t[:40])
             return
@@ -1235,11 +1244,12 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
             update_user_fields(user_id, health_sensitivities=t)
 
     elif step == 10:
-        # "I don't know yet" handler — don't silent-fail, flag for follow-up
-        # via completion message. medicines_raw stays NULL; the completion
-        # message reminds the child how to add medicines later.
+        # "I don't know yet" handler — don't silent-fail, flag for follow-up.
+        # Persist pending_medicines (Batch 2) so keyword trigger + day-2 prompt
+        # can pick it up later. medicines_raw stays NULL until captured.
         if _is_deferred_to_senior(t):
             ctx["medicines_deferred"] = True
+            update_user_fields(user_id, pending_medicines=1)
             logger.info("ONBOARDING | user_id=%s | step 10 medicines deferred ('%s')", user_id, t[:40])
             return
         if tl not in ("no", "nahi", "none", "nothing", "no.", "nil"):

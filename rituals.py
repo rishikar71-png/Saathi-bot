@@ -380,7 +380,11 @@ def _get_users_due_for_ritual(ritual_type: str) -> list:
                    u.afternoon_checkin_time, u.evening_checkin_time,
                    u.news_interests,
                    u.{time_column} AS target_time,
-                   COALESCE(u.days_since_first_message, 1) AS days_since_first_message
+                   COALESCE(u.days_since_first_message, 1) AS days_since_first_message,
+                   u.pending_grandkids_names,
+                   u.pending_medicines,
+                   u.awaiting_pending_capture,
+                   u.pending_prompt_sent_at
             FROM users u
             WHERE u.onboarding_complete = 1
               AND COALESCE(u.account_status, 'active') = 'active'
@@ -541,6 +545,42 @@ def _build_evening_instruction(user_row) -> str:
 # Send helpers
 # ---------------------------------------------------------------------------
 
+def _pending_capture_prompt_due(row) -> Optional[str]:
+    """Batch 2, 22 Apr 2026. Decide if the morning ritual should append a
+    one-shot capture offer for grandkids or medicines.
+
+    Returns 'grandkids' | 'medicines' | None.
+
+    Gates — all must hold:
+      • days_since_first_message >= 2  (never on Day 1 — that's onboarding)
+      • awaiting_pending_capture IS NULL  (not already mid-capture)
+      • pending_prompt_sent_at IS NULL    (one-shot only)
+      • At least one of pending_grandkids_names / pending_medicines is set
+    Grandkids takes priority when both are pending — lighter topic to start.
+    """
+    try:
+        days = int(row["days_since_first_message"] or 0)
+    except Exception:
+        days = 0
+    if days < 2:
+        return None
+    if "awaiting_pending_capture" in row.keys() and row["awaiting_pending_capture"] is not None:
+        return None
+    if "pending_prompt_sent_at" in row.keys() and row["pending_prompt_sent_at"] is not None:
+        return None
+    pending_grand = (
+        row["pending_grandkids_names"] if "pending_grandkids_names" in row.keys() else 0
+    ) or 0
+    pending_med = (
+        row["pending_medicines"] if "pending_medicines" in row.keys() else 0
+    ) or 0
+    if pending_grand:
+        return "grandkids"
+    if pending_med:
+        return "medicines"
+    return None
+
+
 async def _send_ritual(bot, row, ritual_type: str) -> None:
     from deepseek import call_deepseek
     from tts import text_to_speech
@@ -571,6 +611,43 @@ async def _send_ritual(bot, row, ritual_type: str) -> None:
         instruction = _build_evening_instruction(row)
 
     reply = call_deepseek(instruction, user_context)
+
+    # --- Batch 2: append pending-capture offer on morning ritual only ---
+    # Morning is the only slot where an info-gathering nudge feels natural
+    # (seniors expect the daily briefing to ask a question). Afternoon/evening
+    # are reserved for emotional check-ins — never contaminate them with
+    # data collection.
+    _capture_kind: Optional[str] = None
+    if ritual_type == "morning":
+        _capture_kind = _pending_capture_prompt_due(row)
+        if _capture_kind:
+            try:
+                from pending_capture import build_capture_offer
+                _offer_line = build_capture_offer(_capture_kind, language)
+                reply = f"{reply}\n\n{_offer_line}"
+                # Set awaiting BEFORE send — if the senior replies fast, the
+                # capture handler must see awaiting_pending_capture already set.
+                update_user_fields(
+                    user_id,
+                    awaiting_pending_capture=_capture_kind,
+                    pending_prompt_sent_at=datetime.now(IST).isoformat(),
+                )
+                # Drop stale user-cache so main.py sees the new awaiting state.
+                try:
+                    from main import _invalidate_user_cache
+                    _invalidate_user_cache(user_id)
+                except Exception:
+                    pass
+                logger.info(
+                    "PENDING_CAPTURE | scheduled prompt appended | user_id=%s | kind=%s",
+                    user_id, _capture_kind,
+                )
+            except Exception as pc_err:
+                logger.error(
+                    "PENDING_CAPTURE | scheduled prompt failed | user_id=%s | %s",
+                    user_id, pc_err,
+                )
+                _capture_kind = None  # treat as not-sent
 
     # Send text
     await bot.send_message(chat_id=user_id, text=reply)

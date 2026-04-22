@@ -1020,6 +1020,57 @@ async def _run_pipeline(
             # Do NOT return — let the message continue through the full pipeline
             # so DeepSeek can respond warmly to what the senior just shared.
 
+    # --- Pending-input capture RESPONSE (Batch 2, 22 Apr 2026) ---
+    # If we offered grandkids/medicines capture on the previous turn,
+    # awaiting_pending_capture will be set. This inbound message is either
+    # the data itself or a refusal. Handle it before everything else — it's
+    # data, not conversational input, and must not reach DeepSeek.
+    #
+    # capture_response() handles:
+    #   • refusal ("no", "later", "baad mein") → clears awaiting flag, keeps pending flag
+    #   • success → writes to family_members (grandkids) or medicines_raw + seeds reminders,
+    #     clears both pending_<kind> and awaiting_pending_capture
+    #   • parse failure → keeps flags, returns "please list names separated by commas"
+    if user_row["onboarding_complete"]:
+        _awaiting = (
+            user_row["awaiting_pending_capture"]
+            if "awaiting_pending_capture" in user_row.keys() else None
+        )
+        if _awaiting in ("grandkids", "medicines"):
+            from pending_capture import capture_response
+            try:
+                captured, ack = capture_response(user_id, _awaiting, text)
+            except Exception as pc_err:
+                logger.error(
+                    "PENDING_CAPTURE | user_id=%s | capture_response raised: %s",
+                    user_id, pc_err,
+                )
+                # Unstick the senior — clear awaiting flag so future turns aren't
+                # routed here. The underlying pending_<kind> flag stays set so the
+                # keyword trigger can try again.
+                try:
+                    from database import update_user_fields as _uuf_pc_err
+                    _uuf_pc_err(user_id, awaiting_pending_capture=None)
+                    _invalidate_user_cache(user_id)
+                except Exception:
+                    pass
+                captured = False
+                ack = "Sorry — something went wrong. Please try again in a bit. 🙏"
+            _invalidate_user_cache(user_id)
+            await update.message.reply_text(ack)
+            # Write inbound message + response to session history and DB.
+            _live_session_append(user_id, "user", text)
+            _live_session_append(user_id, "assistant", ack)
+            _db_queue(save_message_record, user_id, "in", text, input_type)
+            _db_queue(save_message_record, user_id, "out", ack)
+            _db_queue(save_session_turn, user_id, "user", text)
+            _db_queue(save_session_turn, user_id, "assistant", ack)
+            logger.info(
+                "PENDING_CAPTURE | user_id=%s | response handled | kind=%s | captured=%s",
+                user_id, _awaiting, captured,
+            )
+            return
+
     # --- Bare-code auto-detect (Bug 3 fix, 20 Apr 2026) ---
     # A brand-new user may paste a family linking code without /join. If we
     # have a pending confirmation from a previous turn, resolve it here.
@@ -1696,6 +1747,95 @@ async def _run_pipeline(
             "PIPELINE | user_id=%s | short_reply_disengagement triggered | lang=%s",
             user_id, _dis_lang,
         )
+
+    # --- Pending-input capture OFFER (Batch 2, 22 Apr 2026) ---
+    # If the senior mentions grandkids or medicines in passing AND the matching
+    # pending_* flag is set, offer to capture the missing info warmly.
+    #
+    # Gated against emotional moments: grief, vulnerability, and short-reply
+    # disengagement all block the offer — "someone who is there, not someone
+    # who is trying". Data collection must never interrupt care.
+    #
+    # Also gated against _already_awaiting (we don't re-offer if the senior is
+    # already in the middle of a capture flow) and _is_mid_session_greeting
+    # (a bare "hello" that happened to contain the word "grandson" somehow).
+    if (
+        user_row["onboarding_complete"]
+        and not _is_grief
+        and not _is_vulnerability
+        and not _is_short_disengaged
+        and not _is_mid_session_greeting
+    ):
+        _pending_grand = (
+            user_row["pending_grandkids_names"]
+            if "pending_grandkids_names" in user_row.keys() else 0
+        ) or 0
+        _pending_med = (
+            user_row["pending_medicines"]
+            if "pending_medicines" in user_row.keys() else 0
+        ) or 0
+        _already_awaiting = (
+            user_row["awaiting_pending_capture"]
+            if "awaiting_pending_capture" in user_row.keys() else None
+        )
+        if _already_awaiting is None and (_pending_grand or _pending_med):
+            from pending_capture import detect_pending_trigger, build_capture_offer
+            _trigger = detect_pending_trigger(_original_text)
+            # Only offer if the pending flag for THIS kind is still set.
+            _offer_kind = None
+            if _trigger == "grandkids" and _pending_grand:
+                _offer_kind = "grandkids"
+            elif _trigger == "medicines" and _pending_med:
+                _offer_kind = "medicines"
+            if _offer_kind is not None:
+                _offer_lang = (user_context.get("language") or "english").lower()
+                try:
+                    _offer_text = build_capture_offer(_offer_kind, _offer_lang)
+                except Exception as _offer_err:
+                    logger.error(
+                        "PENDING_CAPTURE | user_id=%s | build_offer raised: %s",
+                        user_id, _offer_err,
+                    )
+                    _offer_text = None
+                if _offer_text:
+                    from database import update_user_fields as _uuf_pc_offer
+                    try:
+                        _uuf_pc_offer(user_id, awaiting_pending_capture=_offer_kind)
+                        _invalidate_user_cache(user_id)
+                    except Exception as _set_err:
+                        logger.error(
+                            "PENDING_CAPTURE | user_id=%s | set awaiting failed: %s",
+                            user_id, _set_err,
+                        )
+                        # Fall through to DeepSeek rather than send an offer we
+                        # can't handle on the next turn.
+                        _offer_text = None
+                if _offer_text:
+                    # Prefer editing the already-sent placeholder; else send new.
+                    try:
+                        if _placeholder_msg is not None:
+                            await _placeholder_msg.edit_text(_offer_text)
+                        else:
+                            await update.message.reply_text(_offer_text)
+                    except Exception:
+                        try:
+                            await update.message.reply_text(_offer_text)
+                        except Exception:
+                            logger.exception(
+                                "PENDING_CAPTURE | user_id=%s | failed to send offer",
+                                user_id,
+                            )
+                    # Session history + DB persist (match the normal reply path).
+                    _live_session_append(user_id, "user", _original_text)
+                    _live_session_append(user_id, "assistant", _offer_text)
+                    _db_queue(save_message_record, user_id, "out", _offer_text)
+                    _db_queue(save_session_turn, user_id, "user", _original_text)
+                    _db_queue(save_session_turn, user_id, "assistant", _offer_text)
+                    logger.info(
+                        "PENDING_CAPTURE | user_id=%s | offered | kind=%s | lang=%s",
+                        user_id, _offer_kind, _offer_lang,
+                    )
+                    return
 
     # --- DeepSeek (async, non-blocking) ---
     # _async_reply runs call_deepseek in a thread pool so the event loop stays
