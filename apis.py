@@ -64,6 +64,80 @@ def _cache_set(key: str, value: Optional[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Shared city alias map — used by BOTH onboarding (to canonicalize user input
+# before storing) AND fetch_weather (to resolve OWM 404s on short names).
+#
+# Added 22 Apr 2026. Previously the map lived inside fetch_weather(); seniors
+# who typed short forms like "Mum" / "Del" during onboarding got their raw
+# input stored to the DB, which then showed up in the morning briefing ("in
+# Mum…") and caused OWM weather lookups to fail.
+#
+# Keys are lowercase. Values are the canonical display name (NO country-code
+# suffix — that gets appended only for OWM retries).
+#
+# Keep extending this as pilot surfaces more short forms / old names.
+# ---------------------------------------------------------------------------
+CITY_ALIASES: dict[str, str] = {
+    # Mumbai
+    "mum": "Mumbai", "mumbai": "Mumbai", "bombay": "Mumbai", "bby": "Mumbai",
+    # Delhi
+    "del": "New Delhi", "delhi": "New Delhi", "new delhi": "New Delhi",
+    "ndl": "New Delhi", "new-delhi": "New Delhi",
+    # Bengaluru
+    "blr": "Bengaluru", "bengaluru": "Bengaluru", "bangalore": "Bengaluru",
+    "blore": "Bengaluru", "banglore": "Bengaluru",
+    # Hyderabad
+    "hyd": "Hyderabad", "hyderabad": "Hyderabad", "hydrabad": "Hyderabad",
+    # Chennai
+    "chn": "Chennai", "chennai": "Chennai", "madras": "Chennai",
+    # Kolkata
+    "kol": "Kolkata", "kolkata": "Kolkata", "calcutta": "Kolkata", "cal": "Kolkata",
+    # Pune
+    "pune": "Pune", "poona": "Pune", "pnq": "Pune",
+    # Ahmedabad
+    "ahd": "Ahmedabad", "ahmedabad": "Ahmedabad", "amdavad": "Ahmedabad",
+    "amd": "Ahmedabad",
+    # Jaipur
+    "jpr": "Jaipur", "jaipur": "Jaipur",
+    # Chandigarh
+    "chd": "Chandigarh", "chandigarh": "Chandigarh",
+    # Gurugram / Gurgaon
+    "ggn": "Gurugram", "gurugram": "Gurugram", "gurgaon": "Gurugram",
+    # Noida
+    "noida": "Noida",
+    # Lucknow
+    "lko": "Lucknow", "lucknow": "Lucknow",
+    # A few more commonly-named Indian metros for safety.
+    "indore": "Indore", "bhopal": "Bhopal", "nagpur": "Nagpur",
+    "kochi": "Kochi", "cochin": "Kochi", "trivandrum": "Thiruvananthapuram",
+    "thiruvananthapuram": "Thiruvananthapuram", "coimbatore": "Coimbatore",
+    "visakhapatnam": "Visakhapatnam", "vizag": "Visakhapatnam",
+    "surat": "Surat", "vadodara": "Vadodara", "baroda": "Vadodara",
+    "patna": "Patna", "ranchi": "Ranchi", "bhubaneswar": "Bhubaneswar",
+    "guwahati": "Guwahati", "dehradun": "Dehradun",
+    "shimla": "Shimla", "simla": "Shimla",
+    "goa": "Panaji", "panaji": "Panaji", "panjim": "Panaji",
+}
+
+
+def canonicalize_city(raw: str) -> str:
+    """
+    Normalise a user-supplied city string into a canonical display name.
+    Used by onboarding at capture time so the DB never stores "Mum" or "Del".
+
+    Falls back to title-case of the raw input if the city isn't in our alias
+    map — so unknown cities still round-trip cleanly, just without weather
+    reliability until we add them. Callers should log a warning in that case.
+    """
+    if not raw:
+        return ""
+    key = raw.strip().lower()
+    if not key:
+        return ""
+    return CITY_ALIASES.get(key, raw.strip().title())
+
+
+# ---------------------------------------------------------------------------
 # Weather — OpenWeatherMap current conditions
 # Docs: https://openweathermap.org/current
 # ---------------------------------------------------------------------------
@@ -96,20 +170,6 @@ def fetch_weather(city: str) -> Optional[str]:
         logger.debug("APIS | weather cache hit | city=%s", city)
         return cached
 
-    # City alias map — OWM sometimes fails on common short names.
-    # Try the alias if the primary query returns 404.
-    _CITY_ALIASES = {
-        "delhi":     "New Delhi,IN",
-        "mumbai":    "Mumbai,IN",
-        "bangalore": "Bengaluru,IN",
-        "bengaluru": "Bengaluru,IN",
-        "calcutta":  "Kolkata,IN",
-        "bombay":    "Mumbai,IN",
-        "madras":    "Chennai,IN",
-        "pune":      "Pune,IN",
-        "hyderabad": "Hyderabad,IN",
-    }
-
     def _owm_get(q: str):
         return requests.get(
             _OWM_URL,
@@ -120,11 +180,12 @@ def fetch_weather(city: str) -> Optional[str]:
     try:
         resp = _owm_get(city)
 
-        # If OWM can't find the city (404), try with the country code suffix
-        # or a known alias (e.g. "Delhi" → "New Delhi,IN").
+        # If OWM 404s, retry with the canonical form + ",IN" country suffix.
+        # Canonicalization uses the shared CITY_ALIASES map so short forms
+        # like "Mum" or "Del" that survived in old DB rows still resolve.
         if resp.status_code == 404:
-            alias = _CITY_ALIASES.get(city.lower())
-            retry_q = alias if alias else f"{city},IN"
+            canonical = CITY_ALIASES.get(city.lower(), city)
+            retry_q = f"{canonical},IN"
             logger.info("APIS | weather 404 for '%s', retrying as '%s'", city, retry_q)
             resp = _owm_get(retry_q)
 

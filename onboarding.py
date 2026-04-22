@@ -37,6 +37,7 @@ from database import (
     save_emergency_contact,
     get_connection,
 )
+from apis import CITY_ALIASES, canonicalize_city
 
 logger = logging.getLogger(__name__)
 
@@ -304,6 +305,13 @@ SELF_SETUP_BRIDGE_RECHECK = (
     "Good to see you again.\n\n"
     "Yesterday I mentioned a few more questions — shall we do them now? Just 5 short ones.\n\n"
     "Reply: *now* or *later*"
+)
+
+# Pilot scope (22 Apr 2026) — we only support English, Hindi, Hinglish.
+# Anything else gets this polite refusal and the language step does NOT advance.
+POLITE_UNSUPPORTED_LANGUAGE_MESSAGE = (
+    "My apologies — at present I can only converse in Hindi, English, or a "
+    "mix of the two. Would you like to continue in any of those?"
 )
 
 
@@ -673,6 +681,17 @@ def handle_onboarding_answer(user_id: int, step: int, text: str) -> str:
         return _handle_self_setup_answer(user_id, step, text, ctx)
 
     # --- Family / child-led flow ---
+
+    # Language step gate (pilot scope: English / Hindi / Hinglish only).
+    # If the answer is an unsupported language, do NOT save and do NOT
+    # advance — send the polite refusal and hold at step 4.
+    if step == 4 and _parse_language(text) == _UNSUPPORTED_LANG:
+        logger.info(
+            "ONBOARDING | user_id=%s | mode=family | step=4 unsupported language: %r",
+            user_id, text,
+        )
+        return POLITE_UNSUPPORTED_LANGUAGE_MESSAGE
+
     _save_answer(user_id, step, text, ctx)
     logger.info("ONBOARDING | user_id=%s | mode=family | step=%d answered", user_id, step)
 
@@ -696,6 +715,16 @@ def _handle_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> 
     Steps 6–10 = Day 2 (only reached via 'yes' to bridge or next-day resume).
     After step 10 → onboarding fully complete.
     """
+    # Language step gate (pilot scope: English / Hindi / Hinglish only).
+    # If the answer is an unsupported language, do NOT save and do NOT
+    # advance — send the polite refusal and hold at step 4.
+    if step == 4 and _parse_language(text) == _UNSUPPORTED_LANG:
+        logger.info(
+            "ONBOARDING | user_id=%s | mode=self | step=4 unsupported language: %r",
+            user_id, text,
+        )
+        return POLITE_UNSUPPORTED_LANGUAGE_MESSAGE
+
     _save_self_setup_answer(user_id, step, text, ctx)
     logger.info("ONBOARDING | user_id=%s | mode=self | step=%d answered", user_id, step)
 
@@ -793,7 +822,13 @@ def _save_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> No
         ctx["bot_name"] = bot_name
         update_user_fields(user_id, bot_name=bot_name)
     elif step == 3:  # City
-        update_user_fields(user_id, city=t.title())
+        canonical = canonicalize_city(t)
+        if t.strip().lower() not in CITY_ALIASES:
+            logger.warning(
+                "ONBOARDING | user_id=%s | mode=self | city not in alias map: %r → stored as %r",
+                user_id, t, canonical,
+            )
+        update_user_fields(user_id, city=canonical)
     elif step == 4:  # Language
         update_user_fields(user_id, language=_parse_language(t))
     elif step == 5:  # Family members
@@ -868,7 +903,13 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
         update_user_fields(user_id, preferred_salutation=t)
 
     elif step == 3:
-        update_user_fields(user_id, city=t.title())
+        canonical = canonicalize_city(t)
+        if t.strip().lower() not in CITY_ALIASES:
+            logger.warning(
+                "ONBOARDING | user_id=%s | mode=family | city not in alias map: %r → stored as %r",
+                user_id, t, canonical,
+            )
+        update_user_fields(user_id, city=canonical)
 
     elif step == 4:
         update_user_fields(user_id, language=_parse_language(t))
@@ -1038,33 +1079,109 @@ def _build_self_setup_completion_message(user_id: int, ctx: dict) -> str:
 # Parsers
 # ---------------------------------------------------------------------------
 
+# Pilot scope: English / Hindi / Hinglish only. Anything else returns the
+# _UNSUPPORTED_LANG sentinel and the caller must NOT advance the step.
+_UNSUPPORTED_LANG = "UNSUPPORTED"
+
+# Exact-match short-form map. Checked first so 'eng'/'hin'/'mix' do not fall
+# through to substring matching (which was the bug before 22 Apr 2026).
+_LANG_EXACT_ALIASES = {
+    # English
+    "eng": "english",
+    "english": "english",
+    "angrezi": "english",
+    "angreji": "english",
+    "inglish": "english",
+    "e": "english",
+    # Hindi
+    "hin": "hindi",
+    "hindi": "hindi",
+    "हिंदी": "hindi",
+    "हिन्दी": "hindi",
+    "h": "hindi",
+    # Hinglish
+    "mix": "hinglish",
+    "mixed": "hinglish",
+    "both": "hinglish",
+    "dono": "hinglish",
+    "hinglish": "hinglish",
+    "hindi english": "hinglish",
+    "english hindi": "hinglish",
+    "hindi and english": "hinglish",
+    "english and hindi": "hinglish",
+    "hindi or english": "hinglish",
+    "english or hindi": "hinglish",
+    "mix of both": "hinglish",
+    "mix of hindi and english": "hinglish",
+    "hindi plus english": "hinglish",
+    "english plus hindi": "hinglish",
+}
+
+# Tokens that indicate an unsupported language. If any of these appears as a
+# substring of the user's input (and no supported-language signal matched
+# first), we return UNSUPPORTED rather than storing the raw text.
+_UNSUPPORTED_LANG_TOKENS = (
+    "tamil", "telugu", "bengali", "bangla", "marathi", "gujarati",
+    "punjabi", "kannada", "malayalam", "urdu", "oriya", "odia",
+    "assamese", "sanskrit", "konkani", "sindhi", "kashmiri",
+    "maithili", "bhojpuri", "nepali",
+    "spanish", "french", "german", "italian", "chinese", "mandarin",
+    "cantonese", "japanese", "korean", "portuguese", "arabic",
+    "russian", "dutch", "swedish", "turkish", "thai", "vietnamese",
+)
+
+
 def _parse_language(text: str) -> str:
-    t = text.lower()
-    if "hindi" in t and "english" in t:
+    """
+    Parse a free-form language answer into one of: 'english', 'hindi',
+    'hinglish', or the sentinel _UNSUPPORTED_LANG.
+
+    Pilot scope (22 Apr 2026): we only support English, Hindi, Hinglish.
+    Anything else (Tamil, Bengali, Marathi, French, gibberish, etc.) returns
+    _UNSUPPORTED_LANG. The caller (handle_onboarding_answer /
+    _handle_self_setup_answer) is responsible for holding the user at the
+    language step until they pick one of the three.
+
+    Ordering matters:
+      1. Exact short-form match — 'eng', 'hin', 'mix', 'both' must resolve
+         to supported languages even though they don't contain 'hindi' /
+         'english' as substrings.
+      2. Compound checks — 'hindi and english' must resolve to hinglish
+         BEFORE single-language substring matching (else it would match
+         'hindi' first and return 'hindi').
+      3. Single-language substring match.
+      4. Unsupported-language token match.
+      5. Default to UNSUPPORTED (safer than silently storing raw text).
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return _UNSUPPORTED_LANG
+
+    # 1. Exact short-form match.
+    if t in _LANG_EXACT_ALIASES:
+        return _LANG_EXACT_ALIASES[t]
+
+    # 2. Compound-language substring (BEFORE single-language checks).
+    has_hindi = "hindi" in t or "हिंदी" in t or "हिन्दी" in t
+    has_english = "english" in t or "angrezi" in t or "angreji" in t or "inglish" in t
+    if has_hindi and has_english:
         return "hinglish"
-    if "hindi" in t:
-        return "hindi"
-    if "english" in t:
+    if "hinglish" in t or "mix of" in t:
+        return "hinglish"
+
+    # 3. Single-language substring.
+    if has_english:
         return "english"
-    if "tamil" in t:
-        return "tamil"
-    if "telugu" in t:
-        return "telugu"
-    if "bengali" in t or "bangla" in t:
-        return "bengali"
-    if "marathi" in t:
-        return "marathi"
-    if "gujarati" in t:
-        return "gujarati"
-    if "punjabi" in t:
-        return "punjabi"
-    if "kannada" in t:
-        return "kannada"
-    if "malayalam" in t:
-        return "malayalam"
-    if "hinglish" in t:
-        return "hinglish"
-    return t.strip()
+    if has_hindi:
+        return "hindi"
+
+    # 4. Unsupported-language detection.
+    for tok in _UNSUPPORTED_LANG_TOKENS:
+        if tok in t:
+            return _UNSUPPORTED_LANG
+
+    # 5. Unknown input — treat as unsupported, NOT as raw text.
+    return _UNSUPPORTED_LANG
 
 
 def _parse_persona(text: str) -> str:

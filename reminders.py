@@ -111,16 +111,22 @@ _TEMPLATES = {
         "{address}, aapki *{medicine}* ki dawai ka waqt ho gaya hai. 🙏\n"
         "Lene ke baad ek 👍 bhej dijiye — bas itna kaafi hai."
     ),
+    # Real Hinglish — English nouns + Hindi connectors. No 'dawai ka waqt'.
+    # Written 22 Apr 2026; previously this slot was a copy of the Hindi template.
     "hinglish": (
-        "{address}, aapki *{medicine}* ki dawai ka waqt ho gaya hai. 🙏\n"
-        "Lene ke baad ek 👍 bhej dijiye — bas itna kaafi hai."
+        "{address}, it's time for your *{medicine}*. 🙏\n"
+        "Le lijiye aur ek 👍 bhej dijiye — bas itna hi."
     ),
     "english": (
         "{address}, it's time for your *{medicine}*. 🙏\n"
         "Just send a 👍 once you've taken it — that's all I need."
     ),
 }
-_DEFAULT_TEMPLATE = _TEMPLATES["hindi"]
+# Safety-net default: English (the one language we can be reasonably sure a
+# pilot user understands even if language wasn't captured cleanly). Previously
+# defaulted to Hindi, which is why Rishi — who picked English but whose row
+# stored the unparseable 'eng' — got Hindi medicine reminders.
+_DEFAULT_TEMPLATE = _TEMPLATES["english"]
 
 
 def build_reminder_text(
