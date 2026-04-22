@@ -161,7 +161,10 @@ _TIME_ALIASES = {
     "bedtime":   "21:30",
 }
 
-_TIME_RE = re.compile(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", re.IGNORECASE)
+# Accept both ':' and '.' as hour/minute separators — Indian users commonly
+# type '11.07 am'. 22 Apr 2026: previously only ':' matched, so '11.07 am'
+# was parsed as 11:00 (minutes silently dropped).
+_TIME_RE = re.compile(r"(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?", re.IGNORECASE)
 
 
 def _normalize_time(time_str: str) -> Optional[str]:
