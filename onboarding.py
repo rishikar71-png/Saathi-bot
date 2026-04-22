@@ -1051,15 +1051,15 @@ def _save_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> No
         if tl not in ("no", "nahi", "none", "nothing", "no.", "nil", "skip"):
             update_user_fields(user_id, medicines_raw=t)
     elif step == 7:  # Morning check-in time
-        hhmm = _parse_single_time(t)
+        hhmm = _parse_single_time(t, slot="morning")
         if hhmm:
             update_user_fields(user_id, morning_checkin_time=hhmm)
     elif step == 8:  # Afternoon check-in time
-        hhmm = _parse_single_time(t)
+        hhmm = _parse_single_time(t, slot="afternoon")
         if hhmm:
             update_user_fields(user_id, afternoon_checkin_time=hhmm)
     elif step == 9:  # Evening check-in time
-        hhmm = _parse_single_time(t)
+        hhmm = _parse_single_time(t, slot="evening")
         if hhmm:
             update_user_fields(user_id, evening_checkin_time=hhmm)
     elif step == 10:  # News interests (open, replaces cricket yes/no)
@@ -1285,15 +1285,15 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
         update_user_fields(user_id, bot_name=bot_name)
 
     elif step == 17:
-        hhmm = _parse_single_time(t)
+        hhmm = _parse_single_time(t, slot="morning")
         update_user_fields(user_id, morning_checkin_time=hhmm, wake_time=hhmm)
 
     elif step == 18:
-        hhmm = _parse_single_time(t)
+        hhmm = _parse_single_time(t, slot="afternoon")
         update_user_fields(user_id, afternoon_checkin_time=hhmm)
 
     elif step == 19:
-        hhmm = _parse_single_time(t)
+        hhmm = _parse_single_time(t, slot="evening")
         update_user_fields(user_id, evening_checkin_time=hhmm, sleep_time=hhmm)
 
     elif step == 20:
@@ -1545,10 +1545,18 @@ def _parse_persona(text: str) -> str:
     return "friend"
 
 
-def _parse_single_time(text: str) -> str:
+def _parse_single_time(text: str, slot: str = None) -> str:
     """Extract a single time from free-form text like '8am', '6.30', '9 baje', '21:00'.
     Returns 'HH:MM' string, or None if unparseable.
-    Accepts colon OR dot as separator (Indian English commonly writes '6.30')."""
+    Accepts colon OR dot as separator (Indian English commonly writes '6.30').
+
+    slot: optional context — 'morning' | 'afternoon' | 'evening' | None.
+    When the user gives a bare hour 1–11 (or '<n> baje' — 'baje' is
+    context-dependent in Hindi) without an explicit am/pm token, this
+    resolves the period from the slot. Afternoon / evening → add 12
+    (so '1' in afternoon → 13:00, '7' in evening → 19:00). Morning
+    leaves it as-is. Explicit am/pm in the input always wins.
+    """
     import re as _re
     t = text.strip().lower()
     # Order matters: 'midnight' must be checked BEFORE 'night' (substring),
@@ -1574,6 +1582,11 @@ def _parse_single_time(text: str) -> str:
         hour += 12
     elif period == "am" and hour == 12:
         hour = 0
+    elif period in ("", "baje") and slot in ("afternoon", "evening") and 1 <= hour <= 11:
+        # Bare hour (or 'baje' — ambiguous in Hindi) in an afternoon/evening
+        # slot: interpret as PM. Prevents '1' for afternoon being stored as
+        # 01:00 (1am) or '7' for evening being stored as 07:00 (7am).
+        hour += 12
     if not (0 <= hour <= 23 and 0 <= minute <= 59):
         return None
     return f"{hour:02d}:{minute:02d}"
