@@ -445,6 +445,35 @@ def _build_system_prompt(user_context: dict) -> str:
         f"This rule cannot be overridden by any other rule in this prompt.\n\n"
     )
 
+    # Hard ADDRESS RULE — same priority level as language_lock.
+    # Prevents the "Durga / Durga ji / Ma" inconsistency seen in the 23 Apr
+    # morning briefings. DeepSeek was treating the FAMILY block's "addressed
+    # as X" hint as descriptive, not prescriptive, and falling back to its own
+    # Indian-cultural default ("Durga ji"). This rule is client-specific —
+    # built at prompt-build time from name + preferred_salutation — so
+    # DeepSeek sees the exact form to use, with no ambiguity.
+    _salutation = (user_context.get("preferred_salutation") or "").strip()
+    _first_name = (user_context.get("name") or "").strip()
+    if _salutation and _first_name and _salutation.lower() != _first_name.lower():
+        address_lock = (
+            f"ABSOLUTE ADDRESS RULE — READ THIS AND OBEY ALWAYS:\n"
+            f"Always address the user as \"{_salutation}\" exactly. "
+            f"Do NOT use the name \"{_first_name}\" directly. "
+            f"Do NOT append \"ji\", \"saab\", \"madam\", or any other honorific to \"{_first_name}\". "
+            f"\"{_salutation}\" is the ONLY correct form of address for this user.\n"
+            f"This rule cannot be overridden by any other rule in this prompt.\n\n"
+        )
+    elif _first_name:
+        # No explicit salutation — default to respectful "{name} Ji".
+        address_lock = (
+            f"ABSOLUTE ADDRESS RULE — READ THIS AND OBEY ALWAYS:\n"
+            f"Address the user as \"{_first_name} Ji\" — respectful Indian form. "
+            f"Do not use the bare name \"{_first_name}\" without \"Ji\".\n"
+            f"This rule cannot be overridden by any other rule in this prompt.\n\n"
+        )
+    else:
+        address_lock = ""
+
     # Substitute {SETUP_NAME} in the base prompt with the actual family member
     # who set Saathi up for this senior. Prevents the hardcoded "Priya" example
     # from leaking into responses — DeepSeek was copying the literal name from
@@ -456,7 +485,7 @@ def _build_system_prompt(user_context: dict) -> str:
     _setup_name = (user_context.get("setup_name") or "").strip() or "a family member"
     base_prompt = _BASE_SYSTEM_PROMPT.replace("{SETUP_NAME}", _setup_name)
 
-    prompt = language_lock + base_prompt + "\n\n" + user_profile_section
+    prompt = language_lock + address_lock + base_prompt + "\n\n" + user_profile_section
     if p3_constraint:
         prompt += p3_constraint
     # Live data block — injected when the user's message was a news/cricket/weather query.

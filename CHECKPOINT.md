@@ -1,4 +1,4 @@
-# CHECKPOINT — 23 April 2026 (end of Opus 4.7 session, Batch 2 deployed)
+# CHECKPOINT — 23 April 2026 (end of Opus 4.7 continuation session)
 
 **Read order for next session:** this file → CLAUDE.md → progress.md.
 
@@ -6,196 +6,196 @@
 
 ## TL;DR — state at end of this run
 
-**Batch 2 is deployed and active on Railway.**
+Four fixes bundled and ready to deploy. All five touched files compile clean;
+address-lock + completion-copy rendering verified.
 
-- Commit: `7be4eed` — "Batch 2: deferred senior inputs (grandkids + medicines)"
-- Railway deployment ID: `659e9652`
-- Pushed: Apr 22, 2026, 7:52 PM IST
-- Status: Active, deployment successful, 1 replica running (us-west2, python@3.11.15)
-- Confirmed from Railway dashboard export this session.
-
-Earlier today's live test chatlog showed zero `PENDING_CAPTURE` log lines.
-Most likely cause: the child-led onboarding that preceded the senior's
-"my grand kids came today" message happened during or before Railway
-finished building Batch 2 (push at 14:22 UTC, test at 14:26 UTC — 4-min
-window against a typical 2–4 min Railway build). Under the old code,
-step 7 "she will tell u" never wrote `pending_grandkids_names=1`. Later,
-when the senior mentioned grandkids, the keyword matched but the gate
-(`pending_grandkids_names=1`) was false, so no offer fired. Silent no-op.
-
-**This is diagnosis, not confirmed. Next session's first task is to run
-the live test cleanly from scratch and verify.**
-
----
-
-## First task in next session — Batch 2 live test
-
-### Step 1 — confirm Batch 2 is still the active deploy
-
-Railway dashboard → Saathi service → Deployments. Top row should still
-show "Batch 2: deferred senior inputs..." as Active.
-
-If a newer deploy has replaced it (unlikely — nothing has been pushed
-since), check what's changed before running the test.
-
-### Step 2 — reset and redo child-led onboarding on clean Batch 2 code
-
-From Rishi's Telegram:
-
-1. `/adminreset`
-2. Child-led onboarding, all 21 steps.
-3. At **step 7 (grandkids)**: type `she will tell u` (or any deferral
-   signal — "later", "dunno", "she'll tell you", etc.).
-4. At **step 10 (medicines)**: type `pata nahi` (or any deferral
-   signal — "don't know yet", "will fill later", etc.).
-5. Complete all remaining steps. Step through the handoff to senior.
-
-### Step 3 — DB check BEFORE testing the keyword trigger
-
-From Railway shell (dashboard → Saathi service → shell icon, or
-`railway run --service <service> bash`):
-
-```sh
-sqlite3 /data/saathi.db "SELECT id, pending_grandkids_names, pending_medicines, awaiting_pending_capture, pending_prompt_sent_at FROM users WHERE onboarding_complete=1 ORDER BY id DESC LIMIT 3;"
-```
-
-**Expected:** `pending_grandkids_names=1`, `pending_medicines=1`,
-`awaiting_pending_capture=NULL`, `pending_prompt_sent_at=NULL`.
-
-- If both pending flags are `1`: B2.2 (persistence) works. Move to step 4.
-- If either is `0`: B2.2 is broken. Do NOT continue to step 4. Debug
-  `onboarding.py` deferral detection for the flag that didn't set.
-
-### Step 4 — keyword-triggered offer (senior flow)
-
-From the senior's Telegram account, first message of a new session:
-
-```
-my grand kids came today
-```
-
-**Expected Railway log line:**
-```
-PENDING_CAPTURE | user_id=... | offered=grandkids
-```
-
-**Expected senior-facing reply:**
-> "By the way — I don't know your grandchildren's names yet. If you'd
-> like to share them, I'd love to hear — no pressure at all."
-
-(Or the Hindi/Hinglish equivalent depending on the senior's language.)
-
-- If fires: B2.3 keyword-trigger offer works. Move to step 5.
-- If does not fire: check what _is_vulnerability / _is_grief /
-  _is_short_disengaged / _is_mid_session_greeting returned in the log;
-  one of the gates is eating the offer.
-
-### Step 5 — capture
-
-Senior replies with actual names:
-
-```
-Anish, Aman, Akshadha
-```
-
-**Expected log line:** `PENDING_CAPTURE | captured 3 name(s): Anish, Aman, Akshadha`
-
-**Expected reply:** "Anish, Aman, and Akshadha — thank you for sharing.
-I'll remember. 🙏"
-
-**DB check after:**
-```sh
-sqlite3 /data/saathi.db "SELECT name, relationship FROM family_members WHERE user_id=<senior_id> AND relationship='grandchild';"
-```
-Should return 3 rows.
-
-Also:
-```sh
-sqlite3 /data/saathi.db "SELECT id, pending_grandkids_names, awaiting_pending_capture FROM users WHERE id=<senior_id>;"
-```
-Should show `pending_grandkids_names=0` and `awaiting_pending_capture=NULL`.
-
-### Step 6 — medicines offer (same pattern)
-
-Senior: `my medicines ran out today`
-
-Expected: `PENDING_CAPTURE | offered=medicines` log line + soft "by
-the way — I don't know which medicines you take..." reply.
-
-Senior replies with schedule (e.g. `metformin 8am and 8pm, atorvastatin at night`).
-
-Expected: `medicines_raw` populated, `pending_medicines=0`, reminders
-seeded in `medicine_reminders`.
-
----
-
-## Known structural issues (flagged, NOT Batch 2's problem)
-
-From the earlier-today live chatlog diagnosis, after Batch 2 didn't fire
-the senior said names and medicines anyway via normal conversation.
-Those were captured into `memories` (as prose strings) and NOT into the
-structured `family_members` / `medicine_reminders` tables.
-
-This is a gap in the conversational-intent capture layer — the system
-understands what was said, but doesn't route structured data to
-structured tables outside the Batch 2 offer/capture flow or the
-onboarding flow.
-
-**Not in scope for Batch 2 or Batch 3.** Worth raising after Batch 3
-as a post-pilot cleanup item.
-
----
-
-## Batch 3 — still deferred, not yet started
-
-Handoff redesign, folds in:
-
-- **Bug 1** — `main.py:1126-1132` staged handoff state machine
-  unconditionally advances even when the senior's message is a real
-  question (senior said "my grand kids came today" after handoff
-  message 1; bot ignored it and sent handoff message 2 as if it were
-  a state-machine answer).
-
-- **Bug 2** — `main.py:1139-1142` handoff step 2 saves the senior's
-  raw reply to `preferred_salutation` with no affirmation filtering.
-  "Ma is good" becomes the stored address.
-
-- **Bug 3** — handoff re-asks "what would you like to call me?" even
-  when `bot_name` was already set at child-led step 2.
-
-- **Bug 4** — "nothing" / "nothing" replies corrupted
-  `preferred_salutation` and `bot_name` fields.
-
-- Original Batch 3 scope: step-0 "whose phone" question, `setup_device`
-  column, `pending_handoff_code` column, branched completion message
-  (button vs code), staged push sequence with delays.
-
-All four bugs in the live chatlog trace back to the handoff state
-machine being too eager to advance. Batch 3 will replace the
-unconditional state advance with a conditional one (message must
-look like a state-machine answer before advancing; otherwise treat as
-a normal senior message).
-
-**Do NOT start Batch 3 until Batch 2 live test passes.** Rishi's
-explicit constraint.
+- **Fix 1 (Batch 2 keyword patch)** — `pending_capture.py`: added spaced
+  forms so "my grand kids came today" / "grand son" / "grand children"
+  trigger the offer. The original keyword list only matched compound
+  forms like "grandkid" / "grandchild". Yesterday's live test phrase
+  was a space-form, which silently missed the offer.
+- **Fix 2 (Addressing)** — `rituals.py` + `deepseek.py`:
+    - `rituals._address(name, salutation)` rewritten to Batch 1c
+      semantics — salutation is the full display string (returned
+      verbatim), else `{name} Ji` fallback, else "aap". The old
+      `f"{name} {sal}".strip()` concatenation produced broken
+      addresses like "Durga Ma".
+    - `deepseek._build_system_prompt` gains an `address_lock` block,
+      prepended right after `language_lock` and before the base prompt.
+      Two branches: if salutation ≠ name, it instructs DeepSeek to use
+      the exact salutation and explicitly bans appending "ji"/"saab" to
+      the bare first name; if salutation is empty, it instructs DeepSeek
+      to use `{name} Ji`.
+- **Fix 3 (Completion copy)** — `onboarding.py`: `_build_completion_message`
+  now covers both deferrals (grandkids and medicines). Four branches:
+  both-deferred / meds-only / gk-only / none. Old code mentioned only
+  medicines even when grandkids had also been deferred.
+- **Fix 4 (Handoff redesign — Batch 3)** — `main.py`: the staged 4-step
+  handoff state machine (handoff_step 0 → 1 → 2 → 3) is collapsed to a
+  single soft first-contact message for child-led setup. Reasons:
+    - `preferred_salutation` was already set at onboarding step 2
+    - `bot_name` was already set at onboarding step 16
+    - The old state machine advanced unconditionally on the senior's
+      reply, so real first-contact messages ("my grand kids came today")
+      were ignored in favour of advancing to the next handoff question.
+    - Raw replies like "Ma is good" and "nothing" were written verbatim
+      to `preferred_salutation` / `bot_name`, corrupting both fields.
+  New design: on any `handoff_step < 4`, send `get_handoff_message(0)`
+  once (with confusion-branch check), mark `handoff_step=4`, drop into
+  normal DeepSeek conversation. If the senior wants to change their
+  address or bot name later, DeepSeek handles it in ordinary chat —
+  no state machine needed.
 
 ---
 
 ## Files changed in this run
 
-None — diagnosis + CHECKPOINT/CLAUDE.md hygiene only.
+1. `pending_capture.py` — spaced keyword variants
+2. `rituals.py` — `_address()` salutation semantics (line ~437)
+3. `deepseek.py` — `address_lock` block + prompt assembly (line ~454)
+4. `onboarding.py` — `_build_completion_message` two-deferral copy (line ~1333)
+5. `main.py` — handoff block collapsed (line ~1153)
+6. `CHECKPOINT.md` + `CLAUDE.md` — session notes
 
-Batch 2 code was pushed in the prior run (7be4eed).
+All five .py files pass `python3 -m py_compile`. Address-lock live
+tests pass for four address scenarios; completion-copy tests pass for
+all four deferral combinations.
 
 ---
 
-## Pending commit before next session
+## What to do in the next session
+
+### Step 1 — push and deploy
 
 ```
 cd ~/saathi-bot
-git add CHECKPOINT.md CLAUDE.md
-git commit -m "Session notes: Batch 2 deploy confirmed, testing plan"
+git add pending_capture.py rituals.py deepseek.py onboarding.py main.py CHECKPOINT.md CLAUDE.md
+git commit -m "Batch 2 keyword patch + addressing fix + completion copy + Batch 3 handoff redesign"
 git push origin main
 ```
 
-(No code changes. Just hygiene files.)
+Railway should auto-deploy. Confirm via dashboard. Expected build time
+2–4 min.
+
+### Step 2 — clean-slate live test (child-led)
+
+From Rishi's Telegram:
+
+1. `/adminreset`
+2. Run child-led onboarding end-to-end. At **step 2**, set preferred
+   address to `Ma`. At **step 7**, defer grandkids with `she will tell
+   u`. At **step 10**, defer medicines with `pata nahi`. Pick a bot
+   name at step 16 (e.g. `Sage`).
+3. Expected completion message should contain:
+   *"A couple of small things — you weren't sure about Ma's
+   grandchildren's names or medicines earlier. No rush at all. I'll
+   gently ask Ma about them once we've started chatting…"*
+4. Expected Railway log line: `HANDOFF | stage=staged_sent`.
+
+### Step 3 — DB check BEFORE senior test
+
+Railway dashboard → shell:
+
+```sh
+python3 -c "import sqlite3; c=sqlite3.connect('/data/saathi.db'); c.row_factory=sqlite3.Row; r=c.execute('SELECT user_id, name, preferred_salutation, bot_name, pending_grandkids_names, pending_medicines, awaiting_pending_capture, handoff_step FROM users WHERE onboarding_complete=1 ORDER BY user_id DESC LIMIT 3').fetchall(); [print(dict(x)) for x in r]"
+```
+
+**Expected:** `preferred_salutation='Ma'`, `bot_name='Sage'`,
+`pending_grandkids_names=1`, `pending_medicines=1`,
+`awaiting_pending_capture=NULL`, `handoff_step=0` (not yet advanced —
+senior hasn't sent anything yet).
+
+### Step 4 — senior's first message → soft greeting + auto-complete
+
+From senior's Telegram (first message of new session):
+
+```
+my grand kids came today
+```
+
+**Expected Railway log lines (in order):**
+```
+OUT | user_id=... | type=handoff | collapsed_to_step4 | prior_step=0
+PENDING_CAPTURE | user_id=... | offered | kind=grandkids | lang=...
+```
+
+**Expected senior-facing replies (two):**
+
+1. Soft greeting: *"Namaste. Rishi asked me to be in touch. I'm Sage
+   — I'm here whenever you'd like to talk."*
+2. Pending-capture offer: *"By the way — I don't know your
+   grandchildren's names yet. If you'd like to share them, I'd love
+   to hear — no pressure at all."*
+
+If Fix 1 (keyword patch) works: the offer fires on "grand kids"
+(spaced). If Fix 4 (handoff redesign) works: the senior receives BOTH
+the soft greeting AND the pending-capture offer in response to their
+first message — not a state-machine advance.
+
+DB after:
+- `handoff_step=4`
+- `awaiting_pending_capture='grandkids'`
+
+### Step 5 — capture names
+
+Senior:
+```
+Anish, Aman, Akshadha
+```
+
+**Expected log:** `PENDING_CAPTURE | user_id=... | kind=grandkids | captured 3 name(s): Anish, Aman, Akshadha`
+
+**Expected reply:** *"Anish, Aman, and Akshadha — thank you for sharing. I'll remember. 🙏"*
+
+DB check:
+```sh
+python3 -c "import sqlite3; c=sqlite3.connect('/data/saathi.db'); [print(dict(x)) for x in c.execute('SELECT name, relationship FROM family_members WHERE relationship=\"grandchild\" ORDER BY id DESC LIMIT 5').fetchall()]"
+```
+
+Should return 3 rows.
+
+### Step 6 — medicines path (same pattern)
+
+Senior: `my medicines ran out today` → expect medicines offer.
+Senior: `metformin 8am and 8pm, atorvastatin at night` → expect
+`medicines_raw` populated, `pending_medicines=0`, reminders seeded.
+
+### Step 7 — address consistency
+
+From any point post-handoff, send any message. Expected: DeepSeek uses
+"Ma" consistently — never "Durga", never "Durga Ji", never "Durga Ma".
+This is the Fix 2 test.
+
+If DeepSeek still occasionally slips and uses "Durga" or "Durga Ji":
+the `address_lock` needs to be tightened or moved higher in the prompt.
+Check the system prompt order with `grep 'ABSOLUTE' deepseek.py` — the
+two locks must be prepended before `base_prompt`.
+
+---
+
+## Deferred / post-pilot items (unchanged)
+
+- Conversational-intent capture to structured tables. Names said in
+  normal conversation still go to `memories`, not `family_members`.
+- News geo-filter gap (Irish/Moldovan/etc. articles slipping through).
+- The four handoff bugs (1/2/3/4) from the earlier 22 Apr chatlog are
+  resolved by Fix 4 (they were all caused by the unconditional state
+  advance and the raw-save-to-fields behaviour).
+
+---
+
+## If the live test fails
+
+1. **Handoff keeps advancing** → check that the `main.py` block at
+   ~line 1153 is the new single-message version, not the 4-branch
+   state machine. `grep -n "handoff_step = user_row" main.py` should
+   show only one occurrence inside the handoff block.
+2. **Pending-capture still silent** → check Railway logs for
+   `PENDING_CAPTURE` lines at all. If none fire, the deploy didn't
+   pick up the new `pending_capture.py`. Force re-deploy.
+3. **DeepSeek still says "Durga"** → `grep -n "ABSOLUTE ADDRESS RULE" deepseek.py`
+   should return one line in the prompt assembly. If the var is
+   defined but unused, the wiring at the bottom of `_build_system_prompt`
+   is still broken.
+4. **Completion message missing the deferral block** → `grep -n "deferral_note" onboarding.py`
+   should show it's rendered inside the return string.

@@ -1330,20 +1330,38 @@ def _build_completion_message(user_id: int, ctx: dict) -> str:
     # Display address — "Durga Ji" by default, or whatever the child chose at step 2.
     addr        = _address(ctx)
 
-    # Optional gentle reminder when the child deferred medicines at step 10.
-    medicines_note = ""
-    if ctx.get("medicines_deferred"):
-        medicines_note = (
+    # Optional gentle reminder when the child deferred grandkids names (step 7)
+    # and/or medicines (step 10). Mentions both when both fired so the child
+    # knows the system will catch both later; mentions just one when only one
+    # fired. Framed as "no rush" to avoid sounding like unfinished homework.
+    meds_def  = bool(ctx.get("medicines_deferred"))
+    gk_def    = bool(ctx.get("grandkids_deferred"))
+    deferral_note = ""
+    if meds_def and gk_def:
+        deferral_note = (
+            f"A couple of small things — you weren't sure about {addr}'s "
+            f"grandchildren's names or medicines earlier. No rush at all. "
+            f"I'll gently ask {addr} about them once we've started chatting, "
+            f"so you don't need to do anything.\n\n"
+        )
+    elif meds_def:
+        deferral_note = (
             f"One small thing — you weren't sure about {addr}'s medicines earlier. "
             f"No rush. I'll gently ask {addr} about them once we've started "
             f"chatting, so you don't need to do anything.\n\n"
+        )
+    elif gk_def:
+        deferral_note = (
+            f"One small thing — you weren't sure about {addr}'s grandchildren's "
+            f"names earlier. No rush. I'll gently ask {addr} about them once "
+            f"we've started chatting, so you don't need to do anything.\n\n"
         )
 
     return (
         f"That's everything{', ' + first if first else ''}! 🙏\n\n"
         f"I'm all set for {addr}. The next time they message me, "
         f"I'll greet them warmly and personally.\n\n"
-        f"{medicines_note}"
+        f"{deferral_note}"
         f"A couple of things you might want to do:\n"
         f"• Save this Telegram contact on their phone as *{bot_name}*\n"
         f"• Let them know their companion is ready and waiting for them\n\n"

@@ -39,10 +39,14 @@ logger = logging.getLogger(__name__)
 # Matched as substrings on lowercased text. Word boundaries kept loose to
 # catch "grandkid", "grandkids", "grandchildren", "pota-poti", etc.
 _GRANDKID_KEYWORDS = [
-    # English
+    # English — compound forms
     "grandchild", "grandchildren", "grandkid", "grandkids",
     "grandson", "grandsons", "granddaughter", "granddaughters",
     "grandbaby", "grandbabies",
+    # English — spaced forms (seniors often type "grand kids", "grand children")
+    "grand kid", "grand kids", "grand child", "grand children",
+    "grand son", "grand sons", "grand daughter", "grand daughters",
+    "grand baby", "grand babies",
     # Hindi / Hinglish
     "pota", "poti", "potey", "pote", "potiyan", "potian",
     "naati", "naatin", "nati", "natin",

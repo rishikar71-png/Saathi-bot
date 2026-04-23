@@ -1150,68 +1150,63 @@ async def _run_pipeline(
         _invalidate_user_cache(user_id)
         return
 
-    # --- Staged handoff (child-led mode only, handoff_step 0–3) ---
+    # --- Child-led handoff: soft first-contact only (Batch 3, 23 Apr 2026) ---
+    # In child-led setup (setup_mode='family'), preferred_salutation and bot_name
+    # are already collected during the child's 21-question onboarding — step 2
+    # (preferred address) and step 16 (bot name). The old 4-step handoff state
+    # machine re-asked both, which:
+    #   Bug 1 — advanced unconditionally on ANY senior message, so a real
+    #           question ("my grand kids came today") as the first reply got
+    #           ignored in favour of sending the next handoff question.
+    #   Bug 2 — wrote the raw reply to preferred_salutation with no filtering,
+    #           so "Ma is good" or "nothing" became the stored address.
+    #   Bug 3 — re-asked "what would you like to call me?" even though the
+    #           child had already picked a bot name.
+    #   Bug 4 — "nothing" / dismissive replies corrupted both fields.
+    #
+    # New design: send the soft first-contact greeting once, mark handoff
+    # complete, and drop straight into normal conversation. If the senior
+    # wants to change their address or bot name, they can say so in ordinary
+    # conversation — DeepSeek handles it warmly, no state machine needed.
+    #
+    # In-flight users already at handoff_step 1/2/3 under the old code get the
+    # same treatment — they receive the soft greeting once (possibly a second
+    # time) and then enter normal conversation. Any partially-set junk values
+    # in preferred_salutation / bot_name from the old flow are left alone;
+    # either the child already typed over them at onboarding, or the senior
+    # can correct in normal chat.
     setup_mode = user_row["setup_mode"] if "setup_mode" in user_row.keys() else None
     handoff_step = user_row["handoff_step"] if "handoff_step" in user_row.keys() else 4
 
     if setup_mode == "family" and handoff_step is not None and handoff_step < 4:
         child_name = get_setup_child_name(user_id)
-        # Bot name chosen by the adult child at onboarding step 16. If they
-        # left the default, this is "Saathi". Threaded into message 0 so the
-        # senior hears the chosen name, not hardcoded "Saathi".
-        bot_name_for_handoff = user_row["bot_name"] if "bot_name" in user_row.keys() else "Saathi"
+        bot_name_for_handoff = (
+            user_row["bot_name"] if "bot_name" in user_row.keys() else "Saathi"
+        )
+        from database import update_user_fields
+
         replies = []
+        # Confusion check — if the senior's first message reads as confused
+        # ("who are you", "ye kya hai", "kaun ho"), send the warm confusion
+        # response BEFORE the soft greeting. Only meaningful on the very
+        # first turn (handoff_step == 0).
+        if handoff_step == 0 and is_confused_senior(text):
+            replies.append(get_confusion_response(child_name))
+            logger.info("OUT | user_id=%s | type=confusion_branch", user_id)
 
-        if handoff_step == 0:
-            # Senior's very first message — confusion check first
-            if is_confused_senior(text):
-                confusion_msg = get_confusion_response(child_name)
-                replies.append(confusion_msg)
-                logger.info("OUT | user_id=%s | type=confusion_branch", user_id)
+        # The one and only handoff message: the soft first-contact greeting.
+        replies.append(
+            get_handoff_message(0, child_name, bot_name=bot_name_for_handoff)
+        )
 
-            msg1 = get_handoff_message(0, child_name, bot_name=bot_name_for_handoff)
-            replies.append(msg1)
-            from database import update_user_fields
-            update_user_fields(user_id, handoff_step=1)
-            logger.info("OUT | user_id=%s | type=handoff | step=0", user_id)
-
-        elif handoff_step == 1:
-            # Senior responded — ask their preferred address
-            msg2 = get_handoff_message(1, child_name, bot_name=bot_name_for_handoff)
-            replies.append(msg2)
-            from database import update_user_fields
-            update_user_fields(user_id, handoff_step=2)
-            logger.info("OUT | user_id=%s | type=handoff | step=1", user_id)
-
-        elif handoff_step == 2:
-            # Senior gave their preferred address — save to preferred_salutation
-            # (NOT name — keep the identity field intact). The senior's answer
-            # here overrides whatever the child typed at onboarding step 2.
-            # Stored as-typed so "Ji" stays "Ji" and "Rameshji" stays "Rameshji".
-            address = text.strip()
-            from database import update_user_fields
-            if address and len(address) < 50:
-                update_user_fields(user_id, preferred_salutation=address, handoff_step=3)
-            else:
-                update_user_fields(user_id, handoff_step=3)
-            msg3 = get_handoff_message(2, child_name, bot_name=bot_name_for_handoff)
-            replies.append(msg3)
-            logger.info("OUT | user_id=%s | type=handoff | step=2 | address=%s", user_id, address)
-
-        elif handoff_step == 3:
-            # Senior gave bot name — save it, send final welcome message
-            bot_name = text.strip().title()
-            if bot_name and len(bot_name) < 50 and bot_name.lower() not in ("no", "nahi"):
-                from database import update_user_fields
-                update_user_fields(user_id, bot_name=bot_name, handoff_step=4)
-            else:
-                from database import update_user_fields
-                update_user_fields(user_id, handoff_step=4)
-            msg4 = get_handoff_message(3, child_name, bot_name=bot_name_for_handoff)
-            replies.append(msg4)
-            logger.info("OUT | user_id=%s | type=handoff | step=3 | bot_name=%s", user_id, bot_name)
-
+        # Mark handoff complete immediately — no more 1/2/3 progression.
+        update_user_fields(user_id, handoff_step=4)
         _invalidate_user_cache(user_id)
+        logger.info(
+            "OUT | user_id=%s | type=handoff | collapsed_to_step4 | prior_step=%s",
+            user_id, handoff_step,
+        )
+
         for r in replies:
             await update.message.reply_text(r)
             save_message_record(user_id, "out", r)

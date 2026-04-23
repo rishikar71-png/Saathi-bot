@@ -435,9 +435,26 @@ def _mark_ritual_sent(user_id: int, ritual_type: str, today: str) -> None:
 # ---------------------------------------------------------------------------
 
 def _address(name: Optional[str], salutation: Optional[str]) -> str:
-    name = (name or "aap").strip()
+    """Return the display address for the senior.
+
+    Semantics (locked 22 Apr 2026 session 3):
+      • preferred_salutation stores the FULL display string (e.g. "Ma",
+        "Rameshji", "Dadi"). If set, use it verbatim.
+      • If salutation is empty, fall back to "{name} Ji" — respectful Indian
+        default (e.g. "Durga Ji"). Mirrors onboarding._default_address.
+      • If neither is available, fall back to "aap" (polite "you").
+
+    Do NOT concatenate name + salutation. The old `"{name} {sal}"` logic
+    treated salutation as a suffix and produced broken addresses like
+    "Durga Ma" when the child set salutation='Ma' at onboarding step 2.
+    """
+    name = (name or "").strip()
     sal = (salutation or "").strip()
-    return f"{name} {sal}".strip() if sal else name
+    if sal:
+        return sal
+    if name:
+        return f"{name} Ji"
+    return "aap"
 
 
 def _get_days_since_first_message(user_row) -> int:
