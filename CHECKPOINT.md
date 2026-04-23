@@ -184,6 +184,62 @@ two locks must be prepended before `base_prompt`.
 
 ---
 
+## Two design questions resolved at close (23 Apr 2026)
+
+### Q1 — Move bot-name choice from child onboarding to senior's first session?
+
+**Decision: no, leave it in child-led onboarding (step 16).**
+
+Arguments for moving it: restores senior agency over a personal choice.
+
+Arguments against (and why they win):
+1. First-contact rule mandates "no question" on the soft greeting. The
+   question we'd be adding is the exact one we just stripped from the
+   handoff state machine for causing bugs.
+2. The bot must call itself *something* in the soft greeting, so a
+   default must exist regardless. You can't not-set it.
+3. Seniors deflect naming decisions ("call yourself whatever") — partial
+   or joking values would end up in the field. The child is the better
+   person to decide on behalf of the household.
+
+Fallback for agency: senior can say "call yourself X" in normal chat
+and DeepSeek handles it, same as the address override path. Revisit
+post-pilot if data shows seniors routinely renaming the bot.
+
+### Q2 — Is the "whose phone" + button completion + hand-off the next batch?
+
+**Yes — call it Batch 4.** Originally scoped as part of Batch 3. The
+fix shipped this session (Batch 3a) only addressed the state machine
+bugs. Batch 4 work:
+- Step-0 question: "Whose phone is this — yours or your parent's?"
+- New DB columns: `setup_device` (`self_phone` / `parent_phone`),
+  `pending_handoff_code` (shareable code for the same-phone-different-device
+  case)
+- Branched completion UI:
+  - `parent_phone` path: inline keyboard "I'm done — hand to senior now"
+    button. After tap, bot sends soft greeting automatically. No more
+    ambiguity about whether the next message is from child or senior.
+  - `self_phone` path: generate a short code, display it with copy/share
+    instructions. Senior joins by sending the code to the bot on their
+    own phone.
+- First-message detection that knows which device the message came from.
+
+Ship as its own batch after Batch 3a clears live test. Non-trivial —
+full session's work.
+
+---
+
+## Pending commit
+
+```
+cd ~/saathi-bot
+git add pending_capture.py rituals.py deepseek.py onboarding.py main.py CHECKPOINT.md CLAUDE.md
+git commit -m "Batch 2 keyword patch + addressing fix + completion copy + Batch 3a handoff redesign"
+git push origin main
+```
+
+---
+
 ## If the live test fails
 
 1. **Handoff keeps advancing** → check that the `main.py` block at
