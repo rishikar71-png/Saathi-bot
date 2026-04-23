@@ -239,6 +239,19 @@ TERMS OF ADDRESS: Never use "yaar", "bhai", "dost", "buddy", "pal", "dear", "ji"
 
 ---
 
+RULE 13 — CAPABILITY LIMITS (NEVER LIE ABOUT WHAT YOU CAN DO)
+You CAN: chat, remember what they tell you, send voice notes, look up music, read out weather/news/cricket when asked.
+You CANNOT: create, schedule, change, or cancel medicine reminders yourself. Their family sets reminders during onboarding.
+You CANNOT: call anyone, send SMS, or dial numbers. You only send messages in this chat.
+You CANNOT: access their calendar, contacts, photos, or any app outside this chat.
+
+If the senior asks you to set up a medicine reminder, change a time, or add a new medicine:
+Respond plainly — "I can't add reminders myself, but your family can set them up for you anytime. I'll tell [setup_name] if you'd like." Never promise to do it yourself.
+
+If the senior asks what happened with today's reminder (e.g. "did you remind me?" / "aaj dawai ka reminder aaya tha?") — use the MEDICINE STATUS block in the context below if present. If no MEDICINE STATUS block is present, say "I'm not sure — your family keeps track of that." Never invent a history.
+
+---
+
 WHAT SAATHI MUST NEVER BECOME:
 ❌ A therapist — no diagnosis, no emotional probing, no protocol-speak
 ❌ An entertainer — no activity suggestions
@@ -345,6 +358,62 @@ def _format_family_block(user_context: dict) -> str | None:
     return "\n".join(lines)
 
 
+def _format_medicine_status_block(user_id: int) -> str | None:
+    """
+    Render a MEDICINE STATUS block from today's medicine_reminders state.
+
+    Returned only if there is at least one active reminder. Enables Saathi to
+    answer factually when the senior asks "did you remind me today?" — without
+    this block, DeepSeek invents a history ("I didn't remind you today" when
+    the bot did send a reminder).
+
+    Example output:
+        MEDICINE STATUS — today (use this to answer factually, never invent):
+        - Plavix 08:00: sent, acknowledged
+        - Pan D 08:00: sent, not yet acknowledged (attempt 2)
+        - Rosouvastatin 20:00: not yet sent (scheduled later today)
+        Total active reminders: 3.
+        Note: You did NOT set these — the family did during onboarding.
+        If user asks you to change/add/cancel a reminder, see Rule 13.
+    """
+    if not user_id:
+        return None
+    try:
+        from database import get_today_medicine_status
+        rows = get_today_medicine_status(user_id)
+    except Exception as e:
+        logger.warning("DEEPSEEK | medicine status fetch failed: %s", e)
+        return None
+    if not rows:
+        return None
+
+    lines = [
+        "MEDICINE STATUS — today (use this to answer factually, never invent):"
+    ]
+    for r in rows:
+        name = r["medicine_name"] or "medicine"
+        when = r["schedule_time"] or "??:??"
+        if r["acked_today"]:
+            status = "sent, acknowledged"
+        elif r["sent_today"] and r["family_alerted_today"]:
+            status = (
+                f"sent, not acknowledged — family was notified after "
+                f"{r['attempt_count']} attempts"
+            )
+        elif r["sent_today"]:
+            attempt = r["attempt_count"] or 1
+            status = f"sent, not yet acknowledged (attempt {attempt})"
+        else:
+            status = "not yet sent (scheduled later today)"
+        lines.append(f"- {name} {when}: {status}")
+    lines.append(f"Total active reminders: {len(rows)}.")
+    lines.append(
+        "Note: You did NOT set these — the family did during onboarding. "
+        "If the senior asks you to change/add/cancel a reminder, see Rule 13."
+    )
+    return "\n".join(lines)
+
+
 def _build_system_prompt(user_context: dict) -> str:
     name = user_context.get("name") or "aap"
     bot_name = user_context.get("bot_name") or "Saathi"
@@ -375,6 +444,12 @@ def _build_system_prompt(user_context: dict) -> str:
     family_block = _format_family_block(user_context)
     if family_block:
         context_lines.append(f"\n{family_block}")
+    # MEDICINE STATUS — today's reminder events. Prevents Saathi from saying
+    # "I didn't remind you today" when it did (23 Apr senior-side live test).
+    # See Rule 13 for the capability-limit rule that pairs with this block.
+    med_status = _format_medicine_status_block(user_context.get("user_id"))
+    if med_status:
+        context_lines.append(f"\n{med_status}")
     if user_context.get("memory_context"):
         context_lines.append(f"\n{user_context['memory_context']}")
     # Date + time injection — DeepSeek has no internal clock.

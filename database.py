@@ -1114,6 +1114,80 @@ def get_setup_person(user_id: int) -> dict | None:
         }
 
 
+def get_today_medicine_status(user_id: int) -> list[dict]:
+    """
+    Return today's medicine-reminder state for this senior.
+
+    Used by deepseek._build_system_prompt to inject a MEDICINE STATUS block
+    so Saathi can answer factually when the senior asks "did you remind me
+    today?" — instead of hallucinating ("I didn't remind you today" when it
+    did).
+
+    Returns a list of dicts, one per active reminder, each with:
+      medicine_name, schedule_time, sent_today (bool), acked_today (bool),
+      attempt_count (int, today), family_alerted_today (bool).
+
+    "Today" = local calendar day in IST. The reminder scheduler stamps
+    last_sent_at / last_acked_at / family_alerted_at as UTC datetimes
+    (SQLite's datetime('now')). We compare against today's IST date string
+    (YYYY-MM-DD) using SQLite's `date(col, '+5 hours', '+30 minutes')` —
+    each modifier MUST be a separate argument; combining into one string
+    ('+5 hours 30 minutes') silently returns NULL.
+    """
+    from datetime import datetime, timezone, timedelta
+    ist = timezone(timedelta(hours=5, minutes=30))
+    today_ist = datetime.now(ist).strftime("%Y-%m-%d")
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    medicine_name,
+                    schedule_time,
+                    last_sent_at,
+                    last_acked_at,
+                    family_alerted_at,
+                    reminder_attempt,
+                    CASE
+                        WHEN last_sent_at IS NULL THEN 0
+                        WHEN date(last_sent_at, '+5 hours', '+30 minutes') = ? THEN 1
+                        ELSE 0
+                    END AS sent_today,
+                    CASE
+                        WHEN last_acked_at IS NULL THEN 0
+                        WHEN date(last_acked_at, '+5 hours', '+30 minutes') = ? THEN 1
+                        ELSE 0
+                    END AS acked_today,
+                    CASE
+                        WHEN family_alerted_at IS NULL THEN 0
+                        WHEN date(family_alerted_at, '+5 hours', '+30 minutes') = ? THEN 1
+                        ELSE 0
+                    END AS family_alerted_today
+                FROM medicine_reminders
+                WHERE user_id = ? AND is_active = 1
+                ORDER BY schedule_time ASC, id ASC
+                """,
+                (today_ist, today_ist, today_ist, user_id),
+            ).fetchall()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            "DB | get_today_medicine_status failed: %s", e
+        )
+        return []
+    return [
+        {
+            "medicine_name": (r["medicine_name"] or "").strip(),
+            "schedule_time": (r["schedule_time"] or "").strip(),
+            "sent_today": bool(r["sent_today"]),
+            "acked_today": bool(r["acked_today"]),
+            "attempt_count": int(r["reminder_attempt"] or 0) if r["sent_today"] else 0,
+            "family_alerted_today": bool(r["family_alerted_today"]),
+        }
+        for r in rows
+    ]
+
+
 def save_message_record(
     user_id: int,
     direction: str,

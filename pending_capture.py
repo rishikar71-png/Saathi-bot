@@ -71,6 +71,28 @@ _REFUSAL_KEYWORDS = [
     "chhod do", "rehne do", "rahne do",
 ]
 
+# Leading-affirmation strip — senior often prefixes the data with "yes."/"haan,"/"sure —".
+# Without this, the parser keeps the affirmation token as a "name"
+# ("yes. anish and aman" → ["Yes", "Anish", "Aman"] → first row saved as "Yes").
+# Pattern lifted from onboarding._CONTACT_AFFIRMATION_RE.
+_LEADING_AFFIRMATION_RE = re.compile(
+    r"^(yes|yeah|yup|yep|sure|okay|ok|haan|ha|han|hanji|haanji|ji|"
+    r"bilkul|theek|thik)[\s\.\,\-—:!]+",
+    re.IGNORECASE,
+)
+
+
+def _strip_leading_affirmation(text: str) -> str:
+    """Remove leading 'yes.' / 'haan,' / 'sure —' prefix from senior's reply.
+    Runs up to 2 times in case of stacked affirmations ('yes, sure, anish')."""
+    t = (text or "").strip()
+    for _ in range(2):
+        new = _LEADING_AFFIRMATION_RE.sub("", t, count=1).strip()
+        if new == t:
+            break
+        t = new
+    return t
+
 # Strong yes-signals — senior wants to share. Treat as "proceed to capture
 # next turn" rather than starting capture in this turn.
 # Currently unused — we always wait for the next message for capture text.
@@ -165,6 +187,11 @@ def _extract_names(text: str) -> list[str]:
     """Split free-form text like 'putu has anish and aman, mana has akshadha'
     into individual names. Strips parentage verbs ('has', 'ka beta', 'ki beti')
     and keeps capitalized tokens."""
+    if not text:
+        return []
+    # Strip leading affirmations first — "yes. anish and aman" should not
+    # yield "Yes" as a grandchild name.
+    text = _strip_leading_affirmation(text)
     if not text:
         return []
     # Common parentage stripping — replace relational phrases with a comma so
@@ -265,7 +292,9 @@ def capture_response(
         # Minimal parsing — save raw text + let seed_reminders_from_raw parse.
         # If seeding fails (parse error downstream), medicines_raw is still
         # stored so the child or a later pass can fix it.
-        text_stripped = text.strip()
+        # Strip leading affirmations so "yes. metformin 8am" doesn't confuse
+        # downstream parsers.
+        text_stripped = _strip_leading_affirmation(text).strip()
         if len(text_stripped) < 3:
             return (
                 False,
