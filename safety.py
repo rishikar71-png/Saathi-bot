@@ -129,9 +129,16 @@ async def alert_emergency_contacts(bot, user_id: int, user_row) -> int:
         )
         return 0
 
-    name = (user_row["name"] or "Aapke ghar ka").strip()
+    # Batch 1c addressing (23 Apr 2026): salutation verbatim, else "{name} Ji",
+    # else the Hindi "household" fallback. See rituals._address().
+    raw_name = (user_row["name"] or "").strip()
     sal = (user_row["preferred_salutation"] or "").strip()
-    address = f"{name} {sal}".strip() if sal else name
+    if sal:
+        address = sal
+    elif raw_name:
+        address = f"{raw_name} Ji"
+    else:
+        address = "Aapke ghar ka"
 
     alert_text = (
         f"🚨 *Saathi se urgent alert*\n\n"
@@ -414,10 +421,19 @@ def _log_inactivity_alert(user_id: int) -> None:
 
 def _build_inactivity_message(name: Optional[str], salutation: Optional[str],
                                language: Optional[str]) -> str:
-    """Build a warm, non-alarming inactivity check-in message."""
-    name = (name or "").strip()
+    """Build a warm, non-alarming inactivity check-in message.
+
+    Batch 1c addressing (23 Apr 2026): salutation verbatim, else "{name} Ji",
+    else "aap". See rituals._address().
+    """
+    nm = (name or "").strip()
     sal = (salutation or "").strip()
-    address = f"{name} {sal}".strip() if sal else (name or "aap")
+    if sal:
+        address = sal
+    elif nm:
+        address = f"{nm} Ji"
+    else:
+        address = "aap"
     lang = (language or "hindi").lower()
 
     if lang in ("hindi", "hinglish"):

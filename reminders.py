@@ -135,9 +135,25 @@ def build_reminder_text(
     medicine_name: str,
     language: str = "hindi",
 ) -> str:
-    """Build a personalised, warm medicine reminder message."""
+    """Build a personalised, warm medicine reminder message.
+
+    Addressing follows Batch 1c semantics (23 Apr 2026):
+      • preferred_salutation is the FULL display string ("Ma", "Rameshji").
+        If set, use it verbatim.
+      • Else fall back to "{name} Ji" — respectful Indian default.
+      • Else "aap".
+    The previous `f"{name} {sal}".strip()` treated salutation as a suffix and
+    produced "Durga Ma" when salutation='Ma'. See rituals._address() for the
+    canonical helper.
+    """
     sal = (salutation or "").strip()
-    address = f"{name} {sal}".strip() if sal else (name or "aap")
+    nm = (name or "").strip()
+    if sal:
+        address = sal
+    elif nm:
+        address = f"{nm} Ji"
+    else:
+        address = "aap"
     template = _TEMPLATES.get((language or "hindi").lower(), _DEFAULT_TEMPLATE)
     return template.format(address=address, medicine=medicine_name)
 
@@ -644,9 +660,16 @@ async def _escalate_to_family(bot, row) -> bool:
         )
         return False
 
-    name = row["name"] or "aapke ghar ka"
+    # Batch 1c addressing (23 Apr 2026): salutation verbatim, else "{name} Ji",
+    # else the Hindi "household" fallback. See rituals._address().
+    raw_name = (row["name"] or "").strip()
     sal = (row["preferred_salutation"] or "").strip()
-    address = f"{name} {sal}".strip() if sal else name
+    if sal:
+        address = sal
+    elif raw_name:
+        address = f"{raw_name} Ji"
+    else:
+        address = "aapke ghar ka"
     medicine = row["medicine_name"]
     family_name = row["family_name"] or ""
 
