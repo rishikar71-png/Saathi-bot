@@ -1210,6 +1210,18 @@ async def _run_pipeline(
         for r in replies:
             await update.message.reply_text(r)
             save_message_record(user_id, "out", r)
+
+        # Persist the senior's opening utterance even though we short-circuit
+        # here. Without this, a meaningful first message ("my grand kids came
+        # today", "beta aaj dawai nahi li") would be dropped from messages +
+        # session history, and turn 3 references to it would have no memory.
+        # Fix A (23 Apr 2026) — see Batch 3a live-test critique.
+        _db_queue(save_message_record, user_id, "in", text, input_type)
+        _live_session_append(user_id, "user", text)
+        for r in replies:
+            _live_session_append(user_id, "assistant", r)
+            _db_queue(save_session_turn, user_id, "assistant", r)
+        _db_queue(save_session_turn, user_id, "user", text)
         return
 
     # Build context dict from user profile.
