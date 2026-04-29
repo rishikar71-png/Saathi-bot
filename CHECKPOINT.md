@@ -21,34 +21,24 @@
 | 1 | Step 0 captures name + phone | ✅ | `step 8 reused setup person as emergency` log line |
 | 2 | "1.30" → 13:30 (bare 1–5 PM default) | ✅ | `REMINDER \| added \| time=13:30 \| source=bare_hour_pm_default` |
 | 3 | Batch-ASK clarify for ambiguous medicines | ✅ | clarify question fired on step 10; per-medicine reply (`pan d in the morning and thyronorm at night`) resolved both rows; `step 10 medicines_clarify resolved -> step 11 (before=2 after=0)` |
-| 4 | "BP pill at shaam 7" → 19:00 (Hindi word-boundary) | ⬜ | Rishi to run next session |
-| 5 | "did you remind me today?" → factual (MEDICINE STATUS block) | ⬜ | Not yet run |
-| 6 | "can you set a reminder for me?" → RULE 13 capability response | ⬜ | Not yet run |
-| Bonus A | Greeting respects salutation 'Ma' | ✅ | "Good morning, Ma." after senior typed "hi" |
+| 4 | "BP pill at shaam 7" → 19:00 (Hindi word-boundary) | ✅ | `REMINDER \| added \| time=19:00 \| source=hindi_period \| id=24` — period qualifier `shaam` matched cleanly, no false "am" substring hit |
+| 5 | "did you remind me today?" → factual (MEDICINE STATUS block) | ✅ | Reply: *"Today's BP pill is scheduled for 7 PM — that's still a few hours away. I'll let you know when it's time."* — factual, no invented history; "7 PM" rendering confirms TIME FORMAT rule firing |
+| 6 | "can you set a reminder for me?" → RULE 13 capability response | ✅ | Reply: *"I can't set reminders myself, Ma — that's something the family handles during setup. But if you need a change, I can pass it along to Rishi. Would you like me to do that?"* — capability refused, salutation + setup-person name from FAMILY block, relay-offer scaffolding |
+| Bonus A | Greeting respects salutation 'Ma' | ✅ | "Good afternoon, Ma." after senior typed "hi" (29 Apr afternoon run) |
 | Bonus B | Bug B per-medicine resolution | ✅ | Pan D 09:00 + Thyronorm 21:00 from per-medicine reply |
 | Bonus C | Bare hour parser stores "09:00" not "09:09" | ✅ | `bare=09:00 \| id=21` in seed log |
+| Bonus D | Children names from FAMILY block | ✅ | `do you know the names of my children` → "Mana and Putu." — no hallucination |
+| Bonus E | Grandchildren names from FAMILY block | ✅ | `do you know my grandkids` → "Akshdha, Aman, Anish, and Noor." — all 4, no fabrication |
+| Bonus F | Unsupported language gate (family-mode) | ✅ | `odia` → polite refusal, held at step 4; `english` → advanced. Gate now verified live in BOTH modes |
+| Bonus G | Handoff collapse to step 4 (Batch 3) | ✅ | `OUT \| type=handoff \| collapsed_to_step4 \| prior_step=0` |
 
 ---
 
 ## Next session priorities (in order)
 
-1. **Run Test 4 — Hindi word-boundary regression guard.**
-   During onboarding step 10, type: `BP pill at shaam 7`.
-   Expected: `schedule_time='19:00'`, NOT `'07:00'`. Confirms the word-boundary fix from 23 Apr (cont. 3) — `_detect_period_qualifier` should not match "am" inside "shaam".
-   Verify in Railway shell:
-   ```sql
-   SELECT medicine_name, schedule_time, is_active FROM medicine_reminders WHERE user_id = 8711370451 ORDER BY id DESC LIMIT 1;
-   ```
+**All 6 pilot-blocker tests passed live on 29 Apr afternoon run.** No code edits this run — verification only. Move to Module 19.
 
-2. **Run Test 5 — MEDICINE STATUS factual answer.**
-   With reminders already configured, ask Saathi: `did you remind me today?`
-   Expected: factual answer based on MEDICINE STATUS block — never invents history. If today's reminder hasn't fired yet: "Today's [time] for [medicine] is coming up — not yet sent." If acked: "Yes, I sent it at [time] and you confirmed." Specifically NOT a fabricated narrative.
-
-3. **Run Test 6 — RULE 13 capability limit.**
-   Ask: `can you set a reminder for me?`
-   Expected: "I can't set reminders myself — your family does that. I'll let them know you asked." (or Hindi variant).
-
-4. **Module 19 — End-to-End Capability Testing** (after all 6 tests pass):
+1. **Module 19 — End-to-End Capability Testing:**
    - YouTube music: by name, by mood, by genre — confirm real links
    - YouTube vague request ("kuch sunao") — fallback to preferences
    - News: morning briefing returns real headline
@@ -56,7 +46,7 @@
    - Weather: real conditions for user's city
    - Neural2 voice quality: send a voice message in Hindi + English
 
-5. **Module 20 — Pilot prep:**
+2. **Module 20 — Pilot prep:**
    - 5 test users (non-seniors) run through full flow
    - 20-user pilot invite list
    - Onboarding instructions written for adult children
@@ -72,6 +62,8 @@
 | Two `_USER_CACHE` dicts | main.py's unbounded cache vs database.py's 5-min TTL — collapse as first post-pilot task (ref 19 Apr session log). |
 | Self-setup mode end-to-end test | Module 19 capability test should exercise self-setup at least once before pilot. |
 | Untracked `*.patch` files | `saathi_bug_b_29apr.patch`, `saathi_bundle_29apr.patch`, `saathi_followup_29apr.patch`, `session_23apr_bundle.patch` sitting in `~/saathi-bot/`. Safe to delete or gitignore. |
+| Memory extraction noise: "user is called Ma" | 29 Apr afternoon run logged `MEMORY \| type=family \| saved: The user is called Ma.` — "Ma" is salutation, not name. Diary system is treating it as a family fact. Low risk (FAMILY block always overrides identity at runtime), but pollutes the memory archive. Tighten extraction prompt or add a salutation-aware skip post-pilot. |
+| `short_reply_disengagement` over-fires on contextual yes/no replies | 29 Apr run: `PIPELINE \| short_reply_disengagement triggered \| lang=english` for the affirmation reply to Saathi's own yes/no question. Outcome was correct (DeepSeek's reply held), but the pre-processor classification is wrong — a "yes" answering a direct question is engagement, not disengagement. Pre-processor should suppress disengagement detection when the previous Saathi turn ended with `?`. Edge case, not pilot-blocking. |
 
 ---
 
