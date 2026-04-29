@@ -456,7 +456,7 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
         return None
 
     try:
-        from apis import fetch_news, fetch_cricket, fetch_weather
+        from apis import fetch_news, fetch_cricket, fetch_cricket_news, fetch_weather
     except ImportError:
         return None
 
@@ -519,33 +519,74 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
         parts.append("Weather: I don't know your city — ask me like 'what's the weather in Delhi?' and I'll check.")
 
     if is_cricket:
-        try:
-            raw = fetch_cricket()
-            if raw:
-                parts.append(f"Cricket — raw data: {raw}")
-            else:
-                # Explicit scripted fallback — prevents DeepSeek using training knowledge
-                # to fabricate yesterday's scores or invent a match result.
-                # Note: Saathi tracks both India international matches AND all IPL teams.
-                # If this fires, there is genuinely no live or scheduled match today.
+        # Disambiguate news-intent vs schedule-intent so news queries route to RSS
+        # cricket coverage (Bug E, 29 Apr) instead of always hitting the schedule
+        # path. Examples:
+        #   News-intent  : "any cricket news?", "Hardik kaisa khel raha?", "IPL preview"
+        #   Schedule     : "aaj match?", "score?", "kya ho raha hai"
+        is_cricket_news_intent = bool(re.search(
+            r"\b(news|khabar|khabren|headline|headlines|analysis|preview|"
+            r"report|highlights|sunao|batao|kaisa khel|kaise khel|kaisi)\b",
+            text, re.IGNORECASE,
+        ))
+
+        if is_cricket_news_intent:
+            try:
+                cnews = fetch_cricket_news(query_text=text)
+                if cnews:
+                    parts.append(f"Cricket news — raw data:\n{cnews}")
+                else:
+                    # No news from RSS — fall back to schedule path so the senior
+                    # at least gets factual today's-match info if any exists.
+                    raw = fetch_cricket()
+                    if raw:
+                        parts.append(f"Cricket — raw data: {raw}")
+                    else:
+                        parts.append(
+                            "Cricket news: I don't have current cricket headlines right now."
+                        )
+            except Exception as _cn_err:
+                logger.debug("LIVE_DATA | cricket_news error | %s", _cn_err)
+                parts.append("Cricket news: temporarily unavailable.")
+        else:
+            try:
+                raw = fetch_cricket()
+                if raw:
+                    parts.append(f"Cricket — raw data: {raw}")
+                    # Supplementary analysis — only added when a real match
+                    # exists, so it can't conflict with the no-match scripted
+                    # response below.
+                    try:
+                        cnews = fetch_cricket_news(query_text=text)
+                        if cnews:
+                            parts.append(
+                                f"Cricket news (supplementary analysis) — raw data:\n{cnews}"
+                            )
+                    except Exception:
+                        pass
+                else:
+                    # Explicit scripted fallback — prevents DeepSeek using training knowledge
+                    # to fabricate yesterday's scores or invent a match result.
+                    # Note: Saathi tracks both India international matches AND all IPL teams.
+                    # If this fires, there is genuinely no live or scheduled match today.
+                    parts.append(
+                        "CRICKET — MANDATORY SCRIPTED RESPONSE:\n"
+                        "The live cricket API found no match scheduled for today (India international or IPL).\n"
+                        "You MUST respond with ONLY these sentences (adapt language to the user's preference):\n"
+                        "English: \"No cricket today — at least not in the schedule I can see. "
+                        "I'll have live updates the next time there's a match.\"\n"
+                        "Hindi: \"Aaj koi cricket match nahi dikh raha — schedule mein kuch nahi hai. "
+                        "Jab match hoga, main turant bata dunga.\"\n"
+                        "Do NOT add any match names, scores, teams, venues, or results from your training data.\n"
+                        "Do NOT use any cricket knowledge from your training data."
+                    )
+            except Exception:
                 parts.append(
                     "CRICKET — MANDATORY SCRIPTED RESPONSE:\n"
-                    "The live cricket API found no match scheduled for today (India international or IPL).\n"
-                    "You MUST respond with ONLY these sentences (adapt language to the user's preference):\n"
-                    "English: \"No cricket today — at least not in the schedule I can see. "
-                    "I'll have live updates the next time there's a match.\"\n"
-                    "Hindi: \"Aaj koi cricket match nahi dikh raha — schedule mein kuch nahi hai. "
-                    "Jab match hoga, main turant bata dunga.\"\n"
-                    "Do NOT add any match names, scores, teams, venues, or results from your training data.\n"
-                    "Do NOT use any cricket knowledge from your training data."
+                    "Cricket data is unavailable right now.\n"
+                    "You MUST respond with ONLY: \"I can't get cricket scores right now — I'll try again later.\"\n"
+                    "Do NOT fabricate match results."
                 )
-        except Exception:
-            parts.append(
-                "CRICKET — MANDATORY SCRIPTED RESPONSE:\n"
-                "Cricket data is unavailable right now.\n"
-                "You MUST respond with ONLY: \"I can't get cricket scores right now — I'll try again later.\"\n"
-                "Do NOT fabricate match results."
-            )
 
     if is_news:
         news_interests = user_context.get("news_interests") or user_context.get("favourite_topics") or ""
@@ -1896,7 +1937,15 @@ async def _run_pipeline(
     #   2. LENGTH: long responses (news, cricket, weather — typically >180 chars) are
     #      already well-formatted text. Sending a 2-minute voice reading of a news
     #      bulletin is worse UX than just the text. Skip TTS for these.
-    user_language = user_row["language"] or "english"
+    # TTS language: prefer per-message effective language (set by script
+    # detection at line ~1303 into user_context["language"]) so Hindi/Hinglish
+    # replies use hi-IN-Neural2-A instead of en-IN-Neural2-D. Falls back to
+    # the stored user_row preference, then English.
+    user_language = (
+        user_context.get("language")
+        or user_row["language"]
+        or "english"
+    )
     _tts_sent_at = time.monotonic()
     _TTS_STALE_SECONDS = 40
     _TTS_MAX_CHARS = 180  # skip TTS for long info-dump responses

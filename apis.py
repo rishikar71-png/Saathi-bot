@@ -366,6 +366,12 @@ def fetch_weather(city: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 _CRICAPI_URL = "https://api.cricapi.com/v1/currentMatches"
+# /v1/matches: full schedule including upcoming/scheduled matches that
+# /currentMatches excludes (e.g. tonight's 19:30 IST IPL game when queried
+# in the morning before it has started). Same auth, same response shape.
+# Fixes Bug E (29 Apr): senior asks "aaj cricket?" at 14:00 IST → /currentMatches
+# returns Match 40 (yesterday) but not Match 41 (tonight) → bot says "no match today".
+_CRICAPI_MATCHES_URL = "https://api.cricapi.com/v1/matches"
 
 # Teams to match: India internationals + all 10 IPL franchises.
 # IPL runs April–May — without this, all IPL matches were silently excluded.
@@ -408,34 +414,54 @@ def fetch_cricket() -> Optional[str]:
         logger.debug("APIS | cricket cache hit")
         return cached
 
-    try:
-        resp = requests.get(
-            _CRICAPI_URL,
-            params={"apikey": api_key, "offset": 0},
-            timeout=4,
-        )
-        if not resp.ok:
-            logger.warning(
-                "APIS | cricket API error | status=%d | %s",
-                resp.status_code, resp.text[:100],
+    matches: list = []
+    seen_ids: set = set()
+
+    def _merge_from(url: str, label: str) -> None:
+        """Fetch matches from `url` and append non-duplicate items to matches."""
+        try:
+            resp = requests.get(
+                url,
+                params={"apikey": api_key, "offset": 0},
+                timeout=4,
             )
-            _cache_set(cache_key, None)
-            return None
+            if not resp.ok:
+                logger.warning(
+                    "APIS | cricket %s API error | status=%d | %s",
+                    label, resp.status_code, resp.text[:100],
+                )
+                return
+            data = resp.json()
+            if data.get("status") != "success":
+                logger.debug("APIS | cricket %s non-success status: %s", label, data.get("status"))
+                return
+            for m in data.get("data", []):
+                mid = m.get("id")
+                if mid and mid in seen_ids:
+                    continue
+                if mid:
+                    seen_ids.add(mid)
+                matches.append(m)
+        except Exception as e:
+            logger.warning("APIS | cricket %s fetch failed | %s", label, e)
 
-        data = resp.json()
-        if data.get("status") != "success":
-            _cache_set(cache_key, None)
-            return None
+    try:
+        # Pass 1: /currentMatches — captures live + recently completed.
+        _merge_from(_CRICAPI_URL, "currentMatches")
+        # Pass 2: /matches — captures upcoming/scheduled matches that pass 1 excludes.
+        # This is the Bug E fix: today's not-yet-started match shows up here.
+        _merge_from(_CRICAPI_MATCHES_URL, "matches")
 
-        matches = data.get("data", [])
-
-        # Debug: log all match names returned by CricAPI so we can verify
-        # whether IPL matches appear in the free tier response.
         if matches:
             all_names = [m.get("name", "?") for m in matches[:10]]
-            logger.info("APIS | cricket raw matches (%d total) | %s", len(matches), " | ".join(all_names))
+            logger.info(
+                "APIS | cricket merged matches (%d total) | %s",
+                len(matches), " | ".join(all_names),
+            )
         else:
-            logger.info("APIS | cricket API returned 0 matches")
+            logger.info("APIS | cricket: both endpoints returned 0 matches")
+            _cache_set(cache_key, None)
+            return None
 
         india_match = _find_india_match(matches)
 
@@ -447,7 +473,7 @@ def fetch_cricket() -> Optional[str]:
         return india_match
 
     except Exception as e:
-        logger.warning("APIS | cricket fetch failed | %s", e)
+        logger.warning("APIS | cricket fetch wrapper failed | %s", e)
         _cache_set(cache_key, None)
         return None
 
@@ -635,6 +661,32 @@ _RSS_FEEDS_WORLD = [
     "https://feeds.reuters.com/reuters/worldNews",
     # BBC News top stories — includes world + UK as fallback
     "https://feeds.bbci.co.uk/news/rss.xml",
+]
+
+# Cricket-specific RSS feeds — for analysis, previews, post-match reports.
+# Used by fetch_cricket_news() for queries about cricket NEWS (not live scores).
+# Live scores and schedule still come from CricAPI via fetch_cricket().
+#
+# IMPORTANT — these URLs are best-effort candidates and need curl-verification
+# on first deploy. The RSS fetcher already skips bad URLs gracefully (timeout,
+# 404, parse error) and tries the next one in order. Keep more than one feed
+# in this list at all times so a single broken URL doesn't take cricket news
+# down completely.
+#
+# Verification command (run from any shell with internet access):
+#     for u in <urls below>; do echo "==> $u"; curl -sS -o /dev/null -w "%{http_code}\n" "$u"; done
+# Expected: 200 for the working ones. Replace any 4xx/5xx with a known-good URL
+# from feedspot.com/cricket_rss_feeds or the publisher's RSS hub.
+_RSS_FEEDS_CRICKET = [
+    # ESPNCricinfo — quality analysis, IPL coverage, post-match reports.
+    # Several candidate paths from public RSS directories — fetcher tries each.
+    "https://www.espncricinfo.com/rss/content/story/feeds/0.xml",
+    "https://static.espncricinfo.com/rss/livescores.xml",
+    # Cricbuzz — broader IPL coverage, pre-match previews
+    "https://www.cricbuzz.com/rss/cricket-features-rss",
+    "https://www.cricbuzz.com/api/cricbuzz/rss/cricket",
+    # NDTV Sports cricket — backstop. Always reachable, broad cricket coverage.
+    "https://feeds.feedburner.com/ndtvsports-cricket",
 ]
 
 # Regex to detect country/region names in a world news query
@@ -1019,3 +1071,53 @@ def _pick_best_headline(articles: list) -> Optional[str]:
         return title
 
     return None
+
+
+def fetch_cricket_news(query_text: str = "", max_results: int = 2) -> Optional[str]:
+    """
+    Fetch cricket news / analysis headlines from the cricket-specific RSS feeds.
+
+    Returns up to max_results headlines joined by newlines, or None if all
+    feeds fail. This is the analysis/news counterpart to fetch_cricket(),
+    which provides structured live/scheduled match data from CricAPI.
+
+    Pairing in main.py:
+      - "aaj cricket?" / "score?" / "kya ho raha hai" → fetch_cricket() (live data)
+      - "any cricket news?" / "Hardik kaisa khel raha?" → fetch_cricket_news() (this)
+
+    Bug E (29 Apr) added this so cricket queries can pull genuine cricket
+    coverage (ESPNCricinfo, Cricbuzz) instead of bleeding into general TOI
+    sports gossip (which surfaced Lewandowski/Juventus to a senior asking
+    for Indian news).
+    """
+    cache_key = f"cricket_news:{(query_text or '').lower()[:40] or 'general'}"
+    hit, cached = _cache_get(cache_key)
+    if hit:
+        return cached
+
+    # Try to extract a player or team keyword for filtering. Keep it loose —
+    # a single match means we narrow the headlines; no match means general.
+    keyword = ""
+    if query_text:
+        ql = query_text.lower()
+        for kw in sorted(_TRACKED_TEAM_KEYWORDS, key=len, reverse=True):
+            if len(kw) >= 3 and kw in ql:
+                keyword = kw
+                break
+
+    headline = _fetch_news_from_rss(
+        keyword=keyword,
+        max_results=max_results,
+        feeds=_RSS_FEEDS_CRICKET,
+    )
+    _cache_set(cache_key, headline)
+
+    if headline:
+        logger.info(
+            "APIS | cricket_news fetched via RSS | keyword=%s | %s",
+            keyword or "(none)", headline[:80],
+        )
+    else:
+        logger.info("APIS | cricket_news RSS returned nothing")
+
+    return headline

@@ -654,6 +654,21 @@ def call_deepseek(
     ]
     if session_messages:
         messages.extend(session_messages)
+    # Per-turn language nudge — fixes Bug B (29 Apr).
+    # Without this, DeepSeek autoregresses from session history and ignores
+    # the system-prompt language_lock when the conversation has many recent
+    # turns in another language. This system message sits immediately before
+    # the user's current message, so it is the freshest instruction the model
+    # sees, and overrides any pattern-match drift from the history.
+    messages.append({
+        "role": "system",
+        "content": (
+            f"LANGUAGE FOR THIS RESPONSE: {_language_label}. "
+            f"Respond in {_language_label} only, even if previous turns in this "
+            f"conversation were in another language. Match only the user's CURRENT "
+            f"message, which is in {_language_label}."
+        ),
+    })
     messages.append({"role": "user", "content": user_message})
 
     response = _get_client().chat.completions.create(
@@ -734,6 +749,21 @@ def call_deepseek_streaming(
     ]
     if session_messages:
         messages.extend(session_messages)
+    # Per-turn language nudge — fixes Bug B (29 Apr).
+    # Without this, DeepSeek autoregresses from session history and ignores
+    # the system-prompt language_lock when the conversation has many recent
+    # turns in another language. This system message sits immediately before
+    # the user's current message, so it is the freshest instruction the model
+    # sees, and overrides any pattern-match drift from the history.
+    messages.append({
+        "role": "system",
+        "content": (
+            f"LANGUAGE FOR THIS RESPONSE: {_language_label}. "
+            f"Respond in {_language_label} only, even if previous turns in this "
+            f"conversation were in another language. Match only the user's CURRENT "
+            f"message, which is in {_language_label}."
+        ),
+    })
     messages.append({"role": "user", "content": user_message})
 
     logger.info(
