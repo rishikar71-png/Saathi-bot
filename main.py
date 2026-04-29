@@ -1348,32 +1348,50 @@ async def _run_pipeline(
         "salam", "adaab", "hola",
     ]
 
-    def _get_time_aware_greeting(hour: int, language: str, name: str) -> str:
+    def _get_time_aware_greeting(
+        hour: int,
+        language: str,
+        name: str,
+        salutation: str = "",
+    ) -> str:
         _name = (name or "").strip()
+        _sal = (salutation or "").strip()
         _lang = (language or "english").lower()
 
-        # Build a name suffix — used only in Hindi/Hinglish for natural flow
-        _ji = f" {_name} ji" if _name else ""
-        _eng_name = f", {_name} ji" if _name else ""
+        # Address (Batch 1c semantics — mirrors rituals._address / safety.py):
+        #   • preferred_salutation verbatim if set ("Ma", "Rameshji", "Dadi")
+        #   • else "{name} Ji" — respectful Indian default ("Durga Ji")
+        #   • else empty
+        # Bug repro before fix: salutation="Ma", name="Durga" rendered
+        # "Good morning, Durga ji" (ignored salutation, used bare name + ji).
+        if _sal:
+            _addr = _sal
+        elif _name:
+            _addr = f"{_name} Ji"
+        else:
+            _addr = ""
+
+        _hi_suffix = f" {_addr}" if _addr else ""
+        _eng_suffix = f", {_addr}" if _addr else ""
 
         if _lang in ("hindi", "hinglish"):
             if 5 <= hour < 12:
-                return f"Namaste{_ji}. Sunkar achha laga. 🙏"
+                return f"Namaste{_hi_suffix}. Sunkar achha laga. 🙏"
             elif 12 <= hour < 17:
-                return f"Namaste{_ji}. Dopahar kaisi chal rahi hai?"
+                return f"Namaste{_hi_suffix}. Dopahar kaisi chal rahi hai?"
             elif 17 <= hour < 21:
-                return f"Namaste{_ji}. Aaj ka din kaisa raha?"
+                return f"Namaste{_hi_suffix}. Aaj ka din kaisa raha?"
             else:
-                return f"Namaste{_ji}. Bahut raat ho gayi — sab theek hai?"
+                return f"Namaste{_hi_suffix}. Bahut raat ho gayi — sab theek hai?"
         else:
             if 5 <= hour < 12:
-                return f"Good morning{_eng_name}. Good to hear from you."
+                return f"Good morning{_eng_suffix}. Good to hear from you."
             elif 12 <= hour < 17:
-                return f"Good afternoon{_eng_name}."
+                return f"Good afternoon{_eng_suffix}."
             elif 17 <= hour < 21:
-                return f"Good evening{_eng_name}. How has the day been?"
+                return f"Good evening{_eng_suffix}. How has the day been?"
             else:
-                return f"Hello{_eng_name}. Up late tonight?"
+                return f"Hello{_eng_suffix}. Up late tonight?"
 
     # Only fire the greeting handler if we are NOT mid-session.
     # If there is substantial session history (>= 4 turns), the senior is returning
@@ -1387,6 +1405,7 @@ async def _run_pipeline(
             _local_hour,
             language=user_context.get("language") or "english",
             name=user_context.get("name") or "",
+            salutation=user_context.get("preferred_salutation") or "",
         )
         await update.message.reply_text(_greet_reply)
         save_message_record(user_id, "out", _greet_reply)
