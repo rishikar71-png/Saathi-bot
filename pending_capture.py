@@ -426,7 +426,7 @@ def _handle_ambiguity_reply(user_id: int, reply_text: str) -> Tuple[bool, str]:
         return (False, "Thank you — I've noted that.")
 
     rt = (reply_text or "").lower().strip()
-    # Global-answer detection.
+    # Global-answer detection — compound phrases first.
     global_am = any(p in rt for p in (
         "all morning", "all subah", "all am",
         "everything morning", "sab morning", "sab subah",
@@ -435,6 +435,28 @@ def _handle_ambiguity_reply(user_id: int, reply_text: str) -> Tuple[bool, str]:
         "all night", "all raat", "all pm", "all evening",
         "everything night", "sab raat", "sab night",
     ))
+
+    # Bare period word as global signal (29 Apr 2026): a reply of just
+    # "morning" / "night" / "raat" naturally means "all of them" — the
+    # original compound-only list missed this. We promote bare period
+    # words to global ONLY when:
+    #   1. exactly one period type is mentioned (AM or PM, not both)
+    #   2. none of the pending medicine names appear in the reply
+    # If the reply names a medicine ("Pan D morning, Thyronorm night"),
+    # the original per-medicine matching path still wins.
+    _AM_BARE_TOKENS = {"morning", "subah", "savere", "savera", "am"}
+    _PM_BARE_TOKENS = {"night", "raat", "shaam", "evening", "dopahar", "pm"}
+    rt_words = set(re.findall(r"[a-z]+", rt))
+    am_hit = bool(rt_words & _AM_BARE_TOKENS)
+    pm_hit = bool(rt_words & _PM_BARE_TOKENS)
+    has_med_name = any(
+        (row["medicine_name"] or "").lower() in rt for row in pending
+    )
+    if not has_med_name:
+        if am_hit and not pm_hit:
+            global_am = True
+        elif pm_hit and not am_hit:
+            global_pm = True
 
     resolved: list[str] = []
     unresolved: list[str] = []

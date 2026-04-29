@@ -869,15 +869,22 @@ def handle_onboarding_answer(user_id: int, step: int, text: str) -> str:
     """
     ctx = _ctx.setdefault(user_id, {})
 
-    # Determine mode
+    # Determine mode + read clarify sub-state in one query.
     try:
         with get_connection() as conn:
             row = conn.execute(
-                "SELECT setup_mode FROM users WHERE user_id = ?", (user_id,)
+                "SELECT setup_mode, awaiting_pending_capture FROM users WHERE user_id = ?",
+                (user_id,),
             ).fetchone()
             setup_mode = row["setup_mode"] if row else "family"
+            awaiting = (
+                row["awaiting_pending_capture"]
+                if row and "awaiting_pending_capture" in row.keys()
+                else None
+            )
     except Exception:
         setup_mode = "family"
+        awaiting = None
 
     if setup_mode == "self":
         return _handle_self_setup_answer(user_id, step, text, ctx)
@@ -886,6 +893,46 @@ def handle_onboarding_answer(user_id: int, step: int, text: str) -> str:
     # Rehydrate ctx so later questions can use the senior's address + reuse
     # setup person's name/phone on emergency contact step.
     _rehydrate_family_ctx(user_id, ctx)
+
+    # --- Step 10 medicines_clarify sub-state (Bug B fix, 29 Apr 2026) ---
+    # When step 10 seeded ambiguous bare-hour reminders (e.g. "Pan D at 9"),
+    # we set awaiting_pending_capture='medicines_clarify' and stayed on
+    # step 10. The child's reply ("morning" / "all night" / per-medicine)
+    # comes back here. Dispatch to _handle_ambiguity_reply which resolves
+    # placeholder rows and clears the awaiting flag. On capture, advance
+    # to step 11 with combined ack + next question. On parse failure,
+    # re-ask and stay on step 10.
+    if step == 10 and awaiting == "medicines_clarify":
+        from pending_capture import _handle_ambiguity_reply
+        from reminders import get_ambiguous_reminders
+        # _handle_ambiguity_reply has lenient "deferred-path" semantics —
+        # it returns captured=True even when nothing actually resolved
+        # ("noted, family can fix later"). For onboarding we need stricter
+        # behaviour: stay on step 10 unless at least one placeholder
+        # actually flipped to is_active=1. Use a before/after count.
+        before = len(get_ambiguous_reminders(user_id))
+        _captured, ack = _handle_ambiguity_reply(user_id, text)
+        after = len(get_ambiguous_reminders(user_id))
+        nothing_resolved = before > 0 and after == before
+
+        if nothing_resolved:
+            # Resolver cleared the awaiting flag on its way out — restore
+            # it so the next inbound message routes back here.
+            update_user_fields(user_id, awaiting_pending_capture="medicines_clarify")
+            logger.info(
+                "ONBOARDING | user_id=%s | step 10 clarify unresolved (%d ambiguous): %r",
+                user_id, after, text[:40],
+            )
+            return f"{ack}\n\nCould you reply with just 'morning' or 'night'?"
+
+        next_step = 11
+        advance_onboarding_step(user_id, next_step)
+        logger.info(
+            "ONBOARDING | user_id=%s | step 10 medicines_clarify resolved -> step %d "
+            "(before=%d after=%d)",
+            user_id, next_step, before, after,
+        )
+        return f"{ack}\n\n{_q(next_step, ctx)}"
 
     # Language step gate (pilot scope: English / Hindi / Hinglish only).
     # If the answer is an unsupported language, do NOT save and do NOT
@@ -900,8 +947,14 @@ def handle_onboarding_answer(user_id: int, step: int, text: str) -> str:
     # Step 10 medicine-unknown branch — warm ack, stay on step 10 logic,
     # but advance so the flow continues. The deferred flag is surfaced in
     # the completion message.
-    _save_answer(user_id, step, text, ctx)
+    save_result = _save_answer(user_id, step, text, ctx)
     logger.info("ONBOARDING | user_id=%s | mode=family | step=%d answered", user_id, step)
+
+    # If _save_answer returned a string, it means "stay on this step and
+    # send this message" (currently only used by step 10 ambiguous medicines
+    # to ask the child morning-or-night before advancing).
+    if save_result is not None:
+        return save_result
 
     next_step = step + 1
 
@@ -929,6 +982,55 @@ def _handle_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> 
     Steps 6–10 = Day 2 (only reached via 'yes' to bridge or next-day resume).
     After step 10 → onboarding fully complete.
     """
+    # Read awaiting_pending_capture for the medicines_clarify pre-check.
+    awaiting = None
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT awaiting_pending_capture FROM users WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            awaiting = (
+                row["awaiting_pending_capture"]
+                if row and "awaiting_pending_capture" in row.keys()
+                else None
+            )
+    except Exception:
+        pass
+
+    # --- Step 6 medicines_clarify sub-state (Bug B fix, 29 Apr 2026) ---
+    # Self-setup step 6 = medicines. Same gap as family-mode step 10:
+    # ambiguous bare-hour reminders sat is_active=0 forever with no follow-up.
+    # Senior's reply ("morning"/"all night"/per-medicine) routes to
+    # _handle_ambiguity_reply which resolves placeholders and clears the flag.
+    if step == 6 and awaiting == "medicines_clarify":
+        from pending_capture import _handle_ambiguity_reply
+        from reminders import get_ambiguous_reminders
+        # Same strict before/after check as family-mode step 10 — see
+        # comment there for rationale.
+        before = len(get_ambiguous_reminders(user_id))
+        _captured, ack = _handle_ambiguity_reply(user_id, text)
+        after = len(get_ambiguous_reminders(user_id))
+        nothing_resolved = before > 0 and after == before
+
+        if nothing_resolved:
+            update_user_fields(user_id, awaiting_pending_capture="medicines_clarify")
+            logger.info(
+                "ONBOARDING | user_id=%s | mode=self | step 6 clarify unresolved (%d ambiguous): %r",
+                user_id, after, text[:40],
+            )
+            return f"{ack}\n\nCould you reply with just 'morning' or 'night'?"
+
+        next_step = 7
+        advance_onboarding_step(user_id, next_step)
+        next_q = _self_setup_question(next_step) or "Let's continue."
+        logger.info(
+            "ONBOARDING | user_id=%s | mode=self | step 6 medicines_clarify resolved -> step %d "
+            "(before=%d after=%d)",
+            user_id, next_step, before, after,
+        )
+        return f"{ack}\n\n{next_q}"
+
     # Language step gate (pilot scope: English / Hindi / Hinglish only).
     # If the answer is an unsupported language, do NOT save and do NOT
     # advance — send the polite refusal and hold at step 4.
@@ -939,8 +1041,14 @@ def _handle_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> 
         )
         return POLITE_UNSUPPORTED_LANGUAGE_MESSAGE
 
-    _save_self_setup_answer(user_id, step, text, ctx)
+    save_result = _save_self_setup_answer(user_id, step, text, ctx)
     logger.info("ONBOARDING | user_id=%s | mode=self | step=%d answered", user_id, step)
+
+    # If _save_self_setup_answer returned a string, it means "stay on this
+    # step and send this message" (currently only used by step 6 ambiguous
+    # medicines to ask the senior morning-or-night before advancing).
+    if save_result is not None:
+        return save_result
 
     next_step = step + 1
     day1_len = len(SELF_SETUP_DAY_1_QUESTIONS)
@@ -1017,11 +1125,17 @@ def maybe_resume_day2_bridge(user_id: int, deferred_date: Optional[str]) -> Opti
     return None
 
 
-def _save_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
+def _save_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> Optional[str]:
     """Save self-setup mode answers.
     Day 1 (steps 1–5): name, bot name, city, language, family members.
     Day 2 (steps 6–12): medicines, morning/afternoon/evening check-in times,
                         news interests, music preferences, emergency contact.
+
+    Returns:
+      • None       — advance normally to next step
+      • str (rare) — "stay on this step and send this message instead"
+                     (currently only used by step 6 to ask morning-or-night
+                     on ambiguous bare-hour medicines)
     """
     t = text.strip()
     tl = t.lower()
@@ -1061,8 +1175,36 @@ def _save_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> No
             update_user_fields(user_id, pending_medicines=1)
             logger.info("ONBOARDING | user_id=%s | self-setup step 6 medicines deferred ('%s')",
                         user_id, t[:40])
-        elif tl not in ("no", "nahi", "none", "nothing", "no.", "nil", "skip"):
-            update_user_fields(user_id, medicines_raw=t)
+            return None
+        if tl in ("no", "nahi", "none", "nothing", "no.", "nil", "skip"):
+            return None
+
+        # Real medicines — save raw and seed reminders immediately so we can
+        # detect ambiguous bare hours (e.g. "Pan D at 9") and ASK the senior
+        # before advancing. Mirrors family-mode step 10 (Bug B fix, 29 Apr 2026).
+        update_user_fields(user_id, medicines_raw=t)
+        try:
+            from reminders import seed_reminders_from_raw
+            report = seed_reminders_from_raw(user_id, t)
+        except Exception as seed_err:
+            logger.warning(
+                "ONBOARDING | user_id=%s | self-setup step 6 seed_reminders_from_raw failed: %s",
+                user_id, seed_err,
+            )
+            return None
+
+        ambiguous = report.get("seeded_ambiguous") or []
+        if ambiguous:
+            update_user_fields(user_id, awaiting_pending_capture="medicines_clarify")
+            from pending_capture import _build_ambiguity_ask
+            clarify_text = _build_ambiguity_ask(ambiguous)
+            logger.info(
+                "ONBOARDING | user_id=%s | self-setup step 6 awaiting medicines_clarify | "
+                "active=%d ambiguous=%d",
+                user_id, report.get("seeded_active", 0), len(ambiguous),
+            )
+            return clarify_text
+        return None
     elif step == 7:  # Morning check-in time
         hhmm = _parse_single_time(t, slot="morning")
         if hhmm:
@@ -1109,7 +1251,14 @@ def _save_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> No
 # Answer saving — family/child-led mode (steps 0–20)
 # ---------------------------------------------------------------------------
 
-def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
+def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> Optional[str]:
+    """
+    Save the answer for `step` and return:
+      • None         — advance normally to next step
+      • str (rare)   — "stay on this step and send this message instead"
+                       (currently only used by step 10 to ask morning-or-night
+                       on ambiguous bare-hour medicines)
+    """
     t = text.strip()
     tl = t.lower()
 
@@ -1256,9 +1405,42 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> None:
             ctx["medicines_deferred"] = True
             update_user_fields(user_id, pending_medicines=1)
             logger.info("ONBOARDING | user_id=%s | step 10 medicines deferred ('%s')", user_id, t[:40])
-            return
-        if tl not in ("no", "nahi", "none", "nothing", "no.", "nil"):
-            update_user_fields(user_id, medicines_raw=t)
+            return None
+        if tl in ("no", "nahi", "none", "nothing", "no.", "nil"):
+            return None
+
+        # Real medicines — save raw and seed reminders immediately so we can
+        # detect ambiguous bare hours (e.g. "Pan D at 9") and ASK the child
+        # before advancing. Without this, ambiguous rows sit is_active=0
+        # forever and the senior never gets reminded — bug observed live on
+        # 29 Apr 2026 with 'Pan D at 9, Thyronorm at 9, Plavix at 8 am'
+        # (Plavix fired, Pan D + Thyronorm silently dead).
+        update_user_fields(user_id, medicines_raw=t)
+        try:
+            from reminders import seed_reminders_from_raw
+            report = seed_reminders_from_raw(user_id, t)
+        except Exception as seed_err:
+            logger.warning(
+                "ONBOARDING | user_id=%s | step 10 seed_reminders_from_raw failed: %s",
+                user_id, seed_err,
+            )
+            return None
+
+        ambiguous = report.get("seeded_ambiguous") or []
+        if ambiguous:
+            # Set medicines_clarify sub-state. handle_onboarding_answer's
+            # pre-check on the next inbound message will dispatch the reply
+            # to pending_capture._handle_ambiguity_reply for resolution.
+            update_user_fields(user_id, awaiting_pending_capture="medicines_clarify")
+            from pending_capture import _build_ambiguity_ask
+            clarify_text = _build_ambiguity_ask(ambiguous)
+            logger.info(
+                "ONBOARDING | user_id=%s | step 10 awaiting medicines_clarify | "
+                "active=%d ambiguous=%d",
+                user_id, report.get("seeded_active", 0), len(ambiguous),
+            )
+            return clarify_text
+        return None
 
     elif step == 11:
         update_user_fields(user_id, music_preferences=t)
