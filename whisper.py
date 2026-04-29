@@ -8,6 +8,8 @@ Uses the synchronous OpenAI client — acceptable for MVP on Railway
 with a small user base. For v2, wrap in asyncio.to_thread() if needed.
 """
 
+from __future__ import annotations
+
 import io
 import logging
 import os

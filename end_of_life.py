@@ -24,6 +24,8 @@ Integration checklist (all wired below in main.py calls):
 4. Eulogy generation flow via handle_eulogy_response()
 """
 
+from __future__ import annotations
+
 import logging
 from datetime import datetime, timedelta, timezone
 

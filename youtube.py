@@ -16,6 +16,8 @@ Note: ensure YouTube Data API v3 is enabled in the Google Cloud project
 for this key.
 """
 
+from __future__ import annotations
+
 import hashlib
 import logging
 import os

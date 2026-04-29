@@ -23,6 +23,8 @@ onboarding_step in the DB reflects which question we are WAITING to receive
 an answer for. Advancing happens AFTER the answer is saved.
 """
 
+from __future__ import annotations
+
 import re
 import logging
 from typing import Optional
