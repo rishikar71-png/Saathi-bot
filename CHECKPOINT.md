@@ -1,264 +1,126 @@
-# CHECKPOINT — 23 April 2026 (end of Opus 4.7 continuation session, part 2)
+# CHECKPOINT — Resume 23 Apr 2026 (cont. 3)
 
 **Read order for next session:** this file → CLAUDE.md → progress.md.
 
 ---
 
-## TL;DR — state at end of this run
+## State at session close
 
-- **Batch 3a** (4 fixes) is already on `origin/main` at commit `ca920e4`.
-  Railway has deployed it.
-- **Fix A** (one-line-ish patch to `main.py`) is edited in the working
-  tree but NOT yet pushed. Reason: review of the Batch 3a handoff collapse
-  revealed that the senior's first-utterance content was being dropped
-  entirely (not saved to `messages`, not appended to session history)
-  because the handoff block `return`s before those writes happen.
-  Fix A queues `save_message_record("in", text)`, `_live_session_append`
-  for user + assistant, and `save_session_turn` writes before the return.
-- **CHECKPOINT Step 4 in the previous version was wrong** — it expected
-  two replies on turn 1 (soft greeting + pending-capture offer). The code
-  short-circuits after the soft greeting, so only one reply fires on turn 1.
-  Offer fires on turn 2. Test plan below is corrected.
+**Bundled patch covers today's earlier 3 fixes (pending_capture affirmation strip, MEDICINE STATUS block, RULE 13 capability limits) PLUS today's parser overhaul (time parser rewrite, batch-ASK flow, step 0 prompt copy, MEDICINE STATUS time-format rule). NOT YET ON RAILWAY. Packaged as a single `git am` patch.**
+
+Receipts:
+- `py_compile` — `reminders.py pending_capture.py onboarding.py deepseek.py main.py database.py` → `COMPILE_OK`.
+- Unit tests — `/sessions/serene-fervent-shannon/mnt/outputs/test_parser.py` → 65/65 passing (52 `_normalize_time` cases + 13 `resolve_ambiguous_hour` cases).
+- `git diff --stat` — 7 files, ~+896 / −282.
+
+### What was fixed in this bundle
+
+**Fix #A — pending_capture.py: leading affirmation strip** (from earlier today)
+- `_strip_leading_affirmation` applied to name extraction and medicines capture.
+- Stops "yes. anish and aman" → `["Yes","Anish","Aman"]`.
+
+**Fix #B — database.py + deepseek.py: MEDICINE STATUS injection** (from earlier today)
+- `get_today_medicine_status(user_id)` → per-row `sent_today`/`acked_today`/`attempt_count_today`/`family_alerted_today`.
+- SQL uses `date(col, '+5 hours', '+30 minutes')` — **separate modifier args** (combined form returns NULL).
+- `deepseek._format_medicine_status_block` injected after FAMILY in the system prompt.
+
+**Fix #C — deepseek.py: RULE 13 CAPABILITY LIMITS** (from earlier today)
+- Hardcoded rule: CAN chat/remember/voice/music/weather/news/cricket. CANNOT create/schedule/change/cancel reminders.
+- Scripted response for "set a reminder" → "I can't set reminders myself — your family does that."
+
+**Fix #D — reminders.py: time parser rewrite (new, today's main work)**
+- Pilot-blocker root cause: old parser defaulted bare hours to AM → "1.30" stored as 01:30 (middle of the night). Rewritten with the locked Option A rule set:
+  - bare 1–5 → PM (13:00–17:00) — Indian medicine convention
+  - bare 6–11 → ambiguous/ASK (placeholder row, `is_active=0`)
+  - bare 12 → noon
+  - explicit AM/PM → honored verbatim
+  - 24-hour forms (13:30, 21:00, 0800 compact) → honored
+  - Hindi period words (subah/dopahar/shaam/raat) + English ("morning"/"afternoon"/"evening"/"night") → disambiguate
+  - Meal-context words (breakfast/lunch/dinner) → disambiguate digits (e.g. "after breakfast 8" = 08:00; "before dinner 7" = 19:00)
+  - Meal phrases alone (no digit) → scripted times ("after dinner" = 20:00, "khali pet" = 07:30)
+- **Word-boundary fix:** short tokens ("am", "pm") matched with `\b...\b` so they don't fire inside "shaam"/"naam"/"subah". Pre-fix: `_detect_period_qualifier("shaam 7")` wrongly returned `"am"` → 07:00 AM. Post-fix → `"night"` → 19:00.
+- New structured return: `{time_24h, ambiguous, confidence, source, reason}`. Ambiguous cases still emit `time_24h=HH:MM` (bare AM form) so placeholder rows have a value to store.
+- New helpers: `add_reminder_structured(user_id, name, time_str)` → `(row_id, parse_result)`, `resolve_reminder_time(reminder_id, hhmm)`, `get_ambiguous_reminders(user_id)`, `resolve_ambiguous_hour(h, m, reply)`.
+- `seed_reminders_from_raw` now returns `{seeded_active, seeded_ambiguous, unparseable, pairs_total}` where `seeded_ambiguous` is a list of `{id, medicine_name, raw_time, bare_hhmm}`.
+
+**Fix #E — pending_capture.py: batch-ASK flow (new, today)**
+- Medicines branch of `capture_response` consumes the new report and either: saves high-confidence rows silently, or builds a grouped follow-up for ambiguous rows ("For *Pan D* at 9:00 — morning or night?").
+- New sub-state `awaiting_pending_capture='medicines_clarify'` routed by `_handle_ambiguity_reply`; supports global answers ("all morning", "sab raat") and per-medicine answers (comma/and/aur-separated).
+- Acknowledgements rendered in 12-hour AM/PM via `_humanise('21:30')` → `"9:30 PM"`.
+
+**Fix #F — main.py: medicines_clarify routing (new, today)**
+- Single-line change: `if _awaiting in ("grandkids", "medicines", "medicines_clarify"):` keeps the new sub-state flowing through the existing `capture_response` infrastructure.
+
+**Fix #G — onboarding.py: step 0 prompt copy (new, today)**
+- Old INTRO_MESSAGE asked only for name → setup person's phone stayed empty in `family_members` row.
+- New copy: "First — what is *your* name and phone number? … Just reply like: *Priya 9876543210*".
+- `_parse_setup_person` already handled the split; `save_setup_person(user_id, name, phone)` already accepted phone param.
+
+**Fix #H — deepseek.py: TIME FORMAT reply rule (new, today)**
+- Added inside RULE 13: when speaking a `schedule_time` from MEDICINE STATUS (stored 24h), ALWAYS convert to 12-hour AM/PM ("13:30" → "1:30 PM"). Never say bare "1:30" — senior cannot tell morning from night and may miss a dose.
+- Also: if today's time has already passed, say so explicitly ("Today's 1:30 PM has already passed — I'll remind you again tomorrow at 1:30 PM.").
+
+### Verification discipline rules
+
+V1–V7 live at the top of `/Users/rishikar/saathi-bot/CLAUDE.md`. These are the contract for every future session.
 
 ---
 
-## What changed in this run
+## Push command
 
-1. `main.py` — handoff block (~line 1210–1225), post-reply persistence added.
-   See comment block `Fix A (23 Apr 2026) — see Batch 3a live-test critique.`
+Patch file: `/Users/rishikar/AI Projects/Saathi Bot/session_23apr_bundle.patch`
 
-That's the only code change. `py_compile` clean. All symbols in scope
-(`_db_queue` defined line 260, `_live_session_append` line 223,
-`save_message_record` + `save_session_turn` imported lines 20–21,
-`text` + `input_type` are `_run_pipeline` parameters).
+On the Mac:
 
----
-
-## Push command (Fix A)
-
-```
+```bash
+cp "/Users/rishikar/AI Projects/Saathi Bot/session_23apr_bundle.patch" ~/saathi-bot/
 cd ~/saathi-bot
-git add main.py CHECKPOINT.md
-git commit -m "Fix A: persist senior's first utterance in handoff collapse (Batch 3a follow-up)"
+git am session_23apr_bundle.patch
 git push origin main
 ```
 
-Wait 2–4 min for Railway rebuild, then run the corrected test below.
+Wait 2–4 min for Railway to deploy. Then `/adminreset` and run the live test plan below.
 
 ---
 
-## Corrected live-test plan (supersedes the old CHECKPOINT Step 4)
+## Live test plan (after deploy)
 
-### Step 1 — SKIP (no longer needed)
+### Test 1 — step 0 prompt collects name + phone
+1. `/adminreset` → `/start` → select family setup.
+2. Step 0 should now ask for name *and* phone, with example "Priya 9876543210".
+3. Reply `rishi 9819787322`.
+4. Expected: `family_members` row saved with `name='Rishi'`, `phone='9819787322'`, `relationship='setup'`.
 
-Batch 3a already pushed. Fix A push command is above.
+### Test 2 — parser handles "1.30" correctly (the original pilot-blocker)
+1. At step 9 (medications), reply: `Pan D at 1.30`.
+2. Expected: `medicine_reminders` row with `schedule_time='13:30'` (NOT `01:30`).
+3. If current IST is past 13:30 when senior later asks "did you remind me today?", DeepSeek should say: "Today's 1:30 PM has already passed — I'll remind you again tomorrow."
 
-### Step 2 — clean-slate child-led onboarding
+### Test 3 — batch-ASK flow for ambiguous times
+1. Medication reply: `Pan D at 9, Thyronorm at 9, Plavix at 8 am`.
+2. Expected: 1 active reminder (`Plavix 08:00`), 2 placeholder rows (`Pan D`/`Thyronorm` at bare `09:00` with `is_active=0`).
+3. Onboarding should emit a clarifying follow-up: "For *Pan D* and *Thyronorm* at 9:00 — morning or night?"
+4. Reply: `morning`.
+5. Expected: both placeholder rows update to `schedule_time='09:00'`, `is_active=1`.
+6. Confirmation should read "Got it — Pan D and Thyronorm at 9:00 AM." (12-hour format).
 
-From Rishi's Telegram:
+### Test 4 — word-boundary fix holds
+1. Medication reply: `BP pill at shaam 7`.
+2. Expected: `schedule_time='19:00'` (NOT `07:00` — this is the regression the word-boundary fix prevents).
 
-1. `/adminreset`
-2. Run child-led onboarding end-to-end.
-   - **Step 2** preferred address = `Ma`
-   - **Step 7** defer grandkids with `she will tell u`
-   - **Step 10** defer medicines with `pata nahi`
-   - **Step 16** bot name = `Sage`
-3. Expected completion message includes the two-deferral block:
-   *"A couple of small things — you weren't sure about Ma's grandchildren's
-   names or medicines earlier. No rush at all. I'll gently ask Ma about
-   them once we've started chatting…"*
+### Test 5 — MEDICINE STATUS block (Fix #B)
+1. With at least one reminder scheduled, ask "did you remind me today?" before the time fires.
+2. Expected: factual answer ("Today's 9:00 AM for Pan D is coming up — not yet sent."). No fabricated history.
 
-### Step 3 — DB check BEFORE senior test
-
-Railway dashboard → shell:
-
-```sh
-python3 -c "import sqlite3; c=sqlite3.connect('/data/saathi.db'); c.row_factory=sqlite3.Row; r=c.execute('SELECT user_id, name, preferred_salutation, bot_name, pending_grandkids_names, pending_medicines, awaiting_pending_capture, handoff_step FROM users WHERE onboarding_complete=1 ORDER BY user_id DESC LIMIT 3').fetchall(); [print(dict(x)) for x in r]"
-```
-
-**Expected:** `preferred_salutation='Ma'`, `bot_name='Sage'`,
-`pending_grandkids_names=1`, `pending_medicines=1`,
-`awaiting_pending_capture=NULL`, `handoff_step=0`.
-
-### Step 4 — senior's FIRST message (non-trigger opening)
-
-From senior's Telegram:
-
-```
-hello
-```
-
-(Anything that is NOT a grandkids/medicines capture trigger.)
-
-**Expected Railway log lines:**
-```
-OUT | user_id=... | type=handoff | collapsed_to_step4 | prior_step=0
-```
-
-**Expected senior-facing reply (ONE):**
-*"Namaste. Rishi asked me to be in touch. I'm Sage — I'm here whenever
-you'd like to talk."*
-
-**DB check after:**
-
-```sh
-python3 -c "import sqlite3; c=sqlite3.connect('/data/saathi.db'); c.row_factory=sqlite3.Row; r=c.execute('SELECT user_id, handoff_step, awaiting_pending_capture FROM users ORDER BY user_id DESC LIMIT 1').fetchone(); print(dict(r))"
-```
-
-Expect: `handoff_step=4`, `awaiting_pending_capture=NULL`.
-
-**Fix A verification** — inbound message is persisted:
-
-```sh
-python3 -c "import sqlite3; c=sqlite3.connect('/data/saathi.db'); c.row_factory=sqlite3.Row; [print(dict(x)) for x in c.execute('SELECT direction, content FROM messages ORDER BY id DESC LIMIT 5').fetchall()]"
-```
-
-Expect to see both `direction='in' content='hello'` AND
-`direction='out' content='Namaste...'`. If the inbound row is missing,
-Fix A didn't deploy.
-
-### Step 4b — senior's SECOND message (triggers grandkids offer)
-
-```
-my grand kids came today
-```
-
-**Expected log lines:**
-```
-PENDING_CAPTURE | user_id=... | offered | kind=grandkids | lang=...
-```
-
-**Expected reply:**
-*"By the way — I don't know your grandchildren's names yet. If you'd
-like to share them, I'd love to hear — no pressure at all."*
-
-DB after:
-- `handoff_step=4` (unchanged)
-- `awaiting_pending_capture='grandkids'`
-
-If Fix 1 (Batch 2 keyword patch) works: the offer fires on the spaced
-form `grand kids`.
-
-### Step 5 — capture names
-
-Senior:
-```
-Anish, Aman, Akshadha
-```
-
-**Expected log:** `PENDING_CAPTURE | user_id=... | kind=grandkids | captured 3 name(s): Anish, Aman, Akshadha`
-
-**Expected reply:** *"Anish, Aman, and Akshadha — thank you for sharing. I'll remember. 🙏"*
-
-DB:
-```sh
-python3 -c "import sqlite3; c=sqlite3.connect('/data/saathi.db'); [print(dict(x)) for x in c.execute('SELECT name, relationship FROM family_members WHERE relationship=\"grandchild\" ORDER BY id DESC LIMIT 5').fetchall()]"
-```
-
-Should return 3 rows. `pending_grandkids_names` should now be `0`.
-
-### Step 6 — medicines path
-
-- Senior: `my medicines ran out today` → expect medicines offer.
-- Senior: `metformin 8am and 8pm, atorvastatin at night` → expect
-  `medicines_raw` populated, `pending_medicines=0`, reminders seeded.
-
-### Step 7 — address consistency (Fix 2 test)
-
-From any point post-handoff, send any message. Expect DeepSeek uses
-"Ma" consistently — never "Durga", never "Durga Ji", never "Durga Ma".
-
-If DeepSeek slips: check system prompt order:
-```
-grep -n "ABSOLUTE" deepseek.py
-```
-Both `language_lock` and `address_lock` must be prepended before
-`base_prompt`.
+### Test 6 — RULE 13 capability limits (Fix #C)
+1. Ask "can you set a reminder for me?".
+2. Expected: "I can't set reminders myself — your family does that. I'll let them know you asked." (or Hindi variant if language='hindi').
 
 ---
 
-## If something fails
+## Open items deferred to next session
 
-1. **Handoff keeps advancing through 1/2/3** → grep `main.py` for the
-   old state machine: `grep -n "handoff_step = user_row" main.py`.
-   Should show one occurrence in the handoff block.
-2. **Pending-capture silent on "grand kids"** → check Railway logs for
-   any `PENDING_CAPTURE` lines. If none fire after step 4b, deploy may
-   not have picked up `pending_capture.py`. Force redeploy.
-3. **DeepSeek still says "Durga"** → `grep -n "ABSOLUTE ADDRESS RULE" deepseek.py`.
-   If the string exists but never reaches the prompt, the assembly at
-   the end of `_build_system_prompt` is still broken.
-4. **Fix A not working (step 4 inbound row missing)** → confirm
-   `main.py` at lines ~1210–1225 has the `_db_queue(save_message_record, ...)`
-   block. If working tree clean but DB still missing the row, Railway
-   deploy stale — force redeploy.
-5. **Completion message missing the deferral block** →
-   `grep -n "deferral_note" onboarding.py` should show it rendered in
-   the return string.
-
----
-
-## Deferred / post-pilot items
-
-- Conversational-intent capture → structured tables. Names said in
-  normal conversation still go to `memories`, not `family_members`.
-- News geo-filter gap (Irish/Moldovan/etc. articles slipping through).
-- The unified cache (merge the two `_USER_CACHE` dicts across main.py
-  and database.py) — first post-pilot task.
-
----
-
-## Two design questions resolved this session (23 Apr 2026)
-
-### Q1 — Move bot-name choice from child onboarding to senior's first session?
-
-**Decision: no, leave it in child-led onboarding (step 16).**
-
-Arguments against moving it:
-1. First-contact rule mandates "no question" on the soft greeting.
-2. The bot must call itself *something* in the soft greeting — default
-   required regardless.
-3. Seniors deflect naming decisions — partial or joking values would
-   end up in the field.
-
-Fallback for agency: senior can say "call yourself X" in normal chat
-and DeepSeek handles it.
-
-### Q2 — "whose phone" + button completion + hand-off = next batch?
-
-**Yes — Batch 4.** Work includes:
-- Step-0 question: "Whose phone is this — yours or your parent's?"
-- New DB columns: `setup_device` (`self_phone` / `parent_phone`),
-  `pending_handoff_code`
-- Branched completion UI (inline keyboard "I'm done" button for same-phone
-  path; shareable code for different-phone path)
-- First-message device detection
-
-Ship after Batch 3a + Fix A clear live test. Non-trivial — full session.
-
----
-
-## Third design question resolved this session
-
-### Q3 — What to do when senior's first utterance has real content?
-
-**Decision: Fix A (minimal) — persist, but still short-circuit to soft greeting.**
-
-Rejected alternative (Fix B): fall through the pipeline so the senior's
-first utterance gets engaged with in full. Rejected because it violates
-the First-Contact Behavioral Rule (no enthusiasm, silence-friendly,
-presence not response). A substantive DeepSeek reply on top of the soft
-greeting would feel overeager.
-
-Fix A trade-off: senior's content is captured in DB + session history,
-so turn 2+ DeepSeek calls can reference it. But turn 1 itself only
-produces the soft greeting. This is intentional.
-
----
-
-## Pilot blockers remaining
-
-None, if Fix A clears live test.
-
-If live test passes clean: resume Module 19 end-to-end capability tests
-and Module 20 pilot prep.
+- **Hindi numerals ("ek baje", "do baje", "teen baje")** — not parsed. Pilot-scope: skip. V1.5 add.
+- **Conversational-intent → structured tables** — names/medicines mentioned in normal chat still land in `memories` as prose, not in `family_members`/`medicine_reminders`. Post-Batch-3 cleanup.
+- **Batch 3 handoff redesign** — staged-state corruption of `preferred_salutation` and `bot_name` was solved by collapsing handoff to a single message. Still needs verification in a clean live child-led run.
+- **Batch 4 — whose-phone + button completion** — scoped in the 22 Apr session log. Blocks on Batch 3 live verification.

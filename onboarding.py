@@ -335,7 +335,10 @@ INTRO_MESSAGE = (
     "Wonderful! You're doing something really thoughtful right now. 🙏\n\n"
     "Once we go through a few questions together, I'll be all set and waiting for them.\n\n"
     "It should take about 5 minutes. Let's begin.\n\n"
-    "First — what is *your* name? (So I can introduce you to them properly.)"
+    "First — what is *your* name and phone number? "
+    "(I'll introduce you properly, and use the number as the emergency contact "
+    "unless you'd rather pick someone else.)\n\n"
+    "Just reply like: *Priya 9876543210*"
 )
 
 

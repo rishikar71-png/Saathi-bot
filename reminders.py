@@ -10,7 +10,10 @@ Public interface:
     mark_family_alerted(reminder_id)
     is_acknowledgement(text) -> bool
     build_reminder_text(name, salutation, medicine_name, language) -> str
-    seed_reminders_from_raw(user_id, medicines_raw) -> int
+    seed_reminders_from_raw(user_id, medicines_raw) -> dict (report)
+    add_reminder_structured(user_id, name, time_str) -> (row_id, parse_result)
+    resolve_reminder_time(reminder_id, hhmm) -> bool
+    get_ambiguous_reminders(user_id) -> list[dict]
     generate_bell_tone() -> bytes
     check_and_send_reminders(bot)   ← called every minute by JobQueue
 
@@ -159,13 +162,35 @@ def build_reminder_text(
 
 
 # ---------------------------------------------------------------------------
-# Time utilities
+# Time utilities — structured parser (23 Apr 2026, Option A rule set)
+#
+# Pilot-blocker: the old parser silently defaulted bare hours to AM, so
+# "1.30" stored as 01:30 (middle of the night) when the senior clearly
+# meant 1:30 PM (post-lunch). Pan D, BP pills, etc. are lunch/evening
+# medicines in Indian households. See time_parser_review_memo_23apr.md.
+#
+# Rules (locked after GPT + Gemini external review):
+#   • Bare hour 1–5 (no AM/PM, no Hindi period word) → 13:00–17:00 PM.
+#   • Bare hour 6–11 (no AM/PM, no Hindi period word) → AMBIGUOUS → ASK.
+#   • Bare hour 12 → 12:00 noon (never midnight for medicines).
+#   • Explicit AM/PM → honored verbatim.
+#   • 24-hour format (13:30, 21:00) → honored verbatim.
+#   • Hindi period words resolve ambiguity:
+#        subah / morning / breakfast        → AM context (1–11 → 01–11)
+#        dopahar / afternoon / lunch        → PM 12–17 context
+#        shaam / evening                    → PM 17–19 context
+#        raat / night                       → PM 19–23 context
+#   • Meal references ("after dinner", "lunch ke baad") → scripted times.
+#   • Standalone period words ("morning", "raat", "bedtime") → scripted.
 # ---------------------------------------------------------------------------
 
-_TIME_ALIASES = {
+# Standalone period words — used when no digit is present at all.
+# Maps to a single canonical time. These are high-confidence because the
+# phrase itself is the intent ("morning" = 8am).
+_PERIOD_WORD_TIMES = {
     "morning":   "08:00",
     "subah":     "08:00",
-    "breakfast": "08:00",
+    "breakfast": "09:00",
     "afternoon": "13:00",
     "dopahar":   "13:00",
     "lunch":     "13:00",
@@ -175,31 +200,382 @@ _TIME_ALIASES = {
     "night":     "21:00",
     "raat":      "21:00",
     "bedtime":   "21:30",
+    "noon":      "12:00",
+    "khali pet": "07:30",   # empty stomach — typical early-morning dose
 }
 
+# Meal-linked phrases — explicit reference to before/after a meal.
+# High-confidence scripted times; no further AM/PM disambiguation needed.
+_MEAL_PHRASE_TIMES = [
+    # Order matters — longer phrases first to avoid partial matches.
+    ("after breakfast",    "09:00"),
+    ("before breakfast",   "07:30"),
+    ("breakfast ke baad",  "09:00"),
+    ("breakfast se pehle", "07:30"),
+
+    ("after lunch",        "14:00"),
+    ("before lunch",       "12:30"),
+    ("lunch ke baad",      "14:00"),
+    ("lunch se pehle",     "12:30"),
+    ("khana ke baad",      "14:00"),   # ambiguous-ish but lunch is the common default
+    ("khane ke baad",      "14:00"),
+
+    ("after dinner",       "20:00"),
+    ("before dinner",      "19:30"),
+    ("dinner ke baad",     "20:00"),
+    ("dinner se pehle",    "19:30"),
+    ("raat ke khane baad", "20:00"),
+
+    ("post dinner",        "20:00"),
+    ("post lunch",         "14:00"),
+    ("post breakfast",     "09:00"),
+
+    ("khane se pehle",     "12:30"),   # before-meal default = pre-lunch
+    ("bhojan ke baad",     "14:00"),
+    ("bhojan se pehle",    "12:30"),
+]
+
+# Hindi / English period qualifiers that *precede* a digit to disambiguate
+# bare hours. "subah 9" → AM context, "raat 9" → PM context.
+# The same word may appear as part of _PERIOD_WORD_TIMES (when it stands
+# alone) or here (when it modifies a following digit).
+_AM_QUALIFIERS = ("subah", "morning", "am", "a.m.", "a m", "savere", "savera")
+_PM_QUALIFIERS_NOON  = ("dopahar", "afternoon", "noon")                   # → 12–16
+_PM_QUALIFIERS_EVE   = ("shaam", "evening")                               # → 16–19
+_PM_QUALIFIERS_NIGHT = ("raat", "night", "pm", "p.m.", "p m")             # → 18–23
+
 # Accept both ':' and '.' as hour/minute separators — Indian users commonly
-# type '11.07 am'. 22 Apr 2026: previously only ':' matched, so '11.07 am'
-# was parsed as 11:00 (minutes silently dropped).
-_TIME_RE = re.compile(r"(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?", re.IGNORECASE)
+# type '11.07 am'. Also accept no separator with 3–4 digits (e.g. "130" = 1:30).
+_TIME_RE = re.compile(
+    r"(?<!\d)(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?(?!\d)",
+    re.IGNORECASE,
+)
+# Compact "130" / "1930" form — 3 or 4 bare digits, no separator.
+_COMPACT_TIME_RE = re.compile(r"(?<!\d)(\d{3,4})(?!\d)")
 
 
-def _normalize_time(time_str: str) -> Optional[str]:
-    """Convert a free-form time string to 'HH:MM' (24-hour IST). None if unparseable."""
-    t = time_str.strip().lower()
-    for alias, hhmm in _TIME_ALIASES.items():
-        if alias in t:
-            return hhmm
+def _result(
+    time_24h: Optional[str],
+    *,
+    ambiguous: bool,
+    confidence: str,
+    source: str,
+    reason: str,
+) -> dict:
+    """Shape the parser's structured return."""
+    return {
+        "time_24h":   time_24h,
+        "ambiguous":  ambiguous,
+        "confidence": confidence,   # "high" | "low" | "none"
+        "source":     source,
+        "reason":     reason,
+    }
+
+
+def _valid(hour: int, minute: int) -> bool:
+    return 0 <= hour <= 23 and 0 <= minute <= 59
+
+
+def _word_or_substring_in(tokens: tuple, text: str) -> bool:
+    """
+    True if any token appears in text. Short tokens (≤3 chars like "am", "pm",
+    "a m", "p m") are matched with word boundaries to prevent "am" matching
+    inside "shaam" / "subah am" etc. Longer tokens match as plain substrings
+    (safe — "subah" doesn't collide with anything).
+    """
+    for tok in tokens:
+        if not tok:
+            continue
+        if len(tok) <= 4:
+            # word-boundary match — "am" must not match "shaam" or "naam"
+            if re.search(rf"\b{re.escape(tok)}\b", text):
+                return True
+        else:
+            if tok in text:
+                return True
+    return False
+
+
+def _detect_period_qualifier(text: str) -> Optional[str]:
+    """
+    Return a qualifier label ('am', 'noon', 'evening', 'night') if the text
+    contains a Hindi/English period word or meal-context word. None otherwise.
+
+    Used to disambiguate bare hours like "subah 9" (AM) vs "raat 9" (PM),
+    and to handle compounds like "after breakfast 8" (AM) vs "before dinner 7"
+    (night).
+
+    IMPORTANT: short tokens like "am"/"pm" are matched with word boundaries so
+    they don't spuriously fire on "shaam", "naam", etc. The 22-Apr regression
+    that stored "shaam 7" as 07:00 was caused by substring-matching "am".
+    """
+    t = text.lower()
+
+    # Meal-context words imply a period even when a digit is also present.
+    # e.g. "after breakfast 8" → AM context; "before dinner 7" → night context.
+    # Checked BEFORE the short AM/PM tokens so "breakfast" → "am" wins.
+    if "breakfast" in t:
+        return "am"
+    if "dinner" in t:
+        return "night"
+
+    # Night wins over evening when both present ("raat ko shaam" — rare).
+    if _word_or_substring_in(_PM_QUALIFIERS_NIGHT, t):
+        return "night"
+    if _word_or_substring_in(_PM_QUALIFIERS_EVE, t):
+        return "evening"
+    if _word_or_substring_in(_PM_QUALIFIERS_NOON, t):
+        return "noon"
+    if _word_or_substring_in(_AM_QUALIFIERS, t):
+        return "am"
+    # "lunch" alone → noon (not covered above because "lunch" isn't in the
+    # qualifier tuples; keeping those tuples clean).
+    if "lunch" in t:
+        return "noon"
+    return None
+
+
+def _apply_qualifier(hour: int, qualifier: str) -> int:
+    """Shift bare hour into the correct half of the day given a period qualifier."""
+    # AM: 1–11 stay as-is (01–11). 12 becomes 00.
+    if qualifier == "am":
+        if hour == 12:
+            return 0
+        return hour
+    # Noon qualifier: 12–5 maps to 12–17 (after-lunch afternoon window).
+    if qualifier == "noon":
+        if 1 <= hour <= 5:
+            return hour + 12
+        if hour == 12:
+            return 12
+        if 6 <= hour <= 11:
+            # "dopahar 11" is unusual but we honor it as 11 (late morning).
+            return hour
+        return hour
+    # Evening: 4–7 → 16–19. 8+ stays (unusual).
+    if qualifier == "evening":
+        if 1 <= hour <= 11:
+            return hour + 12 if hour <= 11 else hour
+        return hour
+    # Night: 6–11 → 18–23. 12 → 00. 1–5 → 13–17 (late night unusual,
+    # but "raat 1" typically means 1am — return bare).
+    if qualifier == "night":
+        if 6 <= hour <= 11:
+            return hour + 12
+        if hour == 12:
+            return 0
+        # "raat 1" / "raat 2" — late-night hours stay as 01–05.
+        return hour
+    return hour
+
+
+def _normalize_time(time_str: str) -> dict:
+    """
+    Parse a free-form time string into a structured result dict.
+
+    Always returns a dict with the shape from _result(). Callers check
+    ``ambiguous`` and ``time_24h`` — if ambiguous=True they should hold the
+    row and ASK the senior (morning or night?). If time_24h is None and
+    ambiguous=False, the input was unparseable.
+
+    See module docstring for the full rule set.
+    """
+    raw = (time_str or "").strip()
+    if not raw:
+        return _result(None, ambiguous=False, confidence="none",
+                       source="unparseable", reason="empty input")
+
+    t = raw.lower()
+
+    # --- 1. Detect a period qualifier (subah/raat/shaam/dopahar/AM/PM word,
+    # breakfast/lunch/dinner meal-context). This feeds into steps 5 and 6
+    # below when a digit is present.
+    qualifier = _detect_period_qualifier(t)
+
+    # --- 2. Try the canonical HH(:/.)MM(am/pm)? regex first. Explicit digit
+    # beats pure meal-phrase: "after breakfast 8" → 08:00, not 09:00. ---
     m = _TIME_RE.search(t)
-    if not m:
+    digit_hour: Optional[int] = None
+    digit_minute: int = 0
+    has_explicit_ampm = False
+
+    if m:
+        digit_hour = int(m.group(1))
+        digit_minute = int(m.group(2) or 0)
+        period = (m.group(3) or "").lower().replace(".", "").replace(" ", "")
+        has_explicit_ampm = period in ("am", "pm")
+        if has_explicit_ampm:
+            if period == "pm" and digit_hour != 12:
+                digit_hour += 12
+            elif period == "am" and digit_hour == 12:
+                digit_hour = 0
+            if not _valid(digit_hour, digit_minute):
+                return _result(None, ambiguous=False, confidence="none",
+                               source="unparseable",
+                               reason=f"invalid explicit AM/PM time {raw!r}")
+            return _result(
+                f"{digit_hour:02d}:{digit_minute:02d}",
+                ambiguous=False, confidence="high",
+                source="explicit_ampm",
+                reason=f"explicit {period.upper()} → {digit_hour:02d}:{digit_minute:02d}",
+            )
+        # No explicit AM/PM. Check for 24-hour format (hour ≥ 13 with minutes).
+        # "13:30" / "21:00" → unambiguous.
+        if m.group(2) is not None and digit_hour >= 13 and _valid(digit_hour, digit_minute):
+            return _result(
+                f"{digit_hour:02d}:{digit_minute:02d}",
+                ambiguous=False, confidence="high",
+                source="24hour",
+                reason=f"24-hour format → {digit_hour:02d}:{digit_minute:02d}",
+            )
+        # Hour = 0 with minutes ("00:30") → unambiguous midnight-bucket.
+        if digit_hour == 0 and m.group(2) is not None and _valid(digit_hour, digit_minute):
+            return _result(
+                f"{digit_hour:02d}:{digit_minute:02d}",
+                ambiguous=False, confidence="high",
+                source="24hour",
+                reason="explicit 00:xx → midnight window",
+            )
+
+    # --- 4. If no digit found via primary regex, try compact form "130", "1930". ---
+    if digit_hour is None:
+        cm = _COMPACT_TIME_RE.search(t)
+        if cm:
+            num = cm.group(1)
+            if len(num) == 4:
+                # 4-digit compact is military 24-hour convention ("0800" = 8 AM,
+                # "1930" = 7:30 PM). Always unambiguous if valid.
+                digit_hour = int(num[:2])
+                digit_minute = int(num[2:])
+                if _valid(digit_hour, digit_minute):
+                    return _result(
+                        f"{digit_hour:02d}:{digit_minute:02d}",
+                        ambiguous=False, confidence="high",
+                        source="24hour",
+                        reason=f"compact 24-hour {num} → {digit_hour:02d}:{digit_minute:02d}",
+                    )
+            elif len(num) == 3:
+                # 3-digit compact is H:MM ("130" = 1:30, "930" = 9:30).
+                # Falls through to bare-digit rules below.
+                digit_hour = int(num[:1])
+                digit_minute = int(num[1:])
+
+    # --- 5. If qualifier present + digit present → apply qualifier. ---
+    if digit_hour is not None and qualifier:
+        shifted = _apply_qualifier(digit_hour, qualifier)
+        if _valid(shifted, digit_minute):
+            return _result(
+                f"{shifted:02d}:{digit_minute:02d}",
+                ambiguous=False, confidence="high",
+                source="hindi_period",
+                reason=f"qualifier={qualifier!r} + bare hour {digit_hour} → {shifted:02d}:{digit_minute:02d}",
+            )
+
+    # --- 6a. No digit: try meal-linked phrases first (more specific). ---
+    if digit_hour is None:
+        for phrase, hhmm in _MEAL_PHRASE_TIMES:
+            if phrase in t:
+                return _result(hhmm, ambiguous=False, confidence="high",
+                               source="meal_phrase", reason=f"'{phrase}' → {hhmm}")
+
+    # --- 6b. Standalone period word (no digit) — "morning", "raat", "bedtime". ---
+    if digit_hour is None:
+        for word, hhmm in _PERIOD_WORD_TIMES.items():
+            if word in t:
+                return _result(hhmm, ambiguous=False, confidence="high",
+                               source="period_word", reason=f"'{word}' → {hhmm}")
+        return _result(None, ambiguous=False, confidence="none",
+                       source="unparseable",
+                       reason=f"no digit or period word in {raw!r}")
+
+    # --- 7. Bare digit with no qualifier — apply the 1–5 / 6–11 / 12 rule. ---
+    if not _valid(digit_hour, digit_minute):
+        return _result(None, ambiguous=False, confidence="none",
+                       source="unparseable",
+                       reason=f"invalid bare hour {digit_hour} in {raw!r}")
+
+    if digit_hour == 12:
+        # 12:xx with no AM/PM → NOON for medicine context. Never midnight.
+        return _result(
+            f"12:{digit_minute:02d}",
+            ambiguous=False, confidence="high",
+            source="bare_noon",
+            reason=f"bare 12 → 12:{digit_minute:02d} (noon)",
+        )
+
+    if 1 <= digit_hour <= 5:
+        # Indian medicine-timing default: post-lunch / pre-dinner window.
+        shifted = digit_hour + 12
+        return _result(
+            f"{shifted:02d}:{digit_minute:02d}",
+            ambiguous=False, confidence="high",
+            source="bare_hour_pm_default",
+            reason=(
+                f"bare {digit_hour} → {shifted:02d}:{digit_minute:02d} PM "
+                f"(post-lunch default; Indian medicine timing convention)"
+            ),
+        )
+
+    if 6 <= digit_hour <= 11:
+        # Genuine ambiguity — caller should hold row inactive (is_active=0)
+        # and ASK. We still return time_24h as the bare HH:MM (AM form) so
+        # the placeholder row has something to store; resolve_ambiguous_hour
+        # will update it to the correct half-day once the senior clarifies.
+        return _result(
+            f"{digit_hour:02d}:{digit_minute:02d}",
+            ambiguous=True, confidence="low",
+            source="bare_hour_ambiguous",
+            reason=(
+                f"bare {digit_hour} → ambiguous (could be {digit_hour:02d}:{digit_minute:02d} AM "
+                f"or {digit_hour + 12:02d}:{digit_minute:02d} PM)"
+            ),
+        )
+
+    # 0 or >23 fell through somewhere — unreachable, but return a safe default.
+    return _result(None, ambiguous=False, confidence="none",
+                   source="unparseable",
+                   reason=f"unreachable bare hour {digit_hour} in {raw!r}")
+
+
+# ---------------------------------------------------------------------------
+# Ambiguity-resolution parser — used by the batch ASK flow in pending_capture.
+# Given the original ambiguous hour + the senior's reply ("morning" / "night"
+# / "subah" / "PM"), return the resolved HH:MM.
+# ---------------------------------------------------------------------------
+
+_AM_REPLY_TOKENS = (
+    "morning", "am", "a.m.", "a m", "subah", "savere", "savera",
+    "breakfast time", "before lunch", "pehle",
+)
+_PM_REPLY_TOKENS = (
+    "night", "pm", "p.m.", "p m", "raat", "evening", "shaam",
+    "afternoon", "dopahar", "after lunch", "dinner",
+)
+
+
+def resolve_ambiguous_hour(
+    original_hour: int,
+    original_minute: int,
+    reply_text: str,
+) -> Optional[str]:
+    """
+    Caller passes the bare-hour digits that came back ambiguous, plus the
+    senior's clarification reply. Returns an HH:MM string or None if the
+    reply doesn't clearly pick morning vs. night.
+
+    Short tokens ("am", "pm", "a m", "p m") are matched with word boundaries
+    to prevent "am" from firing inside "shaam" / "naam".
+    """
+    if not (6 <= original_hour <= 11):
         return None
-    hour, minute, period = int(m.group(1)), int(m.group(2) or 0), m.group(3)
-    if period == "pm" and hour != 12:
-        hour += 12
-    elif period == "am" and hour == 12:
-        hour = 0
-    if not (0 <= hour <= 23 and 0 <= minute <= 59):
-        return None
-    return f"{hour:02d}:{minute:02d}"
+    rt = (reply_text or "").lower()
+    is_am = _word_or_substring_in(_AM_REPLY_TOKENS, rt)
+    is_pm = _word_or_substring_in(_PM_REPLY_TOKENS, rt)
+    if is_am and not is_pm:
+        return f"{original_hour:02d}:{original_minute:02d}"
+    if is_pm and not is_am:
+        return f"{original_hour + 12:02d}:{original_minute:02d}"
+    return None
 
 
 def _ist_now() -> datetime:
@@ -228,16 +604,77 @@ def add_reminder(
     Insert a medicine reminder. time_str can be anything readable
     ("8am", "morning", "21:00", "night", etc.).
 
-    Returns the new row id, or None if the time could not be parsed.
-    """
-    hhmm = _normalize_time(time_str)
-    if not hhmm:
-        logger.warning(
-            "REMINDER | unparseable time %r for %r (user_id=%s)",
-            time_str, medicine_name, user_id,
-        )
-        return None
+    Returns the new row id, or None if the time could not be parsed OR if
+    the time came back AMBIGUOUS. Ambiguous times are not silently stored —
+    the caller (seed_reminders_from_raw / pending_capture) is responsible
+    for collecting ambiguous rows and asking a follow-up.
 
+    Legacy callers that passed a string directly (and expect the row id)
+    still work for unambiguous inputs; they simply get None on ambiguity.
+    Use ``add_reminder_structured`` when you need the full parse result.
+    """
+    rid, _ = add_reminder_structured(user_id, medicine_name, time_str, frequency)
+    return rid
+
+
+def add_reminder_structured(
+    user_id: int,
+    medicine_name: str,
+    time_str: str,
+    frequency: str = "daily",
+) -> tuple[Optional[int], dict]:
+    """
+    Same as ``add_reminder`` but also returns the structured parse result.
+    Use from seed_reminders_from_raw / pending_capture so ambiguous rows
+    can be collected for a follow-up ASK.
+
+    Returns (row_id, parse_result). row_id is None if:
+      • time_str unparseable (parse_result['source'] == 'unparseable'), or
+      • time came back ambiguous (parse_result['ambiguous'] == True).
+
+    In the ambiguous case we DO insert a placeholder row with schedule_time
+    set to the bare hour in 'HH:MM' format AND is_active=0, so the caller
+    has an id to update once the senior clarifies. The placeholder stays
+    inactive until a valid HH:MM is written back via ``resolve_reminder_time``.
+    """
+    parse = _normalize_time(time_str)
+
+    # Unparseable — don't insert anything.
+    if parse["source"] == "unparseable":
+        logger.warning(
+            "REMINDER | unparseable time %r for %r (user_id=%s) | reason=%s",
+            time_str, medicine_name, user_id, parse["reason"],
+        )
+        return (None, parse)
+
+    # Ambiguous — insert an INACTIVE placeholder row with the bare hour
+    # stored in schedule_time. ``is_active=0`` guarantees the scheduler
+    # will NEVER fire it. The caller updates via resolve_reminder_time
+    # once the senior picks AM or PM.
+    if parse["ambiguous"]:
+        # Extract bare hour + minute from the reason (safer than re-parsing).
+        m = re.search(r"bare\s+(\d{1,2}).*?(\d{2}):(\d{2})\s*AM", parse["reason"])
+        hour_bare = int(m.group(1)) if m else 0
+        minute_bare = int(m.group(2)) if m else 0
+        placeholder_hhmm = f"{hour_bare:02d}:{minute_bare:02d}"
+        with get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO medicine_reminders
+                    (user_id, medicine_name, schedule_time, days_of_week, is_active)
+                VALUES (?, ?, ?, ?, 0)
+                """,
+                (user_id, medicine_name.strip().title(), placeholder_hhmm, frequency),
+            )
+            conn.commit()
+            rid = cursor.lastrowid
+        logger.info(
+            "REMINDER | ambiguous placeholder | user_id=%s | medicine=%r | bare=%s | id=%s",
+            user_id, medicine_name, placeholder_hhmm, rid,
+        )
+        return (rid, parse)
+
+    hhmm = parse["time_24h"]
     with get_connection() as conn:
         cursor = conn.execute(
             """
@@ -251,10 +688,53 @@ def add_reminder(
         rid = cursor.lastrowid
 
     logger.info(
-        "REMINDER | added | user_id=%s | medicine=%r | time=%s | id=%s",
-        user_id, medicine_name, hhmm, rid,
+        "REMINDER | added | user_id=%s | medicine=%r | time=%s | id=%s | source=%s",
+        user_id, medicine_name, hhmm, rid, parse["source"],
     )
-    return rid
+    return (rid, parse)
+
+
+def resolve_reminder_time(reminder_id: int, hhmm: str) -> bool:
+    """
+    Activate an ambiguous-placeholder reminder by writing the resolved HH:MM
+    and setting is_active=1. Returns True on success.
+    """
+    if not re.fullmatch(r"\d{2}:\d{2}", hhmm or ""):
+        return False
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE medicine_reminders
+            SET schedule_time = ?, is_active = 1
+            WHERE id = ?
+            """,
+            (hhmm, reminder_id),
+        )
+        conn.commit()
+    logger.info(
+        "REMINDER | resolved ambiguous reminder id=%s → %s",
+        reminder_id, hhmm,
+    )
+    return True
+
+
+def get_ambiguous_reminders(user_id: int) -> list:
+    """
+    Return all inactive-placeholder reminders for the user (waiting for the
+    senior to pick morning/night). Used by the batch-ASK follow-up in
+    pending_capture.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, medicine_name, schedule_time
+            FROM medicine_reminders
+            WHERE user_id = ? AND is_active = 0
+            ORDER BY id
+            """,
+            (user_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -548,7 +1028,7 @@ def _regex_parse_medicines(medicines_raw: str) -> list[tuple[str, str]]:
     return out
 
 
-def seed_reminders_from_raw(user_id: int, medicines_raw: str) -> int:
+def seed_reminders_from_raw(user_id: int, medicines_raw: str) -> dict:
     """
     Parse free-form medicine text from onboarding (stored in users.medicines_raw)
     and create rows in medicine_reminders.
@@ -557,29 +1037,67 @@ def seed_reminders_from_raw(user_id: int, medicines_raw: str) -> int:
     splits, shared times). Falls back to regex if DeepSeek fails or returns
     nothing.
 
-    Returns the number of reminders successfully created.
+    Returns a report dict:
+        {
+            "seeded_active": int,       # rows inserted with is_active=1
+            "seeded_ambiguous": list,   # [{id, medicine_name, raw_time, bare_hhmm}, ...]
+            "unparseable": list,        # [(medicine_name, raw_time), ...]
+            "pairs_total": int,
+        }
+
+    The caller (pending_capture or onboarding) is responsible for:
+      • If seeded_ambiguous is non-empty, send a follow-up asking "for
+        {meds} — morning or night?" and then call resolve_reminder_time()
+        for each id once the senior clarifies.
+      • If unparseable is non-empty, include it in the ack so the senior
+        knows which medicines weren't captured.
     """
+    report = {
+        "seeded_active": 0,
+        "seeded_ambiguous": [],
+        "unparseable": [],
+        "pairs_total": 0,
+    }
+
     if not medicines_raw or medicines_raw.strip().lower() in (
         "no", "none", "nahi", "nil", "no.", "skip"
     ):
-        return 0
+        return report
 
     pairs = _deepseek_parse_medicines(medicines_raw)
     if not pairs:
         logger.info("REMINDER | falling back to regex parser for user_id=%s", user_id)
         pairs = _regex_parse_medicines(medicines_raw)
+    report["pairs_total"] = len(pairs)
 
-    count = 0
     for med_name, time_str in pairs:
-        rid = add_reminder(user_id, med_name, time_str)
-        if rid:
-            count += 1
+        rid, parse = add_reminder_structured(user_id, med_name, time_str)
+        if rid is None:
+            # Unparseable — add_reminder_structured already logged a warning.
+            report["unparseable"].append((med_name, time_str))
+            continue
+        if parse["ambiguous"]:
+            # Placeholder row inserted (is_active=0). Surface for ASK flow.
+            m = re.search(r"(\d{2}):(\d{2})\s*AM", parse["reason"])
+            bare = f"{m.group(1)}:{m.group(2)}" if m else "??:??"
+            report["seeded_ambiguous"].append({
+                "id":            rid,
+                "medicine_name": med_name.title(),
+                "raw_time":      time_str,
+                "bare_hhmm":     bare,
+            })
+        else:
+            report["seeded_active"] += 1
 
     logger.info(
-        "REMINDER | seeded %d reminders for user_id=%s | pairs=%s",
-        count, user_id, pairs,
+        "REMINDER | seeded user_id=%s | active=%d | ambiguous=%d | unparseable=%d | pairs=%s",
+        user_id,
+        report["seeded_active"],
+        len(report["seeded_ambiguous"]),
+        len(report["unparseable"]),
+        pairs,
     )
-    return count
+    return report
 
 
 def _seed_pending_users() -> None:

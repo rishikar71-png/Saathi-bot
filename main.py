@@ -1036,7 +1036,7 @@ async def _run_pipeline(
             user_row["awaiting_pending_capture"]
             if "awaiting_pending_capture" in user_row.keys() else None
         )
-        if _awaiting in ("grandkids", "medicines"):
+        if _awaiting in ("grandkids", "medicines", "medicines_clarify"):
             from pending_capture import capture_response
             try:
                 captured, ack = capture_response(user_id, _awaiting, text)

@@ -289,9 +289,6 @@ def capture_response(
         return (True, ack)
 
     if kind == "medicines":
-        # Minimal parsing — save raw text + let seed_reminders_from_raw parse.
-        # If seeding fails (parse error downstream), medicines_raw is still
-        # stored so the child or a later pass can fix it.
         # Strip leading affirmations so "yes. metformin 8am" doesn't confuse
         # downstream parsers.
         text_stripped = _strip_leading_affirmation(text).strip()
@@ -301,30 +298,219 @@ def capture_response(
                 "Could you share the names + times? For example: "
                 "'metformin 8am and 8pm, atorvastatin at night'.",
             )
+
+        # Save raw text and clear pending flags; schedule_reminders will
+        # re-read this if anything fails downstream.
         update_user_fields(
             user_id,
             medicines_raw=text_stripped,
             pending_medicines=0,
             awaiting_pending_capture=None,
         )
-        # Try to seed reminders immediately so the senior starts getting them.
-        # Failure is non-fatal — medicines_raw is stored and can be reparsed.
+
+        # Seed reminders. Returns a report with seeded_active / seeded_ambiguous
+        # / unparseable. Ambiguous rows get inserted as INACTIVE placeholders;
+        # we must ASK the senior morning-or-night before the scheduler fires.
+        report = {
+            "seeded_active": 0,
+            "seeded_ambiguous": [],
+            "unparseable": [],
+            "pairs_total": 0,
+        }
         try:
             from reminders import seed_reminders_from_raw
-            seed_reminders_from_raw(user_id, text_stripped)
+            report = seed_reminders_from_raw(user_id, text_stripped)
         except Exception as seed_err:
             logger.warning(
                 "PENDING_CAPTURE | user_id=%s | seed_reminders_from_raw failed: %s",
                 user_id, seed_err,
             )
+
         logger.info(
-            "PENDING_CAPTURE | user_id=%s | kind=medicines | captured (len=%d)",
+            "PENDING_CAPTURE | user_id=%s | kind=medicines | captured (len=%d) | "
+            "active=%d ambiguous=%d unparseable=%d",
             user_id, len(text_stripped),
-        )
-        return (
-            True,
-            "Thank you — I've noted them down. I'll remind you at the right "
-            "times. 🙏",
+            report["seeded_active"],
+            len(report["seeded_ambiguous"]),
+            len(report["unparseable"]),
         )
 
+        ambiguous = report["seeded_ambiguous"]
+        if ambiguous:
+            # Move the senior into the clarify sub-state. The next inbound
+            # message is routed back here with kind='medicines_clarify'.
+            update_user_fields(user_id, awaiting_pending_capture="medicines_clarify")
+            return (True, _build_ambiguity_ask(ambiguous))
+
+        # No ambiguous rows — send the standard warm ack.
+        ack = "Thank you — I've noted them down. I'll remind you at the right times. 🙏"
+        if report["unparseable"]:
+            # Keep it soft — don't list all of them; surface just the count.
+            ack += (
+                f"\n\n(I couldn't parse a time for "
+                f"{len(report['unparseable'])} of them — your family can add those later.)"
+            )
+        return (True, ack)
+
+    if kind == "medicines_clarify":
+        # Senior is replying to our "for X and Y — morning or night?" prompt.
+        return _handle_ambiguity_reply(user_id, text)
+
     raise ValueError(f"Unknown kind: {kind!r}")
+
+
+# ---------------------------------------------------------------------------
+# Batch-ASK flow for ambiguous medicine times (23 Apr 2026)
+# ---------------------------------------------------------------------------
+
+def _build_ambiguity_ask(ambiguous: list[dict]) -> str:
+    """
+    Build a plain, non-clinical follow-up asking the senior to pick morning
+    vs. night for each ambiguous medicine. Groups medicines that share the
+    same bare hour so we don't ask twice about the same time.
+    """
+    # Group by bare hour.
+    by_hour: dict[str, list[str]] = {}
+    for row in ambiguous:
+        by_hour.setdefault(row["bare_hhmm"], []).append(row["medicine_name"])
+
+    # One-liner per hour bucket.
+    lines = []
+    for bare_hhmm, meds in by_hour.items():
+        h = int(bare_hhmm.split(":")[0])
+        # Humanise ("9" not "09").
+        hour_plain = str(h)
+        if len(meds) == 1:
+            lines.append(
+                f"For *{meds[0]}* at {hour_plain}:00 — is that morning or night?"
+            )
+        else:
+            meds_text = ", ".join(meds[:-1]) + f" and {meds[-1]}"
+            lines.append(
+                f"For *{meds_text}* at {hour_plain}:00 — morning or night?"
+            )
+
+    header = (
+        "Thank you — I've noted those down. One small question so I don't "
+        "send a reminder at the wrong hour:"
+    )
+    footer = (
+        "Just reply with \"morning\" or \"night\" for each. You can say "
+        "\"all morning\" or \"all night\" if the same answer covers them all."
+    )
+    return f"{header}\n\n" + "\n".join(lines) + f"\n\n{footer}"
+
+
+def _handle_ambiguity_reply(user_id: int, reply_text: str) -> Tuple[bool, str]:
+    """
+    Parse the senior's reply to an ambiguity-ASK. Two cases:
+      • Global answer ("all morning" / "all night") — applies to every
+        pending ambiguous reminder.
+      • Per-medicine answer — we do a best-effort scan: split the reply,
+        match each fragment against a known medicine name in the pending
+        set, and apply the morning/night token in that fragment.
+
+    In either case, any reminder we couldn't resolve stays inactive and
+    its placeholder row is dropped. We prefer NOT firing a reminder at
+    the wrong time over guessing.
+    """
+    from database import update_user_fields
+    from reminders import (
+        get_ambiguous_reminders, resolve_reminder_time, resolve_ambiguous_hour,
+    )
+
+    pending = get_ambiguous_reminders(user_id)
+    if not pending:
+        # Nothing to resolve — clear the awaiting flag and fall through.
+        update_user_fields(user_id, awaiting_pending_capture=None)
+        return (False, "Thank you — I've noted that.")
+
+    rt = (reply_text or "").lower().strip()
+    # Global-answer detection.
+    global_am = any(p in rt for p in (
+        "all morning", "all subah", "all am",
+        "everything morning", "sab morning", "sab subah",
+    ))
+    global_pm = any(p in rt for p in (
+        "all night", "all raat", "all pm", "all evening",
+        "everything night", "sab raat", "sab night",
+    ))
+
+    resolved: list[str] = []
+    unresolved: list[str] = []
+
+    for row in pending:
+        rid = row["id"]
+        med = (row["medicine_name"] or "").strip()
+        bare = row["schedule_time"] or "00:00"
+        try:
+            bh, bm = int(bare.split(":")[0]), int(bare.split(":")[1])
+        except Exception:
+            bh, bm = 0, 0
+
+        picked: Optional[str] = None
+        if global_am:
+            picked = f"{bh:02d}:{bm:02d}"
+        elif global_pm:
+            picked = f"{bh + 12:02d}:{bm:02d}" if bh < 12 else f"{bh:02d}:{bm:02d}"
+        else:
+            # Per-medicine scan — find the fragment mentioning this medicine.
+            med_lc = med.lower()
+            # Split on common separators.
+            fragments = re.split(r"[,;\.\n]| and |\baur\b", rt, flags=re.IGNORECASE)
+            for frag in fragments:
+                if med_lc in frag:
+                    picked = resolve_ambiguous_hour(bh, bm, frag)
+                    if picked:
+                        break
+            # If no fragment matched by name, try the whole reply — if it
+            # clearly picks one side AND there's only one pending med, honour it.
+            if not picked and len(pending) == 1:
+                picked = resolve_ambiguous_hour(bh, bm, rt)
+
+        if picked and resolve_reminder_time(rid, picked):
+            resolved.append(f"{med} at {_humanise(picked)}")
+        else:
+            unresolved.append(med)
+
+    # Clear awaiting flag — we've processed this turn. If anything is still
+    # unresolved, the placeholder rows remain inactive and the senior can
+    # correct via normal conversation (Rule 13 routes it back to family).
+    update_user_fields(user_id, awaiting_pending_capture=None)
+
+    logger.info(
+        "PENDING_CAPTURE | user_id=%s | ambiguity resolved=%d unresolved=%d",
+        user_id, len(resolved), len(unresolved),
+    )
+
+    parts = []
+    if resolved:
+        parts.append(
+            "Got it — "
+            + ", ".join(resolved)
+            + ". I'll remind you then. 🙏"
+        )
+    if unresolved:
+        parts.append(
+            "I wasn't sure about: "
+            + ", ".join(unresolved)
+            + ". Your family can fix those any time."
+        )
+    if not parts:
+        parts.append("Thank you. 🙏")
+
+    return (True, " ".join(parts))
+
+
+def _humanise(hhmm: str) -> str:
+    """'13:30' → '1:30 PM'. Used in ack messages so the senior reads the
+    time the way they expect."""
+    try:
+        h, m = int(hhmm.split(":")[0]), int(hhmm.split(":")[1])
+    except Exception:
+        return hhmm
+    suffix = "AM" if h < 12 else "PM"
+    display_h = h % 12 or 12
+    if m == 0:
+        return f"{display_h} {suffix}"
+    return f"{display_h}:{m:02d} {suffix}"
