@@ -652,11 +652,16 @@ def add_reminder_structured(
     # will NEVER fire it. The caller updates via resolve_reminder_time
     # once the senior picks AM or PM.
     if parse["ambiguous"]:
-        # Extract bare hour + minute from the reason (safer than re-parsing).
-        m = re.search(r"bare\s+(\d{1,2}).*?(\d{2}):(\d{2})\s*AM", parse["reason"])
-        hour_bare = int(m.group(1)) if m else 0
-        minute_bare = int(m.group(2)) if m else 0
-        placeholder_hhmm = f"{hour_bare:02d}:{minute_bare:02d}"
+        # _normalize_time already exposes the bare AM-form HH:MM in
+        # time_24h (see its docstring). Use that directly — parsing the
+        # human-readable reason string is fragile.
+        #
+        # Bug repro before fix (29 Apr 2026): bare "9" → reason
+        # "bare 9 → ambiguous (could be 09:00 AM or 21:00 PM)". The old
+        # regex captured group(2)="09" (the AM-time HH) and used it as
+        # minute_bare → placeholder stored as "09:09". The senior would
+        # have ended up with reminders firing six minutes past the hour.
+        placeholder_hhmm = parse["time_24h"] or "00:00"
         with get_connection() as conn:
             cursor = conn.execute(
                 """
@@ -1078,8 +1083,8 @@ def seed_reminders_from_raw(user_id: int, medicines_raw: str) -> dict:
             continue
         if parse["ambiguous"]:
             # Placeholder row inserted (is_active=0). Surface for ASK flow.
-            m = re.search(r"(\d{2}):(\d{2})\s*AM", parse["reason"])
-            bare = f"{m.group(1)}:{m.group(2)}" if m else "??:??"
+            # Use structured time_24h (bare AM form) instead of regex on reason.
+            bare = parse["time_24h"] or "??:??"
             report["seeded_ambiguous"].append({
                 "id":            rid,
                 "medicine_name": med_name.title(),
