@@ -19,11 +19,29 @@ from openai import OpenAI
 logger = logging.getLogger(__name__)
 
 # Whisper language codes for the languages Saathi supports.
-# Providing a hint improves accuracy; falls back to auto-detect for anything unknown.
+#
+# Bug F fix (30 Apr 2026): hindi/hinglish/english were mapped to a hint
+# code, which made Whisper TRANSLATE Hindi voice notes to English when
+# the senior's stored language was 'english'. A senior set up by family
+# as English-speaker but voice-noting in Hindi got silent translation —
+# DeepSeek then saw English text, replied in English, TTS spoke English,
+# and the senior felt unheard.
+#
+# Solution: leave hindi / hinglish / english UNMAPPED so Whisper
+# auto-detects from the audio itself. The downstream script-detection
+# in main.py + the per-turn language nudge in deepseek.py correctly
+# handle whatever script Whisper returns. Whisper-1 auto-detection is
+# excellent on Hindi, Hinglish, and Indian-accented English.
+#
+# Regional language hints kept — Whisper auto-detect is less reliable
+# for ta/te/bn/mr/gu/pa/kn/ml from low-quality audio, and the senior's
+# stored language is a strong prior for these.
 _LANGUAGE_MAP = {
-    "hindi":     "hi",
-    "hinglish":  "hi",   # Hindi is the closest supported code for Hinglish
-    "english":   "en",
+    # Common three: NO hint — let Whisper auto-detect from audio.
+    # "hindi":   None,
+    # "hinglish":None,
+    # "english": None,
+    # Regional languages: stored profile is a useful prior.
     "tamil":     "ta",
     "telugu":    "te",
     "bengali":   "bn",
