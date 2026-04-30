@@ -30,6 +30,7 @@ Design decisions:
 
 from __future__ import annotations
 
+import re
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -72,16 +73,35 @@ EMERGENCY_KEYWORDS_SAFE = [
 ]
 
 
+# Bug M (30 Apr 2026): per-phrase regex builder. The previous substring
+# match dispatched a family emergency alert on "I fell asleep last night".
+# \b alone is not enough either — "I fell asleep" has a word boundary
+# after "fell". Phrases containing "fell"/"fallen"/"gir gaya" need a
+# negative lookahead to reject benign continuations.
+_BENIGN_FELL_CONTINUATIONS = r"(?:asleep|in\s+love|for\b|behind\b|short\b|silent\b|ill\b|sick\b)"
+
+def _build_emergency_regex(phrase: str):
+    """Per-phrase regex builder. Phrases containing fall-language get a
+    negative lookahead; others use plain \b boundaries."""
+    base = r"\b" + re.escape(phrase) + r"\b"
+    if "fell" in phrase or "fallen" in phrase or "gir gaya" in phrase or "gir gayi" in phrase:
+        return re.compile(base + r"(?!\s+" + _BENIGN_FELL_CONTINUATIONS + r")", re.IGNORECASE)
+    return re.compile(base, re.IGNORECASE)
+
+_EMERGENCY_RE_SAFE = [_build_emergency_regex(p) for p in EMERGENCY_KEYWORDS_SAFE]
+
+
 def check_emergency_keywords(text: str) -> bool:
     """
     Return True if the message looks like a PHYSICAL emergency.
 
-    Uses case-insensitive substring matching against EMERGENCY_KEYWORDS_SAFE.
+    Uses word-boundary regex matching against EMERGENCY_KEYWORDS_SAFE
+    (Bug M fix, 30 Apr 2026 — was substring, "i fell" → "i fell asleep").
     Mental health crisis phrases are NOT here — those go to Protocol 1 only.
     "help" and "help me" are intentionally excluded — far too common in non-emergency use.
     """
     t = text.strip().lower()
-    return any(phrase in t for phrase in EMERGENCY_KEYWORDS_SAFE)
+    return any(rx.search(t) for rx in _EMERGENCY_RE_SAFE)
 
 
 # ---------------------------------------------------------------------------

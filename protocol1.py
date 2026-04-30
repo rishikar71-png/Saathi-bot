@@ -110,8 +110,8 @@ _ESCALATION_PATTERNS = [
     r"soch raha.{0,15}khatam",   # "soch raha hun khatam kar" — thinking of ending things
     r"khatam karne wala",
     r"khatam karne wali",
-    r"abhi mar",
-    r"aaj mar",
+    r"abhi mar\b",   # Bug N: \b prevents "abhi market jaa raha hun" collision
+    r"aaj mar\b",    # Bug N: same — "aaj market gaya tha"
     r"neend ki goli",
     r"dawa kha lunga",
     r"dawa kha lungi",
@@ -130,7 +130,7 @@ _ESCALATION_PATTERNS = [
     r"tonight i (will|am going to)",
     r"say goodbye",
     r"final (message|note|goodbye)",
-    r"jump",
+    r"jump (from|off|into)",   # Bug N: bare \bjump\b matched "jump for joy"; require risk-language formulation
     r"hang myself",
 ]
 

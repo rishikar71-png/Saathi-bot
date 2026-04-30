@@ -251,8 +251,18 @@ def check_protocol3(user_id: int, text: str, language: str = "english") -> Optio
     """
     text_lower = text.lower()
 
-    # Flat keyword check — broad first pass
-    matched_keywords = [kw for kw in FINANCIAL_KEYWORDS if kw in text_lower]
+    # Flat keyword check — broad first pass.
+    # Bug P (30 Apr 2026): substring match collided "lend" with "calendar"/
+    # "splendid"/"blender". Use word-boundary regex.
+    _financial_re = [
+        re.compile(r"\b" + re.escape(kw) + r"\b", re.IGNORECASE)
+        for kw in FINANCIAL_KEYWORDS
+    ]
+    matched_keywords = [
+        FINANCIAL_KEYWORDS[i]
+        for i, rx in enumerate(_financial_re)
+        if rx.search(text_lower)
+    ]
     if matched_keywords:
         logger.warning(
             "PROTOCOL3 | user_id=%s | bucket=keyword_match | keywords=%s | language=%s",

@@ -26,6 +26,7 @@ Integration checklist (all wired below in main.py calls):
 
 from __future__ import annotations
 
+import re
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -54,10 +55,23 @@ EULOGY_YES_SIGNALS = [
 ]
 
 
+# Bug O (30 Apr 2026): "died" matched "studied" via substring. A family
+# member's casual "I studied your suggestion" could flip the senior's
+# account_status to 'deceased'. Compile as word-boundary regex.
+_DEATH_NOTIFICATION_RE = [
+    re.compile(r"\b" + re.escape(kw) + r"\b", re.IGNORECASE)
+    for kw in DEATH_NOTIFICATION_KEYWORDS
+]
+
+
 def is_death_notification(message_text: str) -> bool:
-    """Return True if the message contains a death notification keyword."""
+    """Return True if the message contains a death notification keyword.
+
+    Bug O fix: word-boundary regex (was substring; "died" matched
+    "studied").
+    """
     text_lower = message_text.lower()
-    return any(kw in text_lower for kw in DEATH_NOTIFICATION_KEYWORDS)
+    return any(rx.search(text_lower) for rx in _DEATH_NOTIFICATION_RE)
 
 
 def find_senior_for_family_member(sender_telegram_id: int) -> int | None:
@@ -172,7 +186,12 @@ EULOGY_OFFER_MESSAGE = (
 def is_eulogy_yes(message_text: str) -> bool:
     """Return True if the family contact is saying yes to the eulogy offer."""
     t = message_text.lower().strip()
-    return any(s in t for s in EULOGY_YES_SIGNALS)
+    # Bug P (30 Apr 2026): substring "yes"/"ha"/"ok" matched "yesterday"/
+    # "happy"/"stocks". Use word-boundary regex.
+    return any(
+        re.search(r"\b" + re.escape(s) + r"\b", t)
+        for s in EULOGY_YES_SIGNALS
+    )
 
 
 def build_eulogy_prompt(senior_user_id: int) -> str:

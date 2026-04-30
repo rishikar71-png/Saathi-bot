@@ -9,6 +9,7 @@ Reframe the relationship gently. Do not shame or lecture.
 Leave the door open for companionship.
 """
 
+import re
 import logging
 from typing import Optional
 
@@ -52,7 +53,13 @@ _TRIGGERS = [
     "intimate",
     "naughty",
     # English — paid/transactional services
-    "escort",
+    # Bug P: bare "escort" was too ambiguous (police escort, VIP escort,
+    # security escort, escorted by). Replaced with specific paid-service
+    # phrases.
+    "escort service",
+    "escort agency",
+    "find me an escort",
+    "hire an escort",
     "call girl",
     "sex worker",
     "red light",
@@ -83,7 +90,10 @@ _TRIGGERS = [
 ]
 
 _SERVICES_TRIGGERS = {
-    "escort",
+    "escort service",
+    "escort agency",
+    "find me an escort",
+    "hire an escort",
     "call girl",
     "sex worker",
     "red light",
@@ -121,7 +131,12 @@ def check_protocol4(user_id: int, text: str, language: str = "english") -> Optio
     or None if the message is clear.
     """
     t = text.lower().strip()
-    matched = [trigger for trigger in _TRIGGERS if trigger in t]
+    # Bug P (30 Apr 2026): substring match made bare keywords leak. Word-
+    # boundary regex for each trigger.
+    matched = [
+        trigger for trigger in _TRIGGERS
+        if re.search(r"\b" + re.escape(trigger) + r"\b", t)
+    ]
     if not matched:
         return None
 
