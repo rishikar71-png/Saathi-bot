@@ -1948,7 +1948,7 @@ async def _run_pipeline(
     )
     _tts_sent_at = time.monotonic()
     _TTS_STALE_SECONDS = 40
-    _TTS_MAX_CHARS = 180  # skip TTS for long info-dump responses
+    _TTS_MAX_CHARS = 400  # skip TTS only for genuine info-dumps; covers most natural replies
 
     async def _send_tts_bg(_uid: int, _reply: str, _lang: str, _upd, _sent_at: float) -> None:
         try:

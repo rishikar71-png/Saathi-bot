@@ -608,6 +608,7 @@ async def _send_ritual(bot, row, ritual_type: str) -> None:
     user_context = {
         "user_id":           user_id,
         "name":              row["name"],
+        "preferred_salutation": row["preferred_salutation"],
         "bot_name":          row["bot_name"],
         "persona":           None,
         "language":          language,
