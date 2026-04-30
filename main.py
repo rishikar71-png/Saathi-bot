@@ -2379,6 +2379,138 @@ async def setcity_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def profiledump_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Admin-only command to dump key profile fields for a user.
+    Useful for diagnosing pipeline issues that depend on stored profile values
+    (e.g. news_interests biasing RSS keyword filter, language driving TTS voice,
+    persona shaping system prompt).
+
+    Usage: /profiledump [telegram_id]
+    Defaults to the admin's own telegram_id when no arg is given.
+    """
+    if update.effective_user.id != 8711370451:
+        return
+    args = context.args or []
+    if args:
+        try:
+            target_telegram_id = int(args[0])
+        except ValueError:
+            await update.message.reply_text("Invalid telegram_id — must be a number.")
+            return
+    else:
+        target_telegram_id = update.effective_user.id
+
+    from database import get_or_create_user, get_family_members
+    try:
+        row = get_or_create_user(target_telegram_id)
+    except Exception as _e:
+        await update.message.reply_text(f"DB read failed: {_e}")
+        return
+
+    if row is None:
+        await update.message.reply_text(f"No user row for `{target_telegram_id}`.", parse_mode="Markdown")
+        return
+
+    # Pull the fields most likely to matter for diagnostics. Keep the list
+    # short — readability matters more than completeness in chat.
+    fields_of_interest = [
+        "name", "preferred_salutation", "bot_name", "persona", "language",
+        "city", "religion", "favourite_topics", "news_interests",
+        "music_preferences", "spouse_name", "wake_time", "sleep_time",
+        "morning_checkin_time", "afternoon_checkin_time", "evening_checkin_time",
+        "heartbeat_consent", "escalation_opted_in",
+        "onboarding_complete", "onboarding_step", "setup_mode", "handoff_step",
+    ]
+
+    lines = [f"*Profile dump for `{target_telegram_id}`*\n"]
+    for field in fields_of_interest:
+        try:
+            value = row[field]
+        except (KeyError, IndexError):
+            value = "<missing column>"
+        lines.append(f"`{field}`: `{value}`")
+
+    # Also show family members — the FAMILY block diagnostic
+    try:
+        members = get_family_members(target_telegram_id) or []
+        if members:
+            lines.append("\n*Family members:*")
+            for m in members:
+                lines.append(
+                    f"  • `{m.get('relationship', '?')}`: "
+                    f"`{m.get('name', '?')}` "
+                    f"({m.get('phone') or 'no phone'})"
+                )
+        else:
+            lines.append("\n*Family members:* (none)")
+    except Exception as _fm_err:
+        lines.append(f"\n*Family members:* read failed — {_fm_err}")
+
+    text = "\n".join(lines)
+    # Telegram message limit is 4096 chars; we're well under, but truncate if needed
+    if len(text) > 3800:
+        text = text[:3800] + "\n…(truncated)"
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def setpersona_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Admin-only command to switch a user's persona post-onboarding.
+    Useful for Module 19 persona-effect verification and any case where
+    the senior or family wants a different relationship style.
+
+    Usage: /setpersona <telegram_id> <persona>
+    Valid personas: friend, caring_child, grandchild, assistant
+    Example: /setpersona 123456789 grandchild
+    """
+    if update.effective_user.id != 8711370451:
+        return
+    args = context.args or []
+    if len(args) < 2:
+        await update.message.reply_text(
+            "Usage: /setpersona <telegram_id> <persona>\n"
+            "Valid: friend, caring_child, grandchild, assistant"
+        )
+        return
+    try:
+        target_telegram_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text("Invalid telegram_id — must be a number.")
+        return
+
+    raw_persona = args[1].strip().lower()
+    valid_personas = {"friend", "caring_child", "grandchild", "assistant"}
+    if raw_persona not in valid_personas:
+        await update.message.reply_text(
+            f"Invalid persona `{raw_persona}`.\n"
+            f"Valid: {', '.join(sorted(valid_personas))}",
+            parse_mode="Markdown",
+        )
+        return
+
+    from database import update_user_fields, get_or_create_user
+    try:
+        # Read previous persona before update so the admin reply confirms the
+        # before/after — useful for Module 19 verification logs.
+        previous_row = get_or_create_user(target_telegram_id)
+        previous_persona = (previous_row["persona"] if previous_row else None) or "friend"
+        update_user_fields(target_telegram_id, persona=raw_persona)
+    except Exception as _e:
+        await update.message.reply_text(f"DB update failed: {_e}")
+        return
+    finally:
+        _invalidate_user_cache(target_telegram_id)
+
+    await update.message.reply_text(
+        f"✅ Persona updated for `{target_telegram_id}`:\n"
+        f"  before: `{previous_persona}`\n"
+        f"  after: `{raw_persona}`\n"
+        f"Cache invalidated. Next message uses the new persona.",
+        parse_mode="Markdown",
+    )
+
+
 async def testapis_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Dev-only command: tests weather/news/cricket APIs live and reports results."""
     if update.effective_user.id != 8711370451:
@@ -2720,6 +2852,8 @@ def main() -> None:
     app.add_handler(CommandHandler("join", handle_join))
     app.add_handler(CommandHandler("adminreset", adminreset_command))
     app.add_handler(CommandHandler("setcity", setcity_command))
+    app.add_handler(CommandHandler("setpersona", setpersona_command))
+    app.add_handler(CommandHandler("profiledump", profiledump_command))
     app.add_handler(CommandHandler("testapis", testapis_command))
     app.add_handler(CallbackQueryHandler(handle_help_callback, pattern="^help_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
