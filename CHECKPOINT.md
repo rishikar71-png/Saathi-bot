@@ -1,4 +1,4 @@
-# CHECKPOINT — Resume after 29 Apr 2026 evening session
+# CHECKPOINT — Resume after 30 Apr 2026 voice + persona session
 
 **Read order for next session:** this file → CLAUDE.md → progress.md.
 
@@ -6,91 +6,135 @@
 
 ## State at session close
 
-**HEAD on `origin/main`:** `aa8a2a9` — Bugs A, B, E shipped (TTS language threading + per-turn language nudge + cricket data freshness + cricket RSS news). Sits on top of `44e453c` (CHECKPOINT update from afternoon run) and the earlier 29 Apr pilot-blocker fixes.
+**HEAD on `origin/main`:** assumes `d9d9fd2` once Rishi applies this final
+session-close patch. The chain pushed today (30 Apr):
 
-**Working tree:** has 5 untracked `*.patch` files (`saathi_bug_b_29apr.patch`, `saathi_bugs_abe_29apr.patch`, `saathi_bundle_29apr.patch`, `saathi_followup_29apr.patch`, `session_23apr_bundle.patch`). Safe to `rm` — all are leftovers from `git am` rounds whose commits are now in history. Next session should clean up.
-
-**Bugs A, B, E are deployed but NOT YET LIVE-VERIFIED.** They were unit-tested in the patch session (14/14 V4 tests pass) but Telegram-side verification is the first task of the next session.
-
----
-
-## Module 19 capability test results — 29 Apr evening run (pre-fix)
-
-This was the test run that surfaced Bugs A, B, E. Recording for the record:
-
-| # | Test | Result | Notes |
-|---|---|---|---|
-| 1 | Music — specific song "kabhi kabhi mere dil mein" | ✅ | Real Mukesh original |
-| 2 | Music — genre "old hindi songs" | ✅ | Old is Gold compilation |
-| 3 | Music — artist "kishore kumar" | ✅ | Kishore Hits compilation |
-| 4 | Music — vague "kuch acha sunao" → preference | ✅ | 90s Hindi (matches stored "old hindi") |
-| 5 | False positive guard "nobody listens to me anymore" | ✅ | Vulnerability handling fired, no YouTube |
-| 6 | India news "koi news hai aaj?" | ⚠️ | Surfaced Lewandowski/Juventus (transfer gossip from TOI sports section). Content-quality issue, not pilot-blocking. **Will be partly mitigated by Bug E Part 2** (cricket-intent queries now route to ESPNCricinfo/Cricbuzz instead of TOI sports) |
-| 7 | World news "any world news?" | ⚠️ | Real BBC/Reuters stories but one was "Japan zoo staffer dumped wife's body in incinerator" — slipped through `_IRRELEVANT_TOPIC_SIGNALS`. **Bug D — needs filter expansion. Deferred to next session.** |
-| 7b | Hindi follow-up "Trump ke baare mein kuch?" | ✅ | Language switch + memory recall |
-| 8 | Cricket "aaj cricket mein kya ho raha hai?" | ❌ | Bot said "no match today" but Match 41 (MI vs SRH 19:30) existed. **Bug E — root cause: CricAPI `/currentMatches` doesn't include scheduled-future matches. Fixed in `aa8a2a9`.** |
-| 9 | Weather "aaj ka weather kaisa hai?" | ✅ | Mumbai 33°C with hazy weather, real OWM data |
-| 10 | Hindi voice "aaj mood thoda heavy hai" | ✅ | Whisper transcribed; vulnerability handling fired (2 sentences, no probing) |
-| 11 | English voice "tell me about today's weather" | ❌ | Reply came back in Hinglish despite English query. **Bug B — DeepSeek autoregressing from session history when language switches back. Fixed in `aa8a2a9` (per-turn language nudge).** |
-| 12 | TTS voice quality | ❌ | Every TTS call used `en-IN-Neural2-D` even for Hindi/Hinglish replies. **Bug A — TTS path read stale `user_row['language']` instead of per-message effective language. Fixed in `aa8a2a9` (1-line change).** |
-
-**Score:** 8 PASS, 4 FAIL (Bugs A, B, D, E surfaced). 3 fixed in `aa8a2a9`. Bug D deferred.
-
----
-
-## NEXT SESSION FIRST TASK — Verify Bugs A, B, E live
-
-After Railway deploy of `aa8a2a9` completes, run these 4 tests in order:
-
-| # | Test | Expected post-fix | Log signal |
-|---|---|---|---|
-| A1 | Send any Hindi voice note (e.g. "aaj theek hun") | TTS uses Hindi voice | `TTS \| lang=hi-IN \| voice=hi-IN-Neural2-A` |
-| B1 | After 3-4 Hinglish exchanges, send clean English: "tell me about today's weather" | Reply in English, not Hinglish | Reply text in English; LANG override line absent or `effective=english` |
-| E1 | "aaj cricket mein kya ho raha hai?" | Bot mentions MI vs SRH 19:30 tonight (or whatever match is scheduled) | `cricket merged matches (40+ total)`; `cricket fetched \| TODAY (upcoming) — Mumbai Indians...` |
-| E2 | "any cricket news?" | Bot returns ESPNCricinfo / Cricbuzz / NDTV Sports headline | `cricket_news fetched via RSS \| keyword=...` |
-
-**Also run** the RSS URL verification curl loop before assuming `_RSS_FEEDS_CRICKET` URLs work:
-
-```bash
-for u in \
-  "https://www.espncricinfo.com/rss/content/story/feeds/0.xml" \
-  "https://static.espncricinfo.com/rss/livescores.xml" \
-  "https://www.cricbuzz.com/rss/cricket-features-rss" \
-  "https://www.cricbuzz.com/api/cricbuzz/rss/cricket" \
-  "https://feeds.feedburner.com/ndtvsports-cricket"; do
-  echo "==> $u"
-  curl -sS -o /dev/null -w "  http %{http_code}  bytes=%{size_download}\n" --max-time 5 "$u"
-done
+```
+d9d9fd2  Wire voice into greeting + identity intercept
+626bb67  Wire voice into Protocol 1/3/4 + fix persona in rituals
+8b77887  Fix Durga Ji ritual regression + raise TTS char ceiling
 ```
 
-Replace any non-200 entries with working URLs from feedspot.com or the publisher's RSS hub. NDTV Sports is the most-reliable backstop.
+`8b77887` and `626bb67` were verified live this session. `d9d9fd2` was
+generated last; this checkpoint commit is bundled into the same patch
+so Rishi applies one file.
 
 ---
 
-## Pilot-blocker tests (29 Apr afternoon — STILL ALL PASSING)
+## Verified live this session
 
-| # | Test | Status |
+| What | Verification | Source commit |
 |---|---|---|
-| 1 | Step 0 captures name + phone | ✅ |
-| 2 | "1.30" → 13:30 (bare 1–5 PM default) | ✅ |
-| 3 | Batch-ASK clarify for ambiguous medicines | ✅ |
-| 4 | "BP pill at shaam 7" → 19:00 (Hindi word-boundary) | ✅ |
-| 5 | "did you remind me today?" → factual (MEDICINE STATUS block) | ✅ |
-| 6 | "can you set a reminder for me?" → RULE 13 capability response | ✅ |
-
-All bonus passes (greeting salutation, FAMILY block names, unsupported-language gate, handoff collapse) still holding.
+| Bug A (TTS Hindi voice routing) | Code-trace: `LANG \| override: stored=english detected=hinglish effective=hinglish` log + tts.py `_VOICE_MAP['hinglish']`→`hi-IN-Neural2-A`. Voice test was invalidated by Whisper translation (Bug F below) — confirmed via text input. | `aa8a2a9` (yesterday) |
+| Bug B (per-turn language nudge) | Live: English voice query after Hinglish exchange → English reply (no autoregression bleed). | `aa8a2a9` |
+| Bug E2 (cricket news via RSS) | Live: BAN vs NZ T20I rain-off + Nahid Rana NOC headlines from RSS — real recent stories. | `aa8a2a9` |
+| Durga Ji → Ma fix | Live: morning briefing post-deploy reads "Good morning, Ma". rituals.py `user_context` was missing `preferred_salutation` → DeepSeek `address_lock` fell to `Durga Ji`. | `8b77887` |
+| Protocol 3 voice | Live: trigger "mere bete ne mujhse paise mange hain — kya karu?" delivered text + voice note. | `626bb67` |
 
 ---
 
-## After Bug A/B/E verification — Module 19 remaining tier-1 items
+## NOT yet verified live
 
-1. **Reminder firing live** — wait for BP pill at 19:00 IST. Verify text + bell + TTS voice; reply with 👍 to confirm ack.
-2. **Daily ritual firing live** — tomorrow morning 10:00 IST briefing; verify weather + news + cricket all wrap warmly.
-3. **Self-setup mode end-to-end** — `/adminreset`, pick "myself" path. Verify confusion-branch handling, 2-day pacing, day-2 emergency contact bridge. Deferred from earlier verification.
-4. **Family bridge** — `/familycode`, have wife send the bare code from her Telegram, verify confirmation prompt + auto-join + relay.
-5. **Hindi conversation quality at length** — 5+ Hindi turns, watch for English bleed.
+| Item | Why deferred | How to verify |
+|---|---|---|
+| Persona threading in rituals (`626bb67`) | Rishi's persona='friend' = default fallback, no observable difference. | Manual DB update: `UPDATE users SET persona='grandchild' WHERE user_id=8711370451;` then wait for next ritual — tone should shift to enthusiastic-curious. |
+| `_TTS_MAX_CHARS` raised 180→400 (`8b77887`) | No long reply triggered this session. | Send "tell me about Mumbai" or extended news roundup → reply ~250-350 chars → confirm voice fires (no `skipped (reply too long)` in logs). |
+| Protocol 1 voice (`626bb67`) | Crisis trigger phrases not safe to live-test casually. | Skip — code path identical to P3 which IS verified. |
+| Protocol 4 voice (`626bb67`) | Same caution. | Skip. |
+| Greeting voice (`d9d9fd2`) | Patch not yet applied at session close. | After deploy: send `hello` → "Good morning, Ma" text + voice note. |
+| Identity intercept voice (`d9d9fd2`) | Same. | After deploy: send `who are you?` → "Just someone to chat with — that's really all 🙏" text + voice. Bonus: `kya tum insaan ho?` → Hindi reply + Hindi voice. |
 
-After Tier-1: Module 20 pilot prep (5 test users, 20-user invite list, onboarding doc).
+---
+
+## Bugs surfaced this session
+
+### Bug E1 — REGRESSION on `aa8a2a9` cricket fix
+
+Test: "aaj cricket mein kya ho raha hai?"
+Expected: today's IPL match (e.g. MI vs SRH 19:30) or scripted "no match today".
+Actual: *"Aaj koi match live nahi chal raha hai, Ma. Ek match hai — Guyana Amazon Warriors vs Perth Scorchers — lekin woh 31 July ko hai, raat 11 baje."*
+
+Two filters that should have stopped this both failed:
+
+1. **Strict IST date filter** — should reject anything that isn't today.
+   Returned a match 3 months out.
+2. **India/IPL team keyword filter** — should reject anything not India
+   national or one of 10 IPL franchises. Guyana Amazon Warriors is CPL;
+   Perth Scorchers is BBL.
+
+Likely cause: the `aa8a2a9` change added a second CricAPI call to
+`/matches` (full schedule) and merged results — but the merge bypassed
+`_find_india_match`'s filter. Worse than pre-fix: pre-fix scripted
+"no match today" would have fired cleanly.
+
+**Action next session:** Read apis.py `_find_india_match` and the merge
+logic from `aa8a2a9`. Either (a) ensure both filters run on merged
+results, or (b) restrict `/matches` results to next-N-days only and to
+IPL/India team list pre-filter. Strict integration test required (V4) —
+the unit tests for `aa8a2a9` did not catch this.
+
+### Bug D — crime/horror filter leak in world news (DEFERRED FROM 29 APR)
+
+Today: world news returned "British influencer missing after Morocco
+trip, phone switched off for days" — not as graphic as 29 Apr's "Japan
+zoo staffer dumped wife's body in incinerator" but same category.
+
+**Action next session:** Expand `_IRRELEVANT_TOPIC_SIGNALS` in apis.py.
+Add: "missing after", "phone switched off", "feared abducted", "body in",
+"dumped body", "killed wife", "murdered", "incinerator", "dismembered".
+Or flip filter to allowlist.
+
+### Bug F (NEW) — Whisper translates Hindi voice to English text
+
+When user's stored language is `english`, whisper.py passes
+`lang_hint=en` and Whisper transcribes Hindi audio AS English text
+(silent translation, not a transcription error).
+
+Pilot-blocking: a senior whose family set them up as English speakers
+but who naturally voice-notes in Hindi will get this English-translation
+pipeline, lose Hindi TTS, and feel like the bot doesn't understand them.
+
+**Action next session:** Three options to evaluate —
+(a) drop the language hint and let Whisper auto-detect;
+(b) explicitly use `language='hi'` for Indian users by default and
+accept slightly worse English transcription;
+(c) skip the hint and inspect the result post-hoc.
+
+### Bug G (NEW) — Protocol 3 language reads stored profile, not per-message
+
+P3 trigger in Hinglish ("mere bete ne mujhse paise mange hain — kya
+karu?") returned the English response. `_get_protocol3_response(language)`
+reads `user_row["language"]="english"` from stored profile, ignoring
+per-message detected language.
+
+**Action next session:** Refactor `check_protocol3` to accept (and prefer)
+the per-message effective language. Same pattern as the deepseek
+per-turn language nudge from `aa8a2a9`.
+
+### Bug H (NEW) — transient memory retrieval warning
+
+`WARNING - DEEPSEEK | memory retrieval failed: cannot commit - no transaction is active`
+— single instance during 29 Apr test, didn't break the reply. Possible
+WAL/connection-pool race.
+
+**Action next session:** If recurs, dig into `memory.get_relevant_memories`
+for connection-pool issue. Low priority.
+
+---
+
+## Module 19 capability test progress
+
+**PASS:** music tests 1-5 (specific song / genre / artist / vague-fallback /
+false-positive guard); E2 (cricket news); test 9 (weather); test 10
+(Hindi voice vulnerability handling); test 11 (English voice after
+Hinglish); test 12 (TTS quality after Bug A fix).
+
+**FAIL:** E1 (cricket schedule regression); test 7 (world news filter — Bug D).
+
+**To run next session:** test 6 (India news quality), self-setup mode
+end-to-end, family bridge bare-code, Hindi conversation 5+ turns,
+`_TTS_MAX_CHARS=400` verification with longer replies, persona effect
+verification (manual DB update first).
 
 ---
 
@@ -98,31 +142,42 @@ After Tier-1: Module 20 pilot prep (5 test users, 20-user invite list, onboardin
 
 | Item | Notes |
 |---|---|
-| **Bug D — crime/horror filter leak in world news** | 29 Apr evening test surfaced "Japan zoo staffer dumped wife's body in incinerator". `_IRRELEVANT_TOPIC_SIGNALS` needs to catch "body in", "dumped body", "killed wife", "murdered", "incinerator", "dismembered", and similar. Or flip to allowlist. Pilot-blocking-ish. **Fix early next session before pilot.** |
-| **Bug C — sports gossip surfacing as Indian news** | Lewandowski/Juventus from TOI sports section. Add transfer-rumour patterns to `_LOW_QUALITY_TITLE_SIGNALS` or downrank sport-section RSS items. Less critical. |
-| Conversational-intent → structured tables | Names/medicines/grandkids mentioned in normal chat still land in `memories` as prose, not in `family_members` / `medicine_reminders`. Post-pilot. |
-| Hindi numerals | "ek baje" / "do baje" / "teen baje" not parsed by `_normalize_time`. v1.5 add. |
-| Two `_USER_CACHE` dicts | main.py's unbounded cache vs database.py's 5-min TTL — collapse post-pilot. |
-| Self-setup mode end-to-end test | Module 19 capability test (above). Deferred from earlier sessions. |
-| Untracked `*.patch` files | 5 patch files in `~/saathi-bot/`. Safe to `rm` — commits all in history. |
-| Memory extraction noise: "user is called Ma" | "Ma" is salutation, not name. Tighten extraction prompt or add salutation-aware skip post-pilot. |
-| `short_reply_disengagement` over-fires on contextual yes/no replies | Pre-processor should suppress when previous Saathi turn ended with `?`. Edge case. |
-| `_RSS_FEEDS_CRICKET` URL verification | Candidate URLs need curl verification on first deploy. Backup: NDTV Sports always works. |
+| Other hardcoded `None`s in rituals user_context | `spouse_name`, `health_sensitivities`, `family_members` — same bug pattern as persona/salutation. `family_members` has a Module 7 TODO. Surgical scope held this session. |
+| Conversational-intent → structured tables | Names/medicines/grandkids in normal chat → `memories` prose, not `family_members`/`medicine_reminders` rows. Post-pilot. |
+| Hindi numerals | "ek baje" / "do baje" / "teen baje" not parsed by `_normalize_time`. v1.5. |
+| Two `_USER_CACHE` dicts | main.py's unbounded vs database.py's 5-min TTL — collapse post-pilot. |
+| Memory extraction noise: "user is called Ma" | "Ma" is salutation, not name. Tighten extraction prompt or add salutation-aware skip. |
+| `short_reply_disengagement` over-fires on contextual yes/no | Suppress when previous Saathi turn ended with `?`. Edge case. |
+| `_RSS_FEEDS_CRICKET` URL verification | NDTV Sports always works; other URLs are best-effort. |
+| Untracked `*.patch` files in working tree | Safe to `rm` after each `git am`. |
 
 ---
 
-## Workflow note for next session (V8 reminder)
+## Apply the final patch
 
-When shipping fixes:
+```bash
+cp "/Users/rishikar/AI Projects/saathi_session_close_30apr.patch" ~/saathi-bot/
+cd ~/saathi-bot
+git am saathi_session_close_30apr.patch
+git push origin main
+```
 
-- **Bug fix in code** → Patch deliverable. Do NOT use Edit tool on `/Users/rishikar/saathi-bot/`. Modify files in `/tmp/<workdir>/clone` via bash; generate patch from `/tmp`; Rishi `git am`s onto a clean working tree.
-- **Documentation update (`CLAUDE.md` / `CHECKPOINT.md` / `progress.md`)** → Commit-in-place. Edit tool fine; final instruction is `git add <files> && git commit && git push`.
+This single patch contains two commits: `d9d9fd2` (greeting + identity
+voice wiring) and the docs commit (this CHECKPOINT.md update + CLAUDE.md
+session log entry).
 
-If `error: <file>: does not match index` ever appears, the wrong path was chosen — diagnose, abort the patch, switch to commit-in-place for that change.
+After deploy, verify the two greeting/identity tests above. Then start
+next session per "To run next session" list above.
 
-**Stale-lock recovery** (when `error: could not write index` or `previous rebase directory still exists`):
-1. `rm -f .git/index.lock`
-2. `ls .git/rebase-apply 2>/dev/null && rm -rf .git/rebase-apply`
-3. `git am --abort`
-4. `git status` — confirm clean
-5. (`lsof .git/index` showing Spotlight/mdworker is benign — git's atomic-rename writes are not blocked by readers)
+---
+
+## Workflow note (V7/V8)
+
+- Code change → patch deliverable, /tmp/clone work, NO Edit tool on
+  `/Users/rishikar/saathi-bot/`.
+- Documentation update → commit-in-place mode is fine, but bundling docs
+  WITH the code patch (as done here) is cleaner — single application,
+  one commit chain, no risk of forgotten doc commits.
+- After any patch failure with `does not match index`: V8 stale-lock
+  recovery checklist (`rm -f .git/index.lock` + `git am --abort` + V8
+  diagnosis on edit-tool-vs-patch choice).
