@@ -1100,19 +1100,32 @@ async def _run_pipeline(
                 captured = False
                 ack = "Sorry — something went wrong. Please try again in a bit. 🙏"
             _invalidate_user_cache(user_id)
-            await update.message.reply_text(ack)
-            # Write inbound message + response to session history and DB.
-            _live_session_append(user_id, "user", text)
-            _live_session_append(user_id, "assistant", ack)
-            _db_queue(save_message_record, user_id, "in", text, input_type)
-            _db_queue(save_message_record, user_id, "out", ack)
-            _db_queue(save_session_turn, user_id, "user", text)
-            _db_queue(save_session_turn, user_id, "assistant", ack)
-            logger.info(
-                "PENDING_CAPTURE | user_id=%s | response handled | kind=%s | captured=%s",
-                user_id, _awaiting, captured,
-            )
-            return
+            # Bug L fix (30 Apr 2026): ack=None signals "topic change —
+            # pass through to normal pipeline". capture_response has
+            # already cleared awaiting_pending_capture; we re-read the
+            # user row from the (invalidated) cache and continue past
+            # this block instead of replying with an ack.
+            if ack is None:
+                logger.info(
+                    "PENDING_CAPTURE | user_id=%s | kind=%s | topic_change → pass through to pipeline",
+                    user_id, _awaiting,
+                )
+                user_row = _get_user_with_cache(user_id) or user_row
+                # Fall through — do NOT return.
+            else:
+                await update.message.reply_text(ack)
+                # Write inbound message + response to session history and DB.
+                _live_session_append(user_id, "user", text)
+                _live_session_append(user_id, "assistant", ack)
+                _db_queue(save_message_record, user_id, "in", text, input_type)
+                _db_queue(save_message_record, user_id, "out", ack)
+                _db_queue(save_session_turn, user_id, "user", text)
+                _db_queue(save_session_turn, user_id, "assistant", ack)
+                logger.info(
+                    "PENDING_CAPTURE | user_id=%s | response handled | kind=%s | captured=%s",
+                    user_id, _awaiting, captured,
+                )
+                return
 
     # --- Bare-code auto-detect (Bug 3 fix, 20 Apr 2026) ---
     # A brand-new user may paste a family linking code without /join. If we

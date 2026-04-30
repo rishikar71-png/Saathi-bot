@@ -64,6 +64,105 @@ _MEDICINE_KEYWORDS = [
     "goli", "golian", "goliyan",
 ]
 
+# Conversational vocabulary — words that appear in normal questions,
+# commands, and topic changes. Used to:
+#   1. Reject these as "names" inside _extract_names (so 'any news' does
+#      not become a grandchild called 'Any News').
+#   2. Detect topic-change messages (so the senior can ignore the capture
+#      offer and continue normal conversation — the capture flow clears
+#      itself instead of trapping them in an endless prompt loop).
+#
+# Bug L fix (30 Apr 2026): without this filter, ANY message arriving
+# while awaiting_pending_capture='grandkids' was parsed as names. After
+# Bug J's collision fired once and set the flag, the senior typed
+# 'any news' and got 'Any News — lovely name. Thank you for sharing.'
+_NON_NAME_TOKENS = {
+    # English question words
+    "what", "where", "when", "why", "how", "who", "which", "whom", "whose",
+    # English topic / object nouns common in conversation
+    "news", "music", "song", "songs", "weather", "cricket", "match", "score",
+    "story", "stories", "joke", "jokes", "fact", "facts", "headline", "headlines",
+    "any", "some", "the", "this", "that", "these", "those", "a", "an",
+    "today", "tomorrow", "yesterday", "now", "later",
+    "morning", "afternoon", "evening", "night", "tonight",
+    "international", "national", "local", "world", "global", "indian",
+    # English verbs / commands
+    "tell", "play", "send", "give", "show", "find", "say", "remind",
+    "share", "explain", "describe", "ask", "want", "need", "like",
+    # Pronouns / connectors
+    "i", "me", "my", "you", "your", "he", "she", "it", "we", "us", "they",
+    "and", "or", "but", "with", "without", "for", "to", "from", "of", "in", "on", "at",
+    "is", "are", "was", "were", "be", "been", "have", "has", "had",
+    "do", "does", "did", "can", "could", "will", "would", "should", "shall",
+    # Hindi / Hinglish question words
+    "kya", "kaun", "kahan", "kaisa", "kaise", "kab", "kyun", "kyu",
+    # Hindi / Hinglish common words
+    "abhi", "phir", "baad", "subah", "shaam", "raat", "din", "aaj", "kal",
+    "mujhe", "mera", "meri", "tum", "aap", "hum", "wo", "ye",
+    "hai", "ho", "tha", "thi", "the", "honga", "hongi",
+    # Hindi commands
+    "sunao", "batao", "dikhao", "do", "lo", "le", "rakho",
+    # Greetings
+    "hello", "hi", "hey", "namaste", "namaskar", "yo",
+    # Common request patterns
+    "please", "kuch", "koi", "thoda",
+    # Other connectors / fillers seen in pilot test logs
+    "other", "another", "happening", "khabar", "khabren", "khabar?",
+    "about", "around", "anything", "something", "everything", "nothing",
+    # Affirmations / negations — never names on their own
+    "yes", "yeah", "yup", "yep", "sure", "okay", "ok", "no", "nope", "n",
+    "haan", "ha", "han", "hanji", "haanji", "ji",
+    "bilkul", "theek", "thik",
+}
+
+
+def _looks_like_name(token: str) -> bool:
+    """True if `token` plausibly looks like a personal name.
+
+    A personal name is a proper noun. After lowercasing and splitting
+    into parts, none of the parts should be in _NON_NAME_TOKENS.
+
+    Examples:
+      'Anish' → True
+      'Ishween Kaur' → True
+      'Any News' → False (both parts are function/topic words)
+      'What' → False
+      'Putu' → True
+    """
+    if not token:
+        return False
+    parts = token.lower().split()
+    if not parts:
+        return False
+    # If ANY part is a known non-name word, reject the whole token.
+    return not any(p in _NON_NAME_TOKENS for p in parts)
+
+
+def is_topic_change(text: str) -> bool:
+    """True if `text` looks like a question, command, or topic change
+    rather than a list of names / medicines.
+
+    Heuristic: tokenise on non-letters; if every token is in
+    _NON_NAME_TOKENS, the message has no proper-noun content and is
+    almost certainly a topic change. Used as an escape hatch in
+    capture_response — when the senior ignores the capture offer and
+    just continues the conversation, we clear the awaiting flag and
+    fall through to the normal pipeline instead of saving 'Any News'
+    as a grandchild.
+
+    Returns False on empty input — let the existing 'parse failed'
+    path handle that.
+    """
+    if not text or not text.strip():
+        return False
+    t = text.lower().strip()
+    # Token-split + drop single-char fragments (e.g. "s" from "what's").
+    tokens = [tok for tok in re.split(r"[^a-z]+", t) if tok and len(tok) >= 2]
+    if not tokens:
+        return False
+    return all(tok in _NON_NAME_TOKENS for tok in tokens)
+
+
 # Refusal signals — senior declined the offer. Language-agnostic substrings.
 _REFUSAL_KEYWORDS = [
     "no thanks", "no thank you", "not now", "not yet", "later", "baad mein",
@@ -256,6 +355,10 @@ def _extract_names(text: str) -> list[str]:
         # but drop anything longer than 4 words (likely a sentence, not a name).
         if len(p.split()) > 4:
             continue
+        # Bug L fix: reject tokens whose parts are all conversational
+        # words ("any news" → ["Any News"] used to slip through).
+        if not _looks_like_name(p):
+            continue
         out.append(p.title())
     return out
 
@@ -273,6 +376,20 @@ def capture_response(
     the senior; caller sends it after capture completes.
     """
     from database import update_user_fields, add_family_members_bulk
+
+    # Topic-change escape hatch (Bug L fix, 30 Apr 2026). If the senior
+    # ignores the capture offer and continues normal conversation
+    # ("any news", "play a song", "kya khabar hai"), clear the awaiting
+    # flag silently and signal pass-through with ack=None. Caller falls
+    # through to the normal DeepSeek pipeline. The pending_<kind> flag
+    # stays set so a future keyword trigger / morning ritual can re-offer.
+    if is_topic_change(text):
+        update_user_fields(user_id, awaiting_pending_capture=None)
+        logger.info(
+            "PENDING_CAPTURE | user_id=%s | kind=%s | topic_change pass-through (text=%r)",
+            user_id, kind, text[:80],
+        )
+        return (False, None)
 
     # Refusal first — never try to parse data out of a "no, not now".
     if is_refusal(text):
