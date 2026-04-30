@@ -1,7 +1,7 @@
 # SAATHI BOT — Build Progress
 
-Last updated: 15 April 2026
-Current phase: Module 19 — End-to-End Capability Testing (blocked on Railway Volume setup)
+Last updated: 30 April 2026 (cont. 3)
+Current phase: Module 19 — End-to-End Capability Testing (Tasks 1/4/5/6 done; Bug E1'' fix awaiting live verification; Tasks 2/3 deferred to next session)
 
 ---
 
@@ -324,14 +324,18 @@ Current phase: Module 19 — End-to-End Capability Testing (blocked on Railway V
 
 ---
 
-### ⬜ Module 19 — End-to-End Capability Testing
-- [ ] YouTube music: request a song by name, by mood, by genre — confirm real links returned
-- [ ] YouTube music: vague request ("kuch sunao") — confirm fallback to preferences
-- [ ] News: morning briefing fires with a real headline (not hallucinated)
-- [ ] Cricket: morning briefing includes real score/schedule when a match is live
-- [ ] Weather: morning briefing references real conditions for user's city
-- [ ] Voice (Neural2): send a voice message and verify quality improvement
-- [ ] Voice: Hindi and English both tested
+### 🔄 Module 19 — End-to-End Capability Testing
+- [x] YouTube music: request a song by name, by mood, by genre — confirm real links returned (29 Apr session)
+- [x] YouTube music: vague request ("kuch sunao") — confirm fallback to preferences (29 Apr session)
+- [x] News: real Indian top headlines surface (after Bug C2 fix on 30 Apr cont. 3 — "BJP To Sweep Assam", "Indus river analysis", "oil prices")
+- [ ] Cricket: real score/schedule when a match is live — Bug E1'' fix shipped end of 30 Apr cont. 3, awaiting live verification ("aaj cricket hai kya?" → expect GT vs RCB tonight at 19:30 IST)
+- [x] Weather: real conditions for user's city (verified via /testapis on 30 Apr cont. 3 — "Mumbai: 31°C, Haze, humidity 70%")
+- [x] Voice (Neural2): Hindi + English voice quality verified (multiple sessions, including Bug A regression check on 30 Apr cont. 3 with persona switching)
+- [x] Persona effect: tested all four personas via /setpersona admin command — friend register clearly distinct, caring_child↔grandchild collapse on emotional prompts (architectural finding logged, not pilot-blocking)
+- [x] Hindi 5+ turn conversation depth — strong pass on 30 Apr cont. 3 (FAMILY block working, language stickiness, persona register, three-mode engagement variety)
+- [x] Long-reply TTS (`_TTS_MAX_CHARS=400`) — partial pass; voice fired at 145+225 chars; 300+ untested because Rule 6 caps DeepSeek at 3 sentences
+- [ ] Family bridge bare-code paste → confirmation prompt → register (needs second Telegram user)
+- [ ] Self-setup mode end-to-end with 2-day pacing (needs `/adminreset` + wall-clock dependency)
 - [ ] Full pipeline test: onboarding → memory question → medicine reminder → evening ritual → family bridge
 
 ---
@@ -357,6 +361,9 @@ Current phase: Module 19 — End-to-End Capability Testing (blocked on Railway V
 | 29 Apr | Bug B — onboarding silently dropped ambiguous bare-hour medicines as `is_active=0` placeholders with no follow-up question. Senior never got reminded for those medicines. | Family step 10 + self-setup step 6 now seed-and-ASK: call `seed_reminders_from_raw` immediately, set `awaiting_pending_capture='medicines_clarify'` if ambiguous, build clarify text, stay on step. Pre-check in `handle_onboarding_answer` / `_handle_self_setup_answer` routes the reply to `_handle_ambiguity_reply`, with before/after count to detect 'nothing resolved' and re-ask. `_save_answer` signature `-> None` → `-> Optional[str]` to signal 'stay on step'. 12/12 integration tests pass. |
 | 29 Apr | `pending_capture._handle_ambiguity_reply` only matched compound "all morning" / "sab raat" globals — bare "morning" reply silently failed to resolve any rows (affected deferred path too). | Extended global-AM/PM detection to bare period words ("morning"/"night"/"raat"/"subah"/"shaam") when no medicine name is in the reply. Per-medicine matching still wins when names are present. |
 | 29 Apr | V8 added to CLAUDE.md — workflow rule preventing recurring `does not match index` failures. Edit tool writes propagate to Mac; choose patch-or-commit-in-place at the start. | When deliverable is a patch: do all mods in `/tmp/clone` via bash, never Edit tool on user's mount. When deliverable is commit-in-place: Edit tool freely, final instruction is `git commit -am`. Stale-lock recovery checklist included. |
+| 30 Apr | Bug C2 — `news_interests='family'` was extracted as the FIRST keyword and used as a HARD filter on India RSS (`if kw_lower not in title and not in desc: continue`). Most India top stories don't mention "family" → 0 RSS matches → NewsAPI `/v2/everything?q=family` fallback surfaced global tech press (VyOS) to seniors asking for India top news. | `apis.fetch_news` general-India branch now forces `keyword=""` regardless of user interests. Top news must not be excluded by lifestyle interest. fetch_cricket_news still uses keyword path for sport-specific queries. Verified live with real Indian top headlines (Assam exit poll, Indus river analysis, oil prices). |
+| 30 Apr | Bug E1'' — schedule-intent path didn't fall back to RSS when CricAPI returned None. The 30 Apr Bug E2 wiring routed cricket-NEWS-intent to RSS-primary, but cricket-SCHEDULE-intent stayed CricAPI-primary; supplementary RSS was added ONLY when CricAPI returned a match. CricAPI free-tier doesn't always have today's IPL match (proven by tonight's GT vs RCB at 19:30 IST not appearing in either `/currentMatches` or `/matches`). | `_inject_live_data_if_needed` now calls `fetch_cricket_news()` when `fetch_cricket()` returns None on a schedule query. RSS headlines forwarded to DeepSeek with permissive instruction (look for IPL team names paired with today/tonight/aaj — share match if signal clear, share as updates otherwise, never invent scores/venues not in headline). Falls through to mandatory scripted no-match response only when BOTH CricAPI AND RSS are silent. Awaiting live verification next session. |
+| 30 Apr | New admin commands: `/setpersona <tg_id> <persona>`, `/profiledump [tg_id]`, `/cricdebug`. All admin-gated on `update.effective_user.id == 8711370451`. | `/setpersona` mirrors `/setcity` shape — used for Module 19 Task 6. `/profiledump` dumps key profile fields + family roster — used to localize Bug C2. `/cricdebug` bypasses cache, dumps raw CricAPI matches with parsed dates and tracked-team classification — used to diagnose Bug E1'. V1 of `/cricdebug` failed silently due to Markdown parse issues; V2 uses plain text + outer try/except + immediate ack. |
 
 ---
 
