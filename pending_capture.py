@@ -98,22 +98,53 @@ def _strip_leading_affirmation(text: str) -> str:
 # Currently unused — we always wait for the next message for capture text.
 
 
+# Token-aware classification: short keywords (≤5 chars) require a whole-word
+# match (no substring), longer keywords match as substrings.
+#
+# Bug J fix (30 Apr 2026): substring match on short Hindi/Hinglish keywords
+# was creating false positives — "nati" (granddaughter) hit "inter**nati**onal";
+# "pota" would hit "po**ta**to"; "pote" would hit "potential"; "pill" would
+# hit "pillow"/"pillar"; "dose" would hit "endorse". Same root cause as
+# Bug E1's "rr"/"warriors" collision in cricket.
+_GRANDKID_SHORT = {kw for kw in _GRANDKID_KEYWORDS if " " not in kw and len(kw) <= 5}
+_GRANDKID_LONG  = set(_GRANDKID_KEYWORDS) - _GRANDKID_SHORT
+_MEDICINE_SHORT = {kw for kw in _MEDICINE_KEYWORDS if " " not in kw and len(kw) <= 5}
+_MEDICINE_LONG  = set(_MEDICINE_KEYWORDS) - _MEDICINE_SHORT
+
+# Token-split: any non-letter run separates tokens (handles
+# Devanagari + ASCII text by treating only latin letters as token chars;
+# Hindi script keywords aren't in the lists, so this is fine).
+_PC_TOKEN_SPLIT_RE = re.compile(r"[^a-z]+")
+
+
+def _has_token_match(tokens: set, short_kws: set) -> bool:
+    """True if any short keyword appears as a whole token."""
+    return bool(tokens & short_kws)
+
+
+def _has_substring_match(text: str, long_kws: set) -> bool:
+    """True if any long keyword appears as a substring of text."""
+    return any(kw in text for kw in long_kws)
+
+
 def detect_pending_trigger(text: str) -> Optional[str]:
     """Scan text for a keyword that could trigger a pending-input offer.
     Returns 'grandkids' | 'medicines' | None.
-    Grandkids takes precedence if both match (unlikely in practice)."""
+    Grandkids takes precedence if both match (unlikely in practice).
+
+    Short keywords (≤5 chars, no spaces) must match a whole token —
+    "nati" must BE a word, not appear inside "international".
+    Longer keywords use substring match (collision risk negligible).
+    """
     if not text:
         return None
     t = text.lower()
-    # Word-boundary check is needed for short keywords like "dose" which
-    # could appear as a substring of other words. But for most keywords
-    # simple substring match is fine and more tolerant of typos.
-    for kw in _GRANDKID_KEYWORDS:
-        if kw in t:
-            return "grandkids"
-    for kw in _MEDICINE_KEYWORDS:
-        if kw in t:
-            return "medicines"
+    tokens = {tok for tok in _PC_TOKEN_SPLIT_RE.split(t) if tok}
+
+    if _has_token_match(tokens, _GRANDKID_SHORT) or _has_substring_match(t, _GRANDKID_LONG):
+        return "grandkids"
+    if _has_token_match(tokens, _MEDICINE_SHORT) or _has_substring_match(t, _MEDICINE_LONG):
+        return "medicines"
     return None
 
 
