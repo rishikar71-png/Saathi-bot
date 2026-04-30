@@ -19,8 +19,10 @@ for this key.
 from __future__ import annotations
 
 import hashlib
+import html
 import logging
 import os
+import random
 import re
 
 import requests
@@ -249,12 +251,26 @@ def find_music(query: str) -> tuple[str, str]:
     api_key = os.environ["GOOGLE_CLOUD_API_KEY"]
 
     def _search(q: str) -> tuple[str, str] | None:
-        """Single search attempt. Returns (title, url) or None."""
+        """Single search attempt. Returns (title, url) or None.
+
+        Bug Q (30 Apr 2026): two changes.
+        1. maxResults bumped from 1 to 5 with random pick. The same vague
+           query ("play music" / "kuch sunao" → music_preferences fallback)
+           used to return the identical top result every time. With 5
+           candidates and random.choice, repeats hit the same song roughly
+           1/5 of the time instead of every time. Top 5 results for any
+           reasonable query are all relevant/similar, so the precision
+           cost is negligible.
+        2. html.unescape() on title. YouTube returns titles with HTML
+           entities (&#39; for apostrophe, &amp; for &, &quot; for ").
+           Telegram does not decode these in plain-text replies — seniors
+           saw "90&#39;s Love Songs" instead of "90's Love Songs".
+        """
         params = {
             "part":              "snippet",
             "q":                 q,
             "type":              "video",
-            "maxResults":        1,
+            "maxResults":        5,
             "regionCode":        "IN",
             "relevanceLanguage": "hi",
             "key":               api_key,
@@ -264,10 +280,14 @@ def find_music(query: str) -> tuple[str, str]:
         items = resp.json().get("items", [])
         if not items:
             return None
-        video_id = items[0]["id"]["videoId"]
-        title    = items[0]["snippet"]["title"]
+        chosen = random.choice(items)
+        video_id = chosen["id"]["videoId"]
+        title    = html.unescape(chosen["snippet"]["title"])
         url      = f"https://www.youtube.com/watch?v={video_id}"
-        logger.info("YOUTUBE | query=%r | title=%r | url=%s", q, title, url)
+        logger.info(
+            "YOUTUBE | query=%r | candidates=%d | picked=%r | url=%s",
+            q, len(items), title, url,
+        )
         return title, url
 
     def _stripped_query(q: str) -> str:
