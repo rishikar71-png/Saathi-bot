@@ -390,6 +390,45 @@ _IPL_TEAM_ALIASES = {
 # Combined set used by _find_india_match
 _TRACKED_TEAM_KEYWORDS = _INDIA_TEAM_KEYWORDS | _IPL_TEAM_ALIASES
 
+# Token-aware classification of tracked keywords.
+# Bug E1 fix (30 Apr 2026): the previous `kw in text` substring match
+# treated `rr` (Rajasthan Royals) as a hit inside "wa**rr**iors", so
+# Guyana Amazon Warriors (CPL) was surfaced as a tracked match.
+#
+# Rule:
+#   - Single-token keywords ≤4 chars (mi, csk, rr, dc, gt, ind, etc.)
+#     must match a whole word boundary, not a substring. Use re.fullmatch
+#     against tokens parsed out of the text.
+#   - Multi-word or longer keywords (≥5 chars; "india", "mumbai indians",
+#     "rajasthan royals") match as substrings — collisions extremely
+#     unlikely at this length.
+_TRACKED_ABBREV: set = {
+    kw for kw in _TRACKED_TEAM_KEYWORDS
+    if len(kw) <= 4 and " " not in kw
+}
+_TRACKED_FULLNAME: set = _TRACKED_TEAM_KEYWORDS - _TRACKED_ABBREV
+
+# Token-split: any non-letter run separates tokens.
+_TOKEN_SPLIT_RE = re.compile(r"[^a-z]+")
+
+
+def _is_tracked_team(text: str) -> bool:
+    """Return True if `text` references India or any IPL team.
+
+    Short abbreviations (`mi`, `rr`, `gt`, `dc`, `csk`, `ind`, ...) match
+    only when they appear as whole tokens — `rr` will NOT match "warriors".
+    Longer names (`india`, `mumbai indians`, `rajasthan royals`) match as
+    case-insensitive substrings; collision risk at length ≥5 is negligible.
+    """
+    text_lower = text.lower()
+    # Substring pass — full names
+    for kw in _TRACKED_FULLNAME:
+        if kw in text_lower:
+            return True
+    # Token pass — short abbreviations
+    tokens = {tok for tok in _TOKEN_SPLIT_RE.split(text_lower) if tok}
+    return bool(tokens & _TRACKED_ABBREV)
+
 
 def fetch_cricket() -> Optional[str]:
     """
@@ -534,11 +573,10 @@ def _find_india_match(matches: list) -> Optional[str]:
         teams = match.get("teams", [])
         team_names = " ".join(t.lower() for t in teams)
 
-        is_tracked_match = (
-            any(kw in name for kw in _TRACKED_TEAM_KEYWORDS)
-            or any(kw in team_names for kw in _TRACKED_TEAM_KEYWORDS)
-        )
-        if not is_tracked_match:
+        # Token-aware tracked-team match (Bug E1 fix). Substring matching
+        # let "rr" (Rajasthan Royals abbrev) hit "wa**rr**iors" — so any
+        # CPL/BBL "Warriors" team falsely registered as IPL.
+        if not (_is_tracked_team(name) or _is_tracked_team(team_names)):
             continue
 
         # Log the raw date fields for the first tracked match so we can verify
@@ -578,9 +616,30 @@ def _find_india_match(matches: list) -> Optional[str]:
         else:
             return f"COMPLETED TODAY — {summary}"
 
-    # Nothing today — surface the next scheduled India match if available
-    if upcoming_matches:
-        return f"UPCOMING — {_format_match_summary(upcoming_matches[0])}"
+    # Nothing today — surface the next scheduled tracked match, but only
+    # if it's within UPCOMING_HORIZON_DAYS. Bug E1 (30 Apr 2026): a July 31
+    # match surfaced on April 30 ("aaj cricket?" → "31 July ko hai") because
+    # there was no date ceiling. A senior asking about cricket today does
+    # not benefit from hearing about a match three months out.
+    UPCOMING_HORIZON_DAYS = 7
+    today_dt = datetime.strptime(today_ist, "%Y-%m-%d").date()
+    for match in upcoming_matches:
+        raw_date = match.get("date") or match.get("dateTimeGMT") or ""
+        match_date_str = _parse_match_date(raw_date) if raw_date else ""
+        if not match_date_str:
+            continue
+        try:
+            match_dt = datetime.strptime(match_date_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        days_out = (match_dt - today_dt).days
+        if 0 < days_out <= UPCOMING_HORIZON_DAYS:
+            return f"UPCOMING — {_format_match_summary(match)}"
+        else:
+            logger.debug(
+                "APIS | cricket: skipping upcoming match %s days out: %s",
+                days_out, match.get("name", ""),
+            )
 
     # Fallback: CricAPI didn't return a parseable date (common on free tier).
     # Show the first undated tracked match rather than returning None.
