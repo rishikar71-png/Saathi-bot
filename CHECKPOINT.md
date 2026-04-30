@@ -48,6 +48,41 @@ so Rishi applies one file.
 
 ## Bugs surfaced this session
 
+### Bug I (NEW, PRIORITY 1) — TTS reads emojis literally as Unicode names
+
+When the identity intercept fires (and likely other paths), the response
+text contains 🙏 ("Just someone to chat with — that's really all. 🙏" /
+"Bas baat karne ke liye hoon — aur kuch nahi. 🙏"). Google TTS Neural2
+synthesises this as the words "folded hands" — the Unicode name for the
+emoji — making the voice note sound broken to a senior.
+
+Likely affects every voice path that includes emojis: identity replies,
+reminder acks (👍, 🎤), any DeepSeek output that contains emojis. Not
+new — has been there since voice was wired in — but became visible this
+session because the identity intercept now fires voice (commit 29eb36b
+on Rishi's tree).
+
+**Action: investigate first, fix in tts.py._clean_for_tts.**
+1. Read tts.py — current `_clean_for_tts` only strips markdown
+   characters, no emoji handling.
+2. Decide strip strategy: regex over emoji Unicode ranges (stdlib only,
+   covers 99% of cases) vs. `emoji` library (clean but new dep) vs.
+   `unicodedata.category` filter (subtle, rejects too much).
+3. Apply strip BEFORE `_add_speech_pauses` so the speech-pause logic
+   doesn't see broken character sequences.
+4. V4: unit-test on the identity reply strings + ensure non-emoji
+   Hindi/English text passes through unchanged + ensure speech-pause
+   logic still fires correctly on the cleaned text.
+5. Live verification: send `who are you?` post-fix → voice should NOT
+   say "folded hands" at the end.
+
+Also surface what other voice paths leak emojis. Quick check: grep
+through hardcoded reply strings in main.py, protocol1.py, protocol3.py,
+reminders.py for emoji codepoints. If DeepSeek occasionally adds them,
+the strip in tts.py catches it regardless.
+
+---
+
 ### Bug E1 — REGRESSION on `aa8a2a9` cricket fix
 
 Test: "aaj cricket mein kya ho raha hai?"
@@ -131,10 +166,22 @@ Hinglish); test 12 (TTS quality after Bug A fix).
 
 **FAIL:** E1 (cricket schedule regression); test 7 (world news filter — Bug D).
 
-**To run next session:** test 6 (India news quality), self-setup mode
-end-to-end, family bridge bare-code, Hindi conversation 5+ turns,
-`_TTS_MAX_CHARS=400` verification with longer replies, persona effect
-verification (manual DB update first).
+**To run next session — priority order:**
+1. **Bug I** — TTS emoji reading (above). Highest priority — visible to
+   senior on every identity-intercept voice note.
+2. **Verify** greeting voice (`hello` → "Good morning, Ma" + voice) +
+   identity voice (`who are you?` → identity text + voice WITHOUT
+   "folded hands" once Bug I lands).
+3. **Bug E1** — cricket schedule regression (Guyana/Perth July 31 leak).
+4. **Bug D** — world news crime/horror filter expansion.
+5. **Bug F** — Whisper translates Hindi voice to English when
+   `lang_hint=en`.
+6. **Bug G** — Protocol 3 reads stored language, not per-message.
+7. Module 19 remaining tier-1: India news quality (test 6), self-setup
+   mode end-to-end, family bridge bare-code, Hindi conversation 5+
+   turns, `_TTS_MAX_CHARS=400` verification with longer replies,
+   persona effect verification (manual DB update first).
+8. Module 20 pilot prep.
 
 ---
 
