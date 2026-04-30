@@ -1577,7 +1577,18 @@ async def _run_pipeline(
     # was raised and must not give financial advice on follow-up messages.
     user_context["protocol3_active"] = _p3_active
 
-    user_language = user_row["language"] or "english"
+    # Bug G fix (30 Apr 2026): Protocol 3 must use the per-message
+    # effective language, not the stored profile. user_context["language"]
+    # has already been set above (line ~1357) to the script-detected
+    # effective language. Without this, a senior whose stored language
+    # is 'english' but who triggers P3 in Hinglish ('mere bete ne paise
+    # mange hain') gets the English P3 response — mirrors Bug B (DeepSeek
+    # per-turn nudge) and Bug A (TTS routing). Same shape, same fix.
+    user_language = (
+        user_context.get("language")
+        or user_row["language"]
+        or "english"
+    )
 
     if not _p3_active:
         # Only run keyword detection when P3 hasn't already fired this session
