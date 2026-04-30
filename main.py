@@ -1499,6 +1499,10 @@ async def _run_pipeline(
             "OUT | user_id=%s | type=protocol1_escalation | alert_sent=%d",
             user_id, _alert_sent,
         )
+        # Voice — force=True bypasses TTS_MAX_CHARS (P1 strings are Hinglish, hand-bounded)
+        asyncio.create_task(_send_tts_bg(
+            user_id, _p1_escalation_text, "hinglish", update, time.monotonic(), force=True,
+        ))
         return
 
     if protocol1_reply:
@@ -1508,6 +1512,10 @@ async def _run_pipeline(
             "OUT | user_id=%s | type=protocol1 | stage=%d",
             user_id, session_count + 1,
         )
+        # Voice — force=True (P1 Stage 2 is 538 chars, exceeds default cap)
+        asyncio.create_task(_send_tts_bg(
+            user_id, protocol1_reply, "hinglish", update, time.monotonic(), force=True,
+        ))
         return
 
     # --- Protocol 4 check (runs AFTER Protocol 1, BEFORE Protocol 3) ---
@@ -1520,6 +1528,10 @@ async def _run_pipeline(
         save_session_turn(user_id, "user", text)
         save_session_turn(user_id, "assistant", protocol4_reply)
         logger.info("OUT | user_id=%s | type=protocol4", user_id)
+        # Voice — boundary-setting reply lands better as voice
+        asyncio.create_task(_send_tts_bg(
+            user_id, protocol4_reply, _p4_language, update, time.monotonic(), force=True,
+        ))
         return
 
     # --- Protocol 3 check (runs BEFORE DeepSeek, AFTER Protocol 1) ---
@@ -1553,6 +1565,10 @@ async def _run_pipeline(
         protocol3_reply = check_protocol3(user_id, text, language=user_language)
         if protocol3_reply:
             await update.message.reply_text(protocol3_reply)
+            # Voice — force=True (P3 Hindi is 444 chars, over default cap)
+            asyncio.create_task(_send_tts_bg(
+                user_id, protocol3_reply, user_language, update, time.monotonic(), force=True,
+            ))
             # Save both sides so DeepSeek has full context on the next message
             save_message_record(user_id, "out", protocol3_reply)
             save_session_turn(user_id, "user", text)
@@ -1947,31 +1963,52 @@ async def _run_pipeline(
         or "english"
     )
     _tts_sent_at = time.monotonic()
-    _TTS_STALE_SECONDS = 40
-    _TTS_MAX_CHARS = 400  # skip TTS only for genuine info-dumps; covers most natural replies
-
-    async def _send_tts_bg(_uid: int, _reply: str, _lang: str, _upd, _sent_at: float) -> None:
-        try:
-            if len(_reply) > _TTS_MAX_CHARS:
-                logger.info("TTS | user_id=%s | skipped (reply too long: %d chars)", _uid, len(_reply))
-                return
-            audio_bytes = await asyncio.to_thread(text_to_speech, _reply, _lang)
-            elapsed = time.monotonic() - _sent_at
-            if elapsed > _TTS_STALE_SECONDS:
-                logger.info(
-                    "TTS | user_id=%s | dropped (stale: %.1fs since text sent)", _uid, elapsed
-                )
-                return
-            await _upd.message.reply_voice(voice=io.BytesIO(audio_bytes))
-            logger.info("TTS | user_id=%s | voice note sent (bg) | elapsed=%.1fs", _uid, elapsed)
-        except Exception as _e:
-            logger.warning("TTS | user_id=%s | bg failed: %s", _uid, _e)
-
     asyncio.create_task(_send_tts_bg(user_id, reply, user_language, update, _tts_sent_at))
 
     # Memory extraction — fire and forget after response is already delivered.
     # create_task so it runs without blocking the handler from returning.
     asyncio.create_task(asyncio.to_thread(extract_and_save_memories, user_id, text, reply))
+
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# TTS — module-level so handlers (protocols, normal pipeline) share one path
+# ---------------------------------------------------------------------------
+_TTS_STALE_SECONDS = 40
+_TTS_MAX_CHARS = 400  # skip TTS only for genuine info-dumps; covers most natural replies
+
+
+async def _send_tts_bg(
+    _uid: int,
+    _reply: str,
+    _lang: str,
+    _upd,
+    _sent_at: float,
+    force: bool = False,
+) -> None:
+    """Fire-and-forget TTS. Runs as an asyncio task so the handler returns
+    immediately. Text has already been delivered — TTS failures are non-fatal.
+
+    force=True bypasses the _TTS_MAX_CHARS ceiling. Use for high-emotional-value
+    paths whose response strings are bounded by hand (Protocol 1, 3, rituals).
+    Conversational replies and news roundups should leave force=False so
+    genuine info-dumps don't become 2-minute monologues.
+    """
+    try:
+        if not force and len(_reply) > _TTS_MAX_CHARS:
+            logger.info("TTS | user_id=%s | skipped (reply too long: %d chars)", _uid, len(_reply))
+            return
+        audio_bytes = await asyncio.to_thread(text_to_speech, _reply, _lang)
+        elapsed = time.monotonic() - _sent_at
+        if elapsed > _TTS_STALE_SECONDS:
+            logger.info(
+                "TTS | user_id=%s | dropped (stale: %.1fs since text sent)", _uid, elapsed
+            )
+            return
+        await _upd.message.reply_voice(voice=io.BytesIO(audio_bytes))
+        logger.info("TTS | user_id=%s | voice note sent (bg) | elapsed=%.1fs", _uid, elapsed)
+    except Exception as _e:
+        logger.warning("TTS | user_id=%s | bg failed: %s", _uid, _e)
 
 
 # ---------------------------------------------------------------------------

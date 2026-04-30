@@ -375,7 +375,7 @@ def _get_users_due_for_ritual(ritual_type: str) -> list:
         all_rows = conn.execute(
             f"""
             SELECT u.user_id, u.name, u.preferred_salutation, u.language,
-                   u.bot_name, u.religion, u.favourite_topics,
+                   u.bot_name, u.persona, u.religion, u.favourite_topics,
                    u.music_preferences, u.city, u.morning_checkin_time,
                    u.afternoon_checkin_time, u.evening_checkin_time,
                    u.news_interests,
@@ -610,7 +610,7 @@ async def _send_ritual(bot, row, ritual_type: str) -> None:
         "name":              row["name"],
         "preferred_salutation": row["preferred_salutation"],
         "bot_name":          row["bot_name"],
-        "persona":           None,
+        "persona":           row["persona"],
         "language":          language,
         "city":              row["city"],
         "spouse_name":       None,
