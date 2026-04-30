@@ -59,10 +59,77 @@ _DEFAULT_VOICE = ("en-IN", "en-IN-Neural2-D")
 # Markdown patterns to strip before TTS so symbols aren't read aloud
 _MARKDOWN_RE = re.compile(r"[*_`#\[\]()~>|]")
 
+# Emoji and pictograph ranges to strip before TTS.
+#
+# Why: Google TTS Neural2 reads emoji codepoints by their Unicode names —
+# 🙏 → "folded hands", ✅ → "check mark button", 👍 → "thumbs up sign".
+# This makes voice notes sound broken to a senior. Strip them before any
+# other speech processing.
+#
+# The ranges below cover ~99% of emojis seen in Saathi's reply paths:
+#   U+2300–U+23FF   Miscellaneous Technical (⌚ ⏰)
+#   U+2600–U+26FF   Misc Symbols (☀ ⚠)
+#   U+2700–U+27BF   Dingbats (✅ ✨ ✉)
+#   U+2B00–U+2BFF   Misc Symbols and Arrows (⬆ ⬇)
+#   U+1F000–U+1F02F Mahjong tiles
+#   U+1F0A0–U+1F0FF Playing cards
+#   U+1F100–U+1F1FF Enclosed alphanumerics + regional indicators (flags)
+#   U+1F300–U+1F5FF Symbols and pictographs (👍 🎵 📊 🔔)
+#   U+1F600–U+1F64F Emoticons (😊 🙏)
+#   U+1F680–U+1F6FF Transport & map (🚨 🚀)
+#   U+1F700–U+1F77F Alchemical symbols
+#   U+1F780–U+1F7FF Geometric Shapes Extended
+#   U+1F800–U+1F8FF Supplemental Arrows-C
+#   U+1F900–U+1F9FF Supplemental Symbols and Pictographs (🤝 🧑)
+#   U+1FA00–U+1FAFF Symbols and Pictographs Extended-A
+# Plus the invisible glue characters that compose emoji sequences:
+#   U+200D          Zero Width Joiner
+#   U+20E3          Combining Enclosing Keycap
+#   U+FE00–U+FE0F   Variation Selectors (e.g. ️ FE0F after a glyph)
+_EMOJI_RE = re.compile(
+    "["
+    "\U00002300-\U000023FF"
+    "\U00002600-\U000026FF"
+    "\U00002700-\U000027BF"
+    "\U00002B00-\U00002BFF"
+    "\U0001F000-\U0001F02F"
+    "\U0001F0A0-\U0001F0FF"
+    "\U0001F100-\U0001F1FF"
+    "\U0001F300-\U0001F5FF"
+    "\U0001F600-\U0001F64F"
+    "\U0001F680-\U0001F6FF"
+    "\U0001F700-\U0001F77F"
+    "\U0001F780-\U0001F7FF"
+    "\U0001F800-\U0001F8FF"
+    "\U0001F900-\U0001F9FF"
+    "\U0001FA00-\U0001FAFF"
+    "\U0000200D"
+    "\U000020E3"
+    "\U0000FE00-\U0000FE0F"
+    "]+",
+    flags=re.UNICODE,
+)
+
+
+def _strip_emojis(text: str) -> str:
+    """Remove emoji codepoints + variation selectors / ZWJ glue.
+
+    Applied before _add_speech_pauses so speech-pause logic never sees
+    emoji bytes. Trailing whitespace and double spaces left by the
+    substitution are collapsed.
+    """
+    text = _EMOJI_RE.sub("", text)
+    # Collapse double spaces left where an emoji sat between two words
+    text = re.sub(r"  +", " ", text)
+    # Collapse " ." or " ," left where an emoji sat right before punctuation
+    text = re.sub(r"\s+([.,!?;:])", r"\1", text)
+    return text.strip()
+
 
 def _clean_for_tts(text: str) -> str:
-    """Remove markdown formatting and trim to TTS-safe length."""
-    cleaned = _MARKDOWN_RE.sub("", text).strip()
+    """Strip markdown + emojis and trim to TTS-safe length."""
+    cleaned = _MARKDOWN_RE.sub("", text)
+    cleaned = _strip_emojis(cleaned)
     # Google TTS limit is 5000 bytes; cap at 1500 chars to keep audio concise
     return cleaned[:1500]
 
