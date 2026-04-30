@@ -1444,9 +1444,10 @@ async def _run_pipeline(
         and len(_session_history) < 4
     )
     if _is_fresh_greeting:
+        _greet_lang = user_context.get("language") or "english"
         _greet_reply = _get_time_aware_greeting(
             _local_hour,
-            language=user_context.get("language") or "english",
+            language=_greet_lang,
             name=user_context.get("name") or "",
             salutation=user_context.get("preferred_salutation") or "",
         )
@@ -1455,6 +1456,11 @@ async def _run_pipeline(
         save_session_turn(user_id, "user", text)
         save_session_turn(user_id, "assistant", _greet_reply)
         logger.info("OUT | user_id=%s | type=greeting | hour=%d", user_id, _local_hour)
+        # Voice — short hardcoded greeting, force=True for consistency with
+        # other hand-bounded paths (protocols, identity intercept).
+        asyncio.create_task(_send_tts_bg(
+            user_id, _greet_reply, _greet_lang, update, time.monotonic(), force=True,
+        ))
         return
 
     # --- Emergency keyword check (runs BEFORE Protocol 1) ---
@@ -1781,6 +1787,10 @@ async def _run_pipeline(
         save_session_turn(user_id, "user", _original_text)
         save_session_turn(user_id, "assistant", _identity_reply)
         logger.info("OUT | user_id=%s | type=identity_intercept", user_id)
+        # Voice — hand-bounded short reply, force=True for consistency.
+        asyncio.create_task(_send_tts_bg(
+            user_id, _identity_reply, _id_lang, update, time.monotonic(), force=True,
+        ))
         return
 
     # --- Short-reply disengagement detector ---
