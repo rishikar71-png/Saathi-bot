@@ -2548,6 +2548,74 @@ async def testapis_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+async def cricdebug_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin-only diagnostic for Bug E1' (cricket schedule misses).
+
+    Bypasses the 30-min cache, calls /currentMatches and /matches directly,
+    and dumps the raw match list with: name, raw_date, dateTimeGMT,
+    matchStarted, matchEnded, and whether _is_tracked_team would have
+    classified the match as India/IPL.
+
+    Lets us see whether today's IPL match is in CricAPI's response at all,
+    and if so, why _find_india_match isn't surfacing it.
+    """
+    if update.effective_user.id != 8711370451:
+        return
+    import os, requests
+    from apis import (
+        _CRICAPI_URL, _CRICAPI_MATCHES_URL,
+        _is_tracked_team, _parse_match_date, _CACHE,
+    )
+    api_key = os.environ.get("CRICKET_API_KEY")
+    if not api_key:
+        await update.message.reply_text("CRICKET_API_KEY not configured.")
+        return
+
+    # Force-clear the cricket cache so we bypass any stale "no match" entry
+    _CACHE.pop("cricket:current", None)
+
+    from datetime import datetime, timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
+    today_ist = datetime.now(IST).strftime("%Y-%m-%d")
+
+    lines = [f"*Cricket diagnostic — today_ist=`{today_ist}`*\n"]
+
+    for url, label in [(_CRICAPI_URL, "currentMatches"), (_CRICAPI_MATCHES_URL, "matches")]:
+        try:
+            resp = requests.get(url, params={"apikey": api_key, "offset": 0}, timeout=6)
+            lines.append(f"\n*{label}* — HTTP {resp.status_code}")
+            if not resp.ok:
+                lines.append(f"  body: `{resp.text[:200]}`")
+                continue
+            data = resp.json()
+            status = data.get("status")
+            matches_raw = data.get("data", []) or []
+            lines.append(f"  status: `{status}` | matches: `{len(matches_raw)}`")
+            for m in matches_raw[:12]:
+                name     = (m.get("name") or "?")[:60]
+                teams    = " ".join(m.get("teams", []) or [])
+                raw_date = m.get("date") or ""
+                dt_gmt   = m.get("dateTimeGMT") or ""
+                started  = m.get("matchStarted")
+                ended    = m.get("matchEnded")
+                parsed   = _parse_match_date(raw_date or dt_gmt)
+                tracked  = _is_tracked_team(name) or _is_tracked_team(teams)
+                today_tag = "TODAY" if parsed == today_ist else ("FUTURE" if parsed > today_ist else "PAST" if parsed else "NODATE")
+                lines.append(
+                    f"  • {name}\n"
+                    f"     raw_date=`{raw_date}` | parsed=`{parsed}` ({today_tag}) | "
+                    f"started=`{started}` ended=`{ended}` | tracked=`{tracked}`"
+                )
+        except Exception as e:
+            lines.append(f"  EXCEPTION: `{e}`")
+
+    text = "\n".join(lines)
+    if len(text) > 3800:
+        text = text[:3800] + "\n…(truncated)"
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     text = update.message.text
@@ -2855,6 +2923,7 @@ def main() -> None:
     app.add_handler(CommandHandler("setpersona", setpersona_command))
     app.add_handler(CommandHandler("profiledump", profiledump_command))
     app.add_handler(CommandHandler("testapis", testapis_command))
+    app.add_handler(CommandHandler("cricdebug", cricdebug_command))
     app.add_handler(CallbackQueryHandler(handle_help_callback, pattern="^help_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, receive_voice))

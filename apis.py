@@ -1024,8 +1024,17 @@ def fetch_news(interests: str = "", query_text: str = "") -> Optional[str]:
         logger.debug("APIS | news | world query detected | keyword=%s", keyword or "(general)")
     else:
         feeds = _RSS_FEEDS_INDIA
-        keyword = _extract_first_keyword(interests)
-        cache_key = f"news:{keyword.lower() if keyword else 'india'}"
+        # Bug C2 (30 Apr 2026): user `news_interests` like "family"/"cooking"
+        # was extracted as the FIRST keyword and used as a HARD filter on the
+        # India RSS feeds (`if kw_lower not in title and not in desc: continue`).
+        # Most India top stories don't mention these lifestyle words → RSS
+        # returned nothing → NewsAPI /v2/everything?q=family fallback
+        # surfaced global tech press (VyOS, etc.) to seniors asking for
+        # India top news. The fix: top news must not be filtered by lifestyle
+        # interest. fetch_cricket_news is the dedicated path for sport-specific
+        # queries; other interests can be added as ranking biases post-pilot.
+        keyword = ""
+        cache_key = "news:india"
 
     hit, cached = _cache_get(cache_key)
     if hit:
