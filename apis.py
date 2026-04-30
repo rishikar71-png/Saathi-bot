@@ -824,6 +824,21 @@ _IRRELEVANT_TOPIC_SIGNALS = [
     "dead body", "body found", "found dead", "found hanging", "decomposed", "decomposing",
     "horror:", "bathroom horror", "gruesome", "missing woman", "missing girl",
     "corpse", "human remains", "skeletal remains",
+    # Bug D expansion (30 Apr 2026): missing-person + body-disposal stories
+    # were leaking through. The originals above only matched specific
+    # demographic forms ('missing woman'/'missing girl'); the world feed
+    # surfaced 'British influencer missing after Morocco trip, phone
+    # switched off for days' on April 30 because no signal matched.
+    "missing after", "missing for days", "missing for weeks",
+    "phone switched off", "phone went off", "phone has been off",
+    "abducted", "feared abducted", "feared dead", "presumed dead",
+    "buried alive", "decapitated", "dismembered", "incinerator",
+    "dumped body", "dumped her body", "dumped his body",
+    "body inside", "body in suitcase", "body in fridge", "body in freezer",
+    "body in barrel", "body in trunk",
+    "killed wife", "killed husband", "killed mother", "killed father",
+    "killed son", "killed daughter", "killed parents", "killed children",
+    "stabbed to death", "beaten to death", "burned to death",
     # Celebrity gossip irrelevant to seniors 65+ — applies to both India and world feeds
     "rehab", "divorc", "dating again", "break up", "breakup", "affair", "cheating",
     "baby shower", "baby bump", "pregnancy reveal", "engaged to", "wedding photos",
