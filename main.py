@@ -565,21 +565,49 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
                     except Exception:
                         pass
                 else:
-                    # Explicit scripted fallback — prevents DeepSeek using training knowledge
-                    # to fabricate yesterday's scores or invent a match result.
-                    # Note: Saathi tracks both India international matches AND all IPL teams.
-                    # If this fires, there is genuinely no live or scheduled match today.
-                    parts.append(
-                        "CRICKET — MANDATORY SCRIPTED RESPONSE:\n"
-                        "The live cricket API found no match scheduled for today (India international or IPL).\n"
-                        "You MUST respond with ONLY these sentences (adapt language to the user's preference):\n"
-                        "English: \"No cricket today — at least not in the schedule I can see. "
-                        "I'll have live updates the next time there's a match.\"\n"
-                        "Hindi: \"Aaj koi cricket match nahi dikh raha — schedule mein kuch nahi hai. "
-                        "Jab match hoga, main turant bata dunga.\"\n"
-                        "Do NOT add any match names, scores, teams, venues, or results from your training data.\n"
-                        "Do NOT use any cricket knowledge from your training data."
-                    )
+                    # Bug E1'' (30 Apr 2026): CricAPI free tier sometimes lags actual
+                    # fixtures by hours. The 30 Apr Bug E1 fix correctly tracked
+                    # yesterday's MI vs SRH match, but tonight's GT vs RCB at 19:30 IST
+                    # was missing from /currentMatches and /matches at 14:00 IST.
+                    # Before delivering the scripted no-match response, try the cricket
+                    # RSS feeds — ESPNCricinfo / Cricbuzz / NDTV Sports usually have
+                    # the day's match as a preview headline.
+                    cnews_fallback = None
+                    try:
+                        cnews_fallback = fetch_cricket_news(query_text=text)
+                    except Exception as _rss_err:
+                        logger.debug("LIVE_DATA | cricket_news fallback error | %s", _rss_err)
+
+                    if cnews_fallback:
+                        parts.append(
+                            "Cricket — raw data (from cricket news feeds; live API had "
+                            "no schedule data, but these headlines may indicate today's "
+                            "match):\n"
+                            f"{cnews_fallback}\n\n"
+                            "INSTRUCTION: If any of these headlines clearly reference a "
+                            "match today (look for IPL team names — Mumbai Indians, CSK, "
+                            "RCB, KKR, Gujarat Titans, Lucknow Super Giants, Delhi Capitals, "
+                            "Punjab Kings, Rajasthan Royals, Sunrisers Hyderabad — paired "
+                            "with 'today' / 'tonight' / 'aaj' / a date matching today / "
+                            "a kick-off time), share that match info naturally using ONLY "
+                            "what's stated in the headline. Do NOT invent scores, venues, "
+                            "or results not in the headline. If the headlines are general "
+                            "cricket coverage with no clear today-match signal, share them "
+                            "as cricket updates rather than claiming no match exists."
+                        )
+                    else:
+                        # Both CricAPI and cricket RSS silent — genuinely no data today.
+                        parts.append(
+                            "CRICKET — MANDATORY SCRIPTED RESPONSE:\n"
+                            "Both the live cricket API and cricket news feeds returned no data.\n"
+                            "You MUST respond with ONLY these sentences (adapt language to the user's preference):\n"
+                            "English: \"No cricket today — at least not in the schedule I can see. "
+                            "I'll have live updates the next time there's a match.\"\n"
+                            "Hindi: \"Aaj koi cricket match nahi dikh raha — schedule mein kuch nahi hai. "
+                            "Jab match hoga, main turant bata dunga.\"\n"
+                            "Do NOT add any match names, scores, teams, venues, or results from your training data.\n"
+                            "Do NOT use any cricket knowledge from your training data."
+                        )
             except Exception:
                 parts.append(
                     "CRICKET — MANDATORY SCRIPTED RESPONSE:\n"
