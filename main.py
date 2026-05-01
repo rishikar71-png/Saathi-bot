@@ -2683,6 +2683,58 @@ async def cricdebug_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             except Exception as inner_e:
                 lines.append(f"  EXCEPTION inside {label}: {inner_e}")
 
+        # === Cricbuzz probe (Bug E1''''): is Railway IP blocked here too? ===
+        # ESPN returns 403 from Railway despite 200 from residential Mac IPs
+        # (Cloudflare ASN-based bot detection). Cricbuzz uses different infra
+        # — worth probing before pivoting to hardcoded IPL schedule.
+        lines.append("\n=== Cricbuzz probe (Railway-side) ===")
+        _CB_UA = (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        _CB_HEADERS = {
+            "User-Agent": _CB_UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+        }
+        _CB_URLS = [
+            "https://www.cricbuzz.com/",
+            "https://www.cricbuzz.com/cricket-match/live-scores",
+            "https://www.cricbuzz.com/cricket-schedule/upcoming-series/all",
+        ]
+        for cb_url in _CB_URLS:
+            try:
+                r = requests.get(cb_url, headers=_CB_HEADERS, timeout=6)
+                lines.append(f"\n  URL: {cb_url}")
+                lines.append(f"  HTTP {r.status_code} | bytes={len(r.text)}")
+                if r.ok:
+                    body = r.text
+                    # Snippet 1: any "Rajasthan Royals vs Delhi Capitals, Nth Match" pattern
+                    import re as _re
+                    m1 = _re.findall(r'([A-Z][A-Za-z ]+ vs [A-Z][A-Za-z ]+,\s*\d+(?:st|nd|rd|th) Match[^<"]{0,40})', body)
+                    if m1:
+                        lines.append(f"  match-title hits: {len(m1)}")
+                        for s in m1[:3]:
+                            lines.append(f"    - {s.strip()[:90]}")
+                    # Snippet 2: timestamp-ish patterns
+                    m2 = _re.findall(r'(matchStartTimestamp[^,]{1,30}|data-(?:start|date)[^>"]{0,40})', body)
+                    if m2:
+                        lines.append(f"  ts/date attr hits: {len(m2)}")
+                        for s in m2[:2]:
+                            lines.append(f"    - {s[:90]}")
+                else:
+                    lines.append(f"  body[:120]: {r.text[:120]}")
+            except Exception as cb_e:
+                lines.append(f"  EXCEPTION: {cb_e}")
+
         text = "\n".join(lines)
         if len(text) > 3800:
             text = text[:3800] + "\n…(truncated)"
