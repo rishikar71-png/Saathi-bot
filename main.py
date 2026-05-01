@@ -74,6 +74,8 @@ from family import (
     relay_message_to_senior,
     build_relay_confirmation,
     check_and_send_weekly_report,
+    build_welcome_message,
+    update_family_member_name,
 )
 from policy import POLICY_COMMAND_RESPONSE, USER_POLICY_DOCUMENT
 
@@ -738,6 +740,50 @@ _JOIN_DECLINE_RE = re.compile(
 )
 _PENDING_JOIN_TTL_SEC = 600  # 10 minutes
 
+# FB-2 (1 May 2026): name-capture helpers for the post-Yes "what's your name?"
+# step. V9-compliant: short tokens use \b word boundaries (no substring match).
+_FAMILY_NAME_LEADING_AFFIRM_RE = re.compile(
+    r"^\s*(?:"
+    r"yes|yeah|yep|yup|y|sure|okay|ok|"
+    r"haan|ha|han|hanji|haanji|ji|"
+    r"bilkul|theek|thik"
+    r")\b[\s,\.\-:!\?]*",
+    re.IGNORECASE,
+)
+_FAMILY_NAME_TRAILING_PUNCT_RE = re.compile(r"[\s\.\!\?,;:\-]+$")
+
+
+def _parse_family_member_name(text: str) -> str:
+    """
+    Parse a family member's name reply for the FB-2 flow.
+
+    Returns the cleaned name (title-cased, ≤30 chars), or '' if the input is
+    unusable (empty, no alpha char, all affirmation/punctuation).
+
+    Strips up to 2 levels of leading affirmations (handles 'yes. sure. priya').
+    Trims at 30 chars. Caller logs warning on truncation.
+    """
+    if not text:
+        return ""
+    raw = text.strip()
+    # Strip leading affirmations (up to 2 levels — "yes. sure. Priya")
+    for _ in range(2):
+        new = _FAMILY_NAME_LEADING_AFFIRM_RE.sub("", raw, count=1).strip()
+        if new == raw:
+            break
+        raw = new
+    # Strip trailing punctuation
+    raw = _FAMILY_NAME_TRAILING_PUNCT_RE.sub("", raw).strip()
+    if not raw:
+        return ""
+    # Must contain at least one alpha char
+    if not any(c.isalpha() for c in raw):
+        return ""
+    # Trim to 30 chars + title-case
+    if len(raw) > 30:
+        raw = raw[:30].rstrip()
+    return raw.title()
+
 
 def _pending_join_is_fresh(asked_at_str: str) -> bool:
     """Return True if the pending join confirmation is still within TTL."""
@@ -786,30 +832,63 @@ async def _handle_bare_code_flow(user_id: int, text: str, user_row, update: Upda
         else:
             # Pending is fresh — interpret as yes/no/other
             # Re-resolve senior name from DB (don't trust a stale cache)
+            senior_name = "your family member"
+            display_name = "your family member"
             try:
                 from database import get_or_create_user as _get_senior
                 senior_row = await asyncio.to_thread(_get_senior, pending_senior_id)
-                senior_name = (senior_row["name"] if senior_row else None) or "your family member"
+                if senior_row:
+                    senior_name = senior_row["name"] or "your family member"
+                    # FB-1: prefer family_term (set via /familycode) over raw name
+                    family_term = None
+                    try:
+                        family_term = (
+                            senior_row["family_term"]
+                            if "family_term" in senior_row.keys() else None
+                        )
+                    except Exception:
+                        family_term = None
+                    display_name = family_term if family_term else senior_name
             except Exception:
-                senior_name = "your family member"
+                pass
 
             if _JOIN_AFFIRM_RE.match(stripped):
-                # Register as family
-                success, welcome_msg = await asyncio.to_thread(
+                # Register the family member with placeholder name='Family'.
+                # FB-2 (1 May 2026): immediately ask the family member for
+                # their actual name; UPDATE happens in the name-capture
+                # handler in _run_pipeline (next inbound message).
+                success, _welcome_unused = await asyncio.to_thread(
                     complete_join_for_senior, pending_senior_id, user_id,
                 )
-                # Clear pending state
-                _uuf(user_id, pending_join_senior_id=None, pending_join_asked_at=None)
+                if not success:
+                    await update.message.reply_text(
+                        "Something went wrong while connecting you. "
+                        "Please try again in a moment. 🙏"
+                    )
+                    return True
+                # Clear pending state + set awaiting_family_name flag
+                _uuf(
+                    user_id,
+                    pending_join_senior_id=None,
+                    pending_join_asked_at=None,
+                    awaiting_family_name=1,
+                )
                 _invalidate_user_cache(user_id)
                 # Invalidate family cache so the next message from this user
                 # is recognised as a family member
                 _FAMILY_CACHE.pop(user_id, None)
+                ask = (
+                    f"Connecting you now. 🙏\n\n"
+                    f"Quick question — what name should *{display_name}* see "
+                    f"your messages from? (For example: your first name, or "
+                    f"what *{display_name}* usually calls you.)"
+                )
                 try:
-                    await update.message.reply_text(welcome_msg, parse_mode="Markdown")
+                    await update.message.reply_text(ask, parse_mode="Markdown")
                 except Exception:
-                    await update.message.reply_text(welcome_msg)
+                    await update.message.reply_text(ask)
                 logger.info(
-                    "JOIN | confirmed via bare code | user_id=%s | senior_id=%s",
+                    "JOIN | name capture started | user_id=%s | senior_id=%s",
                     user_id, pending_senior_id,
                 )
                 return True
@@ -833,7 +912,7 @@ async def _handle_bare_code_flow(user_id: int, text: str, user_row, update: Upda
             new_code_candidate = stripped.upper()
             if not _BARE_CODE_RE.match(new_code_candidate):
                 await update.message.reply_text(
-                    f"Just to confirm — is this *{senior_name}*'s Saathi?\n\n"
+                    f"Just to confirm — is this *{display_name}*'s Saathi?\n\n"
                     f"Please reply *yes* to connect, or *no* to cancel.",
                     parse_mode="Markdown",
                 )
@@ -945,6 +1024,87 @@ async def _run_pipeline(
                         "Please try again in a little while."
                     )
             return  # Family messages beyond this point are not processed normally
+
+        # --- FB-2 (1 May 2026): family member name capture ---
+        # After the bare-code Yes confirmation, the family member is asked
+        # for their name. This message is the answer — UPDATE family_members.name,
+        # send full welcome message, clear the awaiting flag. Runs AFTER EOL
+        # handling (so death notifications win) and BEFORE the relay path
+        # (so the name reply isn't accidentally sent to the senior as content).
+        if senior_status == "active":
+            _awaiting_name = False
+            try:
+                _awaiting_name = bool(
+                    user_row["awaiting_family_name"]
+                    if "awaiting_family_name" in user_row.keys() else 0
+                )
+            except Exception:
+                _awaiting_name = False
+
+            if _awaiting_name:
+                # Compute display_name once for all branches
+                _senior_name = senior_row["name"] if senior_row else "your family member"
+                _family_term = None
+                if senior_row:
+                    try:
+                        _family_term = (
+                            senior_row["family_term"]
+                            if "family_term" in senior_row.keys() else None
+                        )
+                    except Exception:
+                        _family_term = None
+                _display_name = _family_term if _family_term else _senior_name
+
+                parsed_name = _parse_family_member_name(text)
+                if not parsed_name:
+                    # Unusable input — re-prompt without clearing the flag
+                    logger.warning(
+                        "JOIN | name reply unusable | user_id=%s | raw=%r",
+                        user_id, (text[:60] if text else None),
+                    )
+                    await update.message.reply_text(
+                        f"Sorry, I didn't quite catch that. "
+                        f"What name should *{_display_name}* see your messages from? "
+                        f"Just your first name is fine.",
+                        parse_mode="Markdown",
+                    )
+                    return
+
+                # Log truncation if the input was longer than 30 chars
+                if len(text.strip()) > 30:
+                    logger.warning(
+                        "FAMILY_NAME | input >30 chars, trimmed | original=%r",
+                        text[:120],
+                    )
+
+                # UPDATE family_members.name
+                ok = await asyncio.to_thread(
+                    update_family_member_name,
+                    senior_id_for_family, user_id, parsed_name,
+                )
+                if not ok:
+                    await update.message.reply_text(
+                        "Something went wrong saving that name. Please try again. 🙏"
+                    )
+                    return
+
+                # Clear awaiting_family_name flag, invalidate user cache
+                from database import update_user_fields as _uuf_name
+                _uuf_name(user_id, awaiting_family_name=0)
+                _invalidate_user_cache(user_id)
+
+                # Send the full welcome message — uses display_name, not the
+                # family member's just-captured name (which goes to the senior side)
+                welcome_msg = build_welcome_message(_display_name, already_linked=False)
+                try:
+                    await update.message.reply_text(welcome_msg, parse_mode="Markdown")
+                except Exception:
+                    await update.message.reply_text(welcome_msg)
+                logger.info(
+                    "JOIN | name captured | user_id=%s | senior_id=%s | name=%s",
+                    user_id, senior_id_for_family, parsed_name,
+                )
+                return
 
         # --- Family bridge relay (active senior, registered family member) ---
         # Relay the message warmly to the senior.  One-way: family → senior.

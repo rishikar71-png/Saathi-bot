@@ -893,6 +893,11 @@ _USERS_NEW_COLUMNS = [
     "ALTER TABLE users ADD COLUMN pending_medicines INTEGER DEFAULT 0",
     "ALTER TABLE users ADD COLUMN awaiting_pending_capture TEXT DEFAULT NULL",
     "ALTER TABLE users ADD COLUMN pending_prompt_sent_at TEXT DEFAULT NULL",
+    # 1 May 2026 (Patch 2 / FB-2) — bare-code join now asks the family member
+    # for their name AFTER they confirm "yes" (so the senior sees a real name
+    # instead of the generic "Family"). awaiting_family_name=1 means the next
+    # inbound message from this user is their name reply, not a relay candidate.
+    "ALTER TABLE users ADD COLUMN awaiting_family_name INTEGER DEFAULT 0",
 ]
 
 

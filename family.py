@@ -303,13 +303,13 @@ def complete_join_for_senior(senior_user_id: int, family_telegram_id: int) -> tu
             ).fetchone()
 
         if existing:
-            return True, (
-                f"You're already connected to *{display_name}*'s Saathi. 🙏\n\n"
-                f"Any message you send here will be passed to {display_name}.\n"
-                f"You'll also receive a weekly update every Sunday."
-            )
+            return True, build_welcome_message(display_name, already_linked=True)
 
-        # Register family member
+        # Register family member with placeholder name='Family'. The bare-code
+        # flow (FB-2 fix, 1 May 2026) immediately asks the family member for
+        # their actual name and UPDATEs this row via update_family_member_name.
+        # The legacy /join command (still calls complete_join_for_senior with
+        # no follow-up) keeps the placeholder — accepted for backward compat.
         with get_connection() as conn:
             conn.execute(
                 """INSERT INTO family_members
@@ -327,17 +327,76 @@ def complete_join_for_senior(senior_user_id: int, family_telegram_id: int) -> tu
             senior_user_id, family_telegram_id,
         )
 
-        return True, (
-            f"You're now connected to *{display_name}*'s Saathi. 🙏\n\n"
-            f"Any message you send here will be passed to {display_name}.\n\n"
-            f"You'll also receive a brief update every Sunday — "
-            f"mood, health mentions, and how their week went.\n\n"
-            f"Type anything now to send {display_name} a message."
-        )
+        return True, build_welcome_message(display_name, already_linked=False)
 
     except Exception as e:
         logger.error("FAMILY | complete_join_for_senior failed: %s", e)
         return False, "Something went wrong. Please try again in a moment. 🙏"
+
+
+def build_welcome_message(display_name: str, already_linked: bool = False) -> str:
+    """
+    Render the welcome message a family member sees after a successful join.
+
+    FB-2 fix (1 May 2026) extracted this from complete_join_for_senior so the
+    bare-code flow can call it AFTER the family member's name is captured (not
+    immediately at the Yes confirmation step). Also called inline by
+    complete_join_for_senior for the legacy /join path.
+
+    `display_name` is family_term if the senior set one (e.g. "Ma"), else
+    senior's actual name. Already wrapped in *...* by the caller? No — this
+    function adds the Markdown emphasis itself so the plain string passes in.
+    """
+    if already_linked:
+        return (
+            f"You're already connected to *{display_name}*'s Saathi. 🙏\n\n"
+            f"Any message you send here will be passed to {display_name}.\n"
+            f"You'll also receive a weekly update every Sunday."
+        )
+    return (
+        f"You're now connected to *{display_name}*'s Saathi. 🙏\n\n"
+        f"Any message you send here will be passed to {display_name}.\n\n"
+        f"You'll also receive a brief update every Sunday — "
+        f"mood, health mentions, and how their week went.\n\n"
+        f"Type anything now to send {display_name} a message."
+    )
+
+
+def update_family_member_name(
+    senior_user_id: int,
+    family_telegram_id: int,
+    new_name: str,
+) -> bool:
+    """
+    Replace the placeholder 'Family' name on a family_members row with the
+    name the family member supplied themselves. Returns True on success.
+
+    Added 1 May 2026 for FB-2 fix — called from main.py's name-capture handler
+    after the family member replies to "What name should *Ma* see your messages
+    from?". Caller is responsible for validation (length, content); this
+    function just writes.
+    """
+    if not new_name or not new_name.strip():
+        return False
+    cleaned = new_name.strip()[:60]  # absolute defensive cap
+    try:
+        with get_connection() as conn:
+            cur = conn.execute(
+                "UPDATE family_members SET name = ? "
+                "WHERE user_id = ? AND telegram_user_id = ?",
+                (cleaned, senior_user_id, family_telegram_id),
+            )
+            conn.commit()
+            updated = cur.rowcount
+        logger.info(
+            "FAMILY | name updated | senior_user_id=%s | family_telegram_id=%s | "
+            "name=%s | rows=%d",
+            senior_user_id, family_telegram_id, cleaned, updated,
+        )
+        return updated > 0
+    except Exception as e:
+        logger.error("FAMILY | update_family_member_name failed: %s", e)
+        return False
 
 
 def join_by_code(code: str, family_telegram_id: int) -> tuple:

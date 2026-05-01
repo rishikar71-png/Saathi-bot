@@ -19,7 +19,7 @@ V1–V10 (in CLAUDE.md) applies to every patch in this list.
 
 ## P1 — pilot-blocking trust/clarity breaks
 
-### FB-1: `family_term` ignored in family-side bot messages ⬜
+### FB-1: `family_term` ignored in family-side bot messages ✅ (Patch 1, commit 7c75188 — pending live test)
 
 **Symptom:** Senior tells `/familycode` that family member calls them "Ma".
 Bot stores `users.family_term="Ma"`. But every Saathi-to-family message
@@ -51,7 +51,7 @@ prompt at main.py:894 uses returned `senior_name`.
 
 ---
 
-### FB-2: `family_members.name` hardcoded to `'Family'` on bare-code join ⬜
+### FB-2: `family_members.name` hardcoded to `'Family'` on bare-code join 🔄 (code shipped, live test pending)
 
 **Symptom:** Senior sees `Family ne aapko sandesh bheja hai 💌` — generic,
 not the actual sender's name.
@@ -91,7 +91,7 @@ Lean: separate column — different lifecycle.
 
 ---
 
-### FB-3: Relay wrappers in Hindi when senior was onboarded in English ⬜
+### FB-3: Relay wrappers in Hindi when senior was onboarded in English ✅ (Patch 1, commit 7c75188 — pending live test)
 
 **Symptom:** Both relay directions render in Hindi:
 - Senior side: `Family ne aapko sandesh bheja hai 💌`
@@ -180,7 +180,7 @@ message (per FB-1).
 
 ## P3 — formatting
 
-### FB-6: Senior-side relay format collapses paragraph break ⬜
+### FB-6: Senior-side relay format collapses paragraph break ✅ (Patch 1, commit 7c75188 — pending live test)
 
 **Symptom:** Code at `family.py:381-382` writes
 `*{family_name}* ne aapko sandesh bheja hai 💌\n\n_{message_text}_` but
