@@ -27,6 +27,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from database import get_connection, update_user_fields
+from language_utils import detect_message_language
 
 logger = logging.getLogger(__name__)
 
@@ -218,9 +219,14 @@ def get_or_create_linking_code(user_id: int) -> str:
 
 def lookup_senior_by_code(code: str) -> Optional[dict]:
     """
-    Resolve a linking code to {senior_user_id, senior_name, language} without
-    registering anything. Used by the bare-code auto-detect flow to show a
-    confirmation question before calling join_by_code().
+    Resolve a linking code to senior info without registering anything. Used by
+    the bare-code auto-detect flow to show a confirmation question before
+    calling join_by_code().
+
+    Returns dict with: senior_user_id, senior_name, display_name, language.
+    `display_name` is family_term if set (what the family member calls the
+    senior, e.g. "Ma"), else falls back to senior's actual name (FB-1 fix,
+    1 May 2026).
 
     Returns None if the code doesn't match or the senior is not active.
     """
@@ -230,7 +236,7 @@ def lookup_senior_by_code(code: str) -> Optional[dict]:
     try:
         with get_connection() as conn:
             row = conn.execute(
-                "SELECT user_id, name, language, account_status FROM users "
+                "SELECT user_id, name, language, family_term, account_status FROM users "
                 "WHERE family_linking_code = ?",
                 (code,),
             ).fetchone()
@@ -238,9 +244,18 @@ def lookup_senior_by_code(code: str) -> Optional[dict]:
             return None
         if row["account_status"] and row["account_status"] != "active":
             return None
+        senior_name = row["name"] or "your family member"
+        # FB-1: prefer family_term if the senior set one via /familycode
+        family_term = None
+        try:
+            family_term = row["family_term"] if "family_term" in row.keys() else None
+        except Exception:
+            family_term = None
+        display_name = family_term if family_term else senior_name
         return {
             "senior_user_id": row["user_id"],
-            "senior_name":    row["name"] or "your family member",
+            "senior_name":    senior_name,
+            "display_name":   display_name,
             "language":       row["language"] or "english",
         }
     except Exception as e:
@@ -261,10 +276,23 @@ def complete_join_for_senior(senior_user_id: int, family_telegram_id: int) -> tu
     try:
         with get_connection() as conn:
             senior_row = conn.execute(
-                "SELECT name FROM users WHERE user_id = ?",
+                "SELECT name, family_term FROM users WHERE user_id = ?",
                 (senior_user_id,),
             ).fetchone()
         senior_name = (senior_row["name"] if senior_row else None) or "your family member"
+        # FB-1 fix (1 May 2026): prefer family_term if the senior set one via
+        # /familycode (e.g. "Ma"). Falls back to actual name for older seniors
+        # who set up before this enhancement.
+        family_term = None
+        if senior_row:
+            try:
+                family_term = (
+                    senior_row["family_term"]
+                    if "family_term" in senior_row.keys() else None
+                )
+            except Exception:
+                family_term = None
+        display_name = family_term if family_term else senior_name
 
         # Check if already linked
         with get_connection() as conn:
@@ -276,8 +304,8 @@ def complete_join_for_senior(senior_user_id: int, family_telegram_id: int) -> tu
 
         if existing:
             return True, (
-                f"You're already connected to *{senior_name}*'s Saathi. 🙏\n\n"
-                f"Any message you send here will be passed to {senior_name}.\n"
+                f"You're already connected to *{display_name}*'s Saathi. 🙏\n\n"
+                f"Any message you send here will be passed to {display_name}.\n"
                 f"You'll also receive a weekly update every Sunday."
             )
 
@@ -300,11 +328,11 @@ def complete_join_for_senior(senior_user_id: int, family_telegram_id: int) -> tu
         )
 
         return True, (
-            f"You're now connected to *{senior_name}*'s Saathi. 🙏\n\n"
-            f"Any message you send here will be passed to {senior_name}.\n\n"
+            f"You're now connected to *{display_name}*'s Saathi. 🙏\n\n"
+            f"Any message you send here will be passed to {display_name}.\n\n"
             f"You'll also receive a brief update every Sunday — "
             f"mood, health mentions, and how their week went.\n\n"
-            f"Type anything now to send {senior_name} a message."
+            f"Type anything now to send {display_name} a message."
         )
 
     except Exception as e:
@@ -340,7 +368,13 @@ def join_by_code(code: str, family_telegram_id: int) -> tuple:
 # ---------------------------------------------------------------------------
 
 def get_family_member_info(senior_user_id: int, family_telegram_id: int) -> dict:
-    """Return name and language info for a registered family member."""
+    """
+    Return the family member's display name as the senior should see it.
+
+    FB-3 fix (1 May 2026): no longer reads senior's stored language. Relay
+    wrapper language is now decided per-message in relay_message_to_senior()
+    based on the actual message script, not on a learned/drifted preference.
+    """
     try:
         with get_connection() as conn:
             fm = conn.execute(
@@ -348,17 +382,12 @@ def get_family_member_info(senior_user_id: int, family_telegram_id: int) -> dict
                 "WHERE user_id = ? AND telegram_user_id = ?",
                 (senior_user_id, family_telegram_id),
             ).fetchone()
-            senior = conn.execute(
-                "SELECT language FROM users WHERE user_id = ?",
-                (senior_user_id,),
-            ).fetchone()
 
         return {
             "family_name": (fm["name"] if fm and fm["name"] else "Aapke parivar wale"),
-            "language": (senior["language"] if senior and senior["language"] else "hindi"),
         }
     except Exception:
-        return {"family_name": "Aapke parivar wale", "language": "hindi"}
+        return {"family_name": "Aapke parivar wale"}
 
 
 async def relay_message_to_senior(
@@ -374,17 +403,23 @@ async def relay_message_to_senior(
     try:
         info = get_family_member_info(senior_user_id, family_telegram_id)
         family_name = info["family_name"]
-        language = info["language"]
-
+        # FB-3 fix (1 May 2026): match wrapper language to the actual message
+        # script, not the senior's stored language (which drifts via the
+        # implicit script-detection learning loop and was producing Hindi
+        # wrappers for English messages).
+        language = detect_message_language(message_text)
+        # FB-6 fix (1 May 2026): Telegram Markdown v1 was collapsing the
+        # paragraph break adjacent to italics into an inline space on Android.
+        # Use straight-quote prefix on the body and keep the \n\n separator.
         if language in ("hindi", "hinglish"):
             relay_text = (
                 f"*{family_name}* ne aapko sandesh bheja hai 💌\n\n"
-                f"_{message_text}_"
+                f"\"{message_text}\""
             )
         else:
             relay_text = (
                 f"*{family_name}* sent you a message 💌\n\n"
-                f"_{message_text}_"
+                f"\"{message_text}\""
             )
 
         await bot.send_message(
@@ -404,11 +439,20 @@ async def relay_message_to_senior(
         return False
 
 
-def build_relay_confirmation(senior_name: str, language: str) -> str:
-    """Short confirmation to send back to the family member after relay."""
+def build_relay_confirmation(display_name: str, message_text: str) -> str:
+    """
+    Short confirmation to send back to the family member after relay.
+
+    FB-1 fix (1 May 2026): takes display_name (family_term if set, else senior's
+    actual name) so the family member sees the same term they were promised at
+    the bare-code confirmation step.
+    FB-3 fix (1 May 2026): language now decided per-message from the family
+    member's own message script, not the senior's stored language.
+    """
+    language = detect_message_language(message_text)
     if language in ("hindi", "hinglish"):
-        return f"Aapka sandesh *{senior_name}* tak pahuncha diya gaya. 🙏"
-    return f"Your message has been sent to *{senior_name}*. 🙏"
+        return f"Aapka sandesh *{display_name}* tak pahuncha diya gaya. 🙏"
+    return f"Your message has been sent to *{display_name}*. 🙏"
 
 
 # ---------------------------------------------------------------------------

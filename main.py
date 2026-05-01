@@ -340,36 +340,10 @@ def _detect_message_language(text: str) -> str:
     This is intentionally simple — false positives are fine.
     The goal is to catch clear cases, not edge cases.
     """
-    import unicodedata
-
-    # Count Devanagari characters
-    devanagari_count = sum(
-        1 for ch in text
-        if '\u0900' <= ch <= '\u097F'  # Devanagari Unicode block
-    )
-    # If more than 3 Devanagari chars, it's Hindi
-    if devanagari_count > 3:
-        return "hindi"
-
-    # Check for common Hindi/Urdu words written in Roman script
-    _HINGLISH_MARKERS = [
-        "hoon", "hun", "hai", "hain", "tha", "thi", "the",
-        "kya", "nahi", "nhi", "acha", "achha", "theek", "thik",
-        "bilkul", "haan", "naa", "bhi", "aur", "lekin", "par",
-        "mujhe", "mera", "meri", "mere", "aap", "tum", "main",
-        "kuch", "bahut", "thoda", "zyada", "bohot",
-        "abhi", "aaj", "kal", "phir", "dobara",
-        "ghar", "khana", "pani", "beta", "beti",
-        "ji", "yaar", "bhai", "didi",
-    ]
-    text_lower = text.lower()
-    # Word-boundary aware match: split on spaces and punctuation
-    words = set(text_lower.replace(",", " ").replace(".", " ").split())
-    hinglish_hits = sum(1 for w in _HINGLISH_MARKERS if w in words)
-    if hinglish_hits >= 2:
-        return "hinglish"
-
-    return "english"
+    # Implementation moved to language_utils.py on 1 May 2026 (FB-3 fix) so
+    # family.py can import without circular dependency. Behavior unchanged.
+    from language_utils import detect_message_language
+    return detect_message_language(text)
 
 
 def _update_language_learning(user_id: int, stored_language: str, detected_language: str) -> str:
@@ -891,9 +865,11 @@ async def _handle_bare_code_flow(user_id: int, text: str, user_row, update: Upda
         logger.error("JOIN | failed to store pending | user_id=%s | err=%s", user_id, e)
         return False
 
-    senior_name = senior["senior_name"]
+    # FB-1 fix (1 May 2026): use display_name (family_term if senior set one
+    # via /familycode, else senior's actual name) instead of raw name.
+    display_name = senior.get("display_name") or senior["senior_name"]
     await update.message.reply_text(
-        f"This code will connect you to *{senior_name}*'s Saathi.\n\n"
+        f"This code will connect you to *{display_name}*'s Saathi.\n\n"
         f"Is that correct? Reply *yes* to connect, or *no* to cancel.",
         parse_mode="Markdown",
     )
@@ -977,9 +953,24 @@ async def _run_pipeline(
                 senior_id_for_family, user_id, text, context.bot,
             )
             if sent:
+                # FB-1 fix (1 May 2026): prefer family_term (e.g. "Ma") over
+                # raw senior name in the confirmation back to the family
+                # member. Falls back to actual name for older seniors.
                 senior_name = senior_row["name"] if senior_row else "your family member"
-                senior_lang = senior_row["language"] if senior_row else "hindi"
-                confirm = build_relay_confirmation(senior_name, senior_lang)
+                family_term_val = None
+                if senior_row:
+                    try:
+                        family_term_val = (
+                            senior_row["family_term"]
+                            if "family_term" in senior_row.keys() else None
+                        )
+                    except Exception:
+                        family_term_val = None
+                display_name = family_term_val if family_term_val else senior_name
+                # FB-3 fix (1 May 2026): pass the family member's own message
+                # text so build_relay_confirmation can match wrapper language
+                # to message script (no global state).
+                confirm = build_relay_confirmation(display_name, text)
                 await update.message.reply_text(confirm, parse_mode="Markdown")
             else:
                 await update.message.reply_text(
