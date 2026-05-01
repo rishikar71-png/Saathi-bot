@@ -456,7 +456,10 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
         return None
 
     try:
-        from apis import fetch_news, fetch_cricket, fetch_cricket_news, fetch_weather
+        from apis import (
+            fetch_news, fetch_cricket, fetch_cricket_news, fetch_weather,
+            fetch_today_ipl_from_espn,
+        )
     except ImportError:
         return None
 
@@ -565,49 +568,70 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
                     except Exception:
                         pass
                 else:
-                    # Bug E1'' (30 Apr 2026): CricAPI free tier sometimes lags actual
-                    # fixtures by hours. The 30 Apr Bug E1 fix correctly tracked
-                    # yesterday's MI vs SRH match, but tonight's GT vs RCB at 19:30 IST
-                    # was missing from /currentMatches and /matches at 14:00 IST.
-                    # Before delivering the scripted no-match response, try the cricket
-                    # RSS feeds — ESPNCricinfo / Cricbuzz / NDTV Sports usually have
-                    # the day's match as a preview headline.
-                    cnews_fallback = None
+                    # Bug E1''' (1 May 2026): CricAPI free tier silent on today's
+                    # IPL fixture (RR v DC at Jaipur, 19:30 IST). RSS fallback
+                    # surfaced post-match coverage from yesterday but no schedule.
+                    # New schedule-source: scrape ESPNCricinfo homepage —
+                    # always carries today's IPL match.
+                    #
+                    # Priority order: CricAPI -> ESPN homepage -> cricket RSS ->
+                    # scripted no-match.
+                    espn_match = None
                     try:
-                        cnews_fallback = fetch_cricket_news(query_text=text)
-                    except Exception as _rss_err:
-                        logger.debug("LIVE_DATA | cricket_news fallback error | %s", _rss_err)
+                        espn_match = fetch_today_ipl_from_espn()
+                    except Exception as _espn_err:
+                        logger.debug("LIVE_DATA | ESPN scrape error | %s", _espn_err)
 
-                    if cnews_fallback:
+                    if espn_match:
                         parts.append(
-                            "Cricket — raw data (from cricket news feeds; live API had "
-                            "no schedule data, but these headlines may indicate today's "
-                            "match):\n"
-                            f"{cnews_fallback}\n\n"
-                            "INSTRUCTION: If any of these headlines clearly reference a "
-                            "match today (look for IPL team names — Mumbai Indians, CSK, "
-                            "RCB, KKR, Gujarat Titans, Lucknow Super Giants, Delhi Capitals, "
-                            "Punjab Kings, Rajasthan Royals, Sunrisers Hyderabad — paired "
-                            "with 'today' / 'tonight' / 'aaj' / a date matching today / "
-                            "a kick-off time), share that match info naturally using ONLY "
-                            "what's stated in the headline. Do NOT invent scores, venues, "
-                            "or results not in the headline. If the headlines are general "
-                            "cricket coverage with no clear today-match signal, share them "
-                            "as cricket updates rather than claiming no match exists."
+                            "Cricket — raw data (from ESPNCricinfo today's schedule):\n"
+                            f"{espn_match}\n\n"
+                            "INSTRUCTION: Share this match info naturally with the senior "
+                            "(in the language they're using). The teams, venue, date, and "
+                            "start time above are factual — use them. Do NOT invent any "
+                            "score, result, or detail not present above."
                         )
                     else:
-                        # Both CricAPI and cricket RSS silent — genuinely no data today.
-                        parts.append(
-                            "CRICKET — MANDATORY SCRIPTED RESPONSE:\n"
-                            "Both the live cricket API and cricket news feeds returned no data.\n"
-                            "You MUST respond with ONLY these sentences (adapt language to the user's preference):\n"
-                            "English: \"No cricket today — at least not in the schedule I can see. "
-                            "I'll have live updates the next time there's a match.\"\n"
-                            "Hindi: \"Aaj koi cricket match nahi dikh raha — schedule mein kuch nahi hai. "
-                            "Jab match hoga, main turant bata dunga.\"\n"
-                            "Do NOT add any match names, scores, teams, venues, or results from your training data.\n"
-                            "Do NOT use any cricket knowledge from your training data."
-                        )
+                        # ESPN scrape also returned nothing. Last fallback —
+                        # cricket news RSS may still mention an upcoming match
+                        # in a preview headline.
+                        cnews_fallback = None
+                        try:
+                            cnews_fallback = fetch_cricket_news(query_text=text)
+                        except Exception as _rss_err:
+                            logger.debug("LIVE_DATA | cricket_news fallback error | %s", _rss_err)
+
+                        if cnews_fallback:
+                            parts.append(
+                                "Cricket — raw data (from cricket news feeds; "
+                                "neither the live API nor ESPNCricinfo had schedule "
+                                "data, but these headlines may indicate today's "
+                                "match):\n"
+                                f"{cnews_fallback}\n\n"
+                                "INSTRUCTION: If any of these headlines clearly "
+                                "reference a match today (look for IPL team names "
+                                "paired with 'today' / 'tonight' / 'aaj' / a date "
+                                "matching today / a kick-off time), share that "
+                                "match info naturally using ONLY what's stated in "
+                                "the headline. Do NOT invent scores, venues, or "
+                                "results not in the headline. If the headlines are "
+                                "general cricket coverage with no clear today-match "
+                                "signal, share them as cricket updates rather than "
+                                "claiming no match exists."
+                            )
+                        else:
+                            # All three sources silent — genuinely no data today.
+                            parts.append(
+                                "CRICKET — MANDATORY SCRIPTED RESPONSE:\n"
+                                "The live cricket API, ESPNCricinfo, and cricket news feeds all returned no data.\n"
+                                "You MUST respond with ONLY these sentences (adapt language to the user's preference):\n"
+                                "English: \"No cricket today — at least not in the schedule I can see. "
+                                "I'll have live updates the next time there's a match.\"\n"
+                                "Hindi: \"Aaj koi cricket match nahi dikh raha — schedule mein kuch nahi hai. "
+                                "Jab match hoga, main turant bata dunga.\"\n"
+                                "Do NOT add any match names, scores, teams, venues, or results from your training data.\n"
+                                "Do NOT use any cricket knowledge from your training data."
+                            )
             except Exception:
                 parts.append(
                     "CRICKET — MANDATORY SCRIPTED RESPONSE:\n"

@@ -689,6 +689,194 @@ def _format_match_summary(match: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Cricket schedule fallback — ESPNCricinfo homepage scraper (Bug E1''',
+# 1 May 2026)
+#
+# CricAPI free tier sometimes lags actual fixtures. On 1 May 2026, today's
+# IPL match (RR vs DC at Jaipur, 19:30 IST) was missing from CricAPI's
+# /currentMatches and /matches; the existing RSS-news fallback returned
+# yesterday's post-match coverage (Holder/Phillips) but no schedule.
+# ESPNCricinfo's homepage renders today's IPL fixture in two parseable
+# forms:
+#
+#   (A) Embedded JSON match titles like:
+#       "43rd Match: Rajasthan Royals v Delhi Capitals at Jaipur, May 1, 2026"
+#       — gives full team names + venue + date.
+#
+#   (B) Stripped-text "Today" block like:
+#       "IPL  •  Jaipur RR DC Today 7:30 PM Match yet to begin"
+#       — gives start time + status (Today/Live/Stumps).
+#
+# Combining the two yields a complete schedule line. This is best-effort:
+# if ESPN changes layout the parser returns None and the existing
+# cricket_news RSS fallback fires.
+# ---------------------------------------------------------------------------
+
+_ESPN_HOMEPAGE_URL = "https://www.espncricinfo.com/"
+_ESPN_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+# Combined match-title + startTime regex against ESPN's SSR JSON.
+# Matches the title block:
+#   "title":"43rd Match: Rajasthan Royals v Delhi Capitals at Jaipur, May 1, 2026"
+# then within ~800 chars looks for the matching:
+#   "startTime":"2026-05-01T14:00:00.000Z"
+#
+# We use the JSON path (not the visible UI text) because ESPNCricinfo is a
+# JS-heavy SPA: the "Today 7:30 PM" UI block is client-side rendered and is
+# NOT in the HTML that curl/requests sees. The SSR JSON is — and it carries
+# startTime in ISO-8601 UTC (which we convert to IST).
+#
+# Permissive title prefix (≤50 chars before ":") so Final / Qualifier 1 /
+# Eliminator / Nth Match all match.
+_ESPN_TITLE_TIME_RE = re.compile(
+    r'"title":"([^"]{1,50}:\s*([^"]+?) v ([^"]+?) at ([^,"]+),\s*(\w+)\s+(\d+),\s*(\d{4}))"'
+    r'[^}]{0,800}?'
+    r'"startTime":"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)"'
+)
+
+# IPL filter — full team names only (substrings ≥6 chars, collision-safe).
+# Used to drop non-IPL matches the regex pulls in (e.g. Nepal v UAE).
+_ESPN_IPL_TEAM_FULLNAMES = {
+    "mumbai indians", "chennai super kings",
+    "royal challengers bengaluru", "royal challengers bangalore",
+    "lucknow super giants", "gujarat titans", "kolkata knight riders",
+    "punjab kings", "rajasthan royals", "delhi capitals", "sunrisers hyderabad",
+}
+
+
+def _parse_espn_homepage(html: str, today_ist: str) -> Optional[str]:
+    """
+    Extract today's IPL match(es) from ESPNCricinfo homepage HTML.
+
+    Args:
+        html: raw HTML of espncricinfo.com homepage
+        today_ist: today's date as "YYYY-MM-DD" (caller computes in IST)
+
+    Returns:
+        Formatted summary string ready for DeepSeek, or None if no IPL
+        match scheduled today is found in the page.
+
+    Format examples:
+        "TODAY (IPL, upcoming) — Rajasthan Royals v Delhi Capitals — at Jaipur — 2026-05-01 — start 7:30 PM IST"
+        "LIVE NOW (IPL) — Mumbai Indians v CSK — at Wankhede — 2026-05-01 — start 7:30 PM IST"
+
+    On a doubleheader day returns one line per match, newline-separated.
+
+    Filtering by today's IST date is applied AFTER UTC->IST conversion of
+    startTime (not the title's calendar date), so a 9:00 AM IST match shows
+    on the IST calendar day it actually starts — the JSON title's date can
+    be off by a day for early-IST matches that fall on a different UTC day.
+    """
+    from datetime import datetime, timezone, timedelta
+    IST_TZ = timezone(timedelta(hours=5, minutes=30))
+    UTC_TZ = timezone.utc
+
+    today_ipl: list = []
+    seen_keys: set = set()
+
+    for m in _ESPN_TITLE_TIME_RE.finditer(html):
+        _title, t1, t2, venue, _mon, _day, _yr, start_utc_str = m.groups()
+        # Parse UTC start time, convert to IST, derive the IST calendar date.
+        try:
+            base = start_utc_str.split(".")[0]  # strip milliseconds
+            dt_utc = datetime.strptime(base, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=UTC_TZ)
+            dt_ist = dt_utc.astimezone(IST_TZ)
+        except ValueError:
+            continue
+        match_date_ist = dt_ist.strftime("%Y-%m-%d")
+        if match_date_ist != today_ist:
+            continue
+
+        # IPL filter — full team names only (substrings ≥6 chars, collision-safe).
+        teams_lc = (t1 + " " + t2).lower()
+        if not any(kw in teams_lc for kw in _ESPN_IPL_TEAM_FULLNAMES):
+            continue
+
+        # Dedup — same title often appears in multiple page sections.
+        key = f"{t1.strip()}|{t2.strip()}|{venue.strip()}"
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        # 12-hour formatted IST time, e.g. "7:30 PM"
+        start_ist_str = dt_ist.strftime("%I:%M %p").lstrip("0")
+
+        today_ipl.append({
+            "team1": t1.strip(),
+            "team2": t2.strip(),
+            "venue": venue.strip(),
+            "date_iso": match_date_ist,
+            "start_time_ist": start_ist_str,
+        })
+
+    if not today_ipl:
+        return None
+
+    # Build summary lines. Prefix is just "TODAY (IPL)" — the start_time
+    # field carries everything needed for DeepSeek to disambiguate live vs
+    # upcoming using the current time it already has in its context block.
+    lines: list = []
+    for ipl_match in today_ipl:
+        lines.append(
+            f"TODAY (IPL) — {ipl_match['team1']} v {ipl_match['team2']} — "
+            f"at {ipl_match['venue']} — "
+            f"{ipl_match['date_iso']} — "
+            f"start {ipl_match['start_time_ist']} IST"
+        )
+    return "\n".join(lines)
+
+
+def fetch_today_ipl_from_espn() -> Optional[str]:
+    """
+    Scrape ESPNCricinfo homepage for today's IPL match (Bug E1''').
+
+    Used as a schedule-source fallback when fetch_cricket() returns None.
+    The CricAPI free tier sometimes lags actual fixtures by hours; the
+    ESPNCricinfo homepage always carries the current day's IPL match.
+
+    Returns: formatted summary string ready for DeepSeek, or None.
+        - None if HTTP error, parsing failure, or no IPL match today.
+        - Cached for _CACHE_TTL (30 min) per IST calendar date.
+    """
+    from datetime import datetime, timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
+    today_ist = datetime.now(IST).strftime("%Y-%m-%d")
+
+    cache_key = f"espn:today:{today_ist}"
+    hit, cached = _cache_get(cache_key)
+    if hit:
+        logger.debug("APIS | ESPN cache hit for %s", today_ist)
+        return cached
+
+    try:
+        resp = requests.get(
+            _ESPN_HOMEPAGE_URL,
+            headers={"User-Agent": _ESPN_USER_AGENT},
+            timeout=4,
+        )
+        if not resp.ok:
+            logger.warning("APIS | ESPN homepage HTTP %d", resp.status_code)
+            _cache_set(cache_key, None)
+            return None
+        result = _parse_espn_homepage(resp.text, today_ist)
+        if result:
+            logger.info(
+                "APIS | ESPN scrape SUCCESS for %s | %s",
+                today_ist, result.replace("\n", " || "),
+            )
+        else:
+            logger.info("APIS | ESPN scrape: no IPL match today (%s)", today_ist)
+        _cache_set(cache_key, result)
+        return result
+    except Exception as e:
+        logger.warning("APIS | ESPN homepage fetch failed | %s", e)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # News — RSS-first approach (no API key needed) + NewsAPI fallback
 #
 # Primary: public RSS feeds from The Hindu and NDTV (India-only, reliable).
