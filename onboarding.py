@@ -286,18 +286,39 @@ def get_archetype_adjustment_text(archetype: str) -> str | None:
 OPENING_DETECTION_QUESTION = (
     "Namaste! I'm Saathi — a companion for elderly loved ones. 🙏\n\n"
     "Before we begin, one quick question:\n\n"
-    "*Are you setting this up for yourself, or for a family member?*\n\n"
-    "Reply: *myself* or *family member*"
+    "*Are you here to set up Saathi, or to join one your family already set up?*\n\n"
+    "• Reply *myself* — if you're setting it up for yourself\n"
+    "• Reply *family member* — if you're setting it up for someone else\n"
+    "• Reply *join* — if your family shared a 6-character code with you"
+)
+
+# FB-4 fix (1 May 2026): copy shown after the family member picks "join".
+ASK_FOR_CODE_MESSAGE = (
+    "Got it. 🙏\n\n"
+    "Please send the 6-character code your family member shared with you.\n\n"
+    "It looks like: *ABC123*\n\n"
+    "(Codes are not case-sensitive — type it however you like.)"
+)
+
+# FB-4 fix (1 May 2026): re-prompt when a "joining" user sends something
+# that's not a valid code. Triggered by the onboarding gate's joining branch.
+INVALID_CODE_REPROMPT = (
+    "Hmm, that doesn't look like a 6-character code.\n\n"
+    "The code your family shared will look like *ABC123* — six letters or "
+    "numbers, no spaces.\n\n"
+    "Please send just the code. If you'd like to start over, type /start."
 )
 
 
 def detect_setup_mode(text: str) -> Optional[str]:
     """
     Parse the user's answer to the opening detection question.
-    Returns 'self', 'family', or None if unclear.
+    Returns 'self', 'family', 'joining', or None if unclear.
 
     RULE: Never default to a mode — always ask again if unclear.
     A wrong default silently puts a self-setup senior into the child-led flow.
+    'joining' added 1 May 2026 (FB-4) for the third option — family member
+    who already has a linking code from someone who set up Saathi.
     """
     t = text.lower().strip()
     self_signals = [
@@ -313,6 +334,16 @@ def detect_setup_mode(text: str) -> Optional[str]:
         "someone else", "unke liye", "for them", "for my parent",
         "for a parent", "for a relative",
     ]
+    # FB-4: signals for the third option — the user already has a linking code
+    joining_signals = [
+        "i have a code", "have a code", "got a code", "got the code",
+        "have the code", "i was given a code", "have been given a code",
+        "code hai", "code mila", "ek code mila", "code mila hai",
+        "joining", "to join", "want to join",
+    ]
+    for s in joining_signals:
+        if s in t:
+            return "joining"
     for s in self_signals:
         if s in t:
             return "self"
@@ -324,6 +355,8 @@ def detect_setup_mode(text: str) -> Optional[str]:
         return "self"
     if t in ("family", "parent", "them", "relative", "unke", "someone"):
         return "family"
+    if t in ("join", "code", "joiner"):
+        return "joining"
     # Never default — ask again
     return None
 
@@ -800,22 +833,32 @@ def handle_mode_detection(user_id: int, text: str):
     """
     Handle the user's response to the opening detection question.
     Returns (setup_mode, next_message) tuple.
-    setup_mode: 'self' or 'family'
+    setup_mode: 'self', 'family', or 'joining'
     next_message: the message to send next
+
+    FB-4 (1 May 2026): added 'joining' mode for family members who already
+    have a linking code from someone who set up Saathi.
     """
     mode = detect_setup_mode(text)
     if mode is None:
         # Unclear answer — ask again
         return (None, (
             "Sorry, I didn't quite catch that! 🙏\n\n"
-            "Are you setting this up *for yourself* or *for a family member*?\n\n"
-            "Just reply: *myself* or *family member*"
+            "Are you setting this up *for yourself*, *for a family member*, "
+            "or do you have a *code* to *join* an existing Saathi?\n\n"
+            "Just reply: *myself*, *family member*, or *join*"
         ))
 
     update_user_fields(user_id, setup_mode=mode)
 
     if mode == "family":
         return ("family", INTRO_MESSAGE)
+    elif mode == "joining":
+        # FB-4: third path — family member already has a code from setup person.
+        # Their next message should be the 6-char code; bare-code flow in main.py
+        # catches it before the onboarding gate. If they send something else,
+        # the onboarding gate's 'joining' branch re-prompts via INVALID_CODE_REPROMPT.
+        return ("joining", ASK_FOR_CODE_MESSAGE)
     else:
         # Self-setup: send first message + first question
         update_user_fields(user_id, onboarding_step=1)

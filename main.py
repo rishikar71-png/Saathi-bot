@@ -1388,6 +1388,16 @@ async def _run_pipeline(
             logger.info("OUT | user_id=%s | type=mode_detection | mode=%s", user_id, mode)
             return
 
+        # --- FB-4 (1 May 2026): user picked "join" but didn't send a code yet ---
+        # Bare-code flow at line 1190 catches valid 6-char codes BEFORE we get
+        # here. If we're here, the message wasn't a valid code — re-prompt.
+        # Escape hatch: /start resets setup_mode to 'pending' (handled in start_command).
+        if setup_mode == "joining":
+            from onboarding import INVALID_CODE_REPROMPT
+            await update.message.reply_text(INVALID_CODE_REPROMPT, parse_mode="Markdown")
+            logger.info("OUT | user_id=%s | type=joining_invalid_code_reprompt", user_id)
+            return
+
         # --- Self-setup bridge: waiting for now/later answer ---
         bridge_state = (
             user_row["self_setup_bridge_state"]
@@ -2328,9 +2338,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             setup_mode = user_row["setup_mode"] if "setup_mode" in user_row.keys() else None
             step = user_row["onboarding_step"]
 
-            if setup_mode is None or setup_mode == "pending":
+            if setup_mode is None or setup_mode in ("pending", "joining"):
                 # Ask the opening detection question and mark it as pending.
                 # 'pending' = we've asked, waiting for the answer.
+                # 'joining' (FB-4): user previously picked the join option but
+                # didn't complete the code-paste flow. /start resets them so
+                # they can pick again.
                 from database import update_user_fields as _uuf
                 _uuf(user_id, setup_mode="pending")
                 reply = get_opening_detection_question()

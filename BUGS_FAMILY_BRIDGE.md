@@ -132,7 +132,7 @@ language should also be per-message vs. learned. **Out of scope for this bug.**
 
 ## P2 — UX gaps
 
-### FB-4: Opening detection question missing "I have a code" path ⬜
+### FB-4: Opening detection question missing "I have a code" path 🔄 (code shipped, live test pending)
 
 **Symptom:** Family member who lands on `/start` first (instead of pasting
 code first) gets routed into child-led onboarding for a fictitious senior.
