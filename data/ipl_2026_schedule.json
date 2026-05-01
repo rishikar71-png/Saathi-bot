@@ -1,0 +1,828 @@
+{
+  "season": "IPL 2026",
+  "source": "Cricbuzz IPL series schedule page",
+  "generated_at": "2026-05-01T13:18:27.235264+05:30",
+  "total_matches": 70,
+  "date_range": [
+    "2026-03-28",
+    "2026-05-24"
+  ],
+  "schedule": {
+    "2026-03-28": [
+      {
+        "match_id": 149618,
+        "team1": "Sunrisers Hyderabad",
+        "team2": "Royal Challengers Bengaluru",
+        "desc": "1st Match",
+        "venue_ground": "M.Chinnaswamy Stadium",
+        "venue_city": "Bengaluru",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-03-29": [
+      {
+        "match_id": 149629,
+        "team1": "Kolkata Knight Riders",
+        "team2": "Mumbai Indians",
+        "desc": "2nd Match",
+        "venue_ground": "Wankhede Stadium",
+        "venue_city": "Mumbai",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-03-30": [
+      {
+        "match_id": 149640,
+        "team1": "Chennai Super Kings",
+        "team2": "Rajasthan Royals",
+        "desc": "3rd Match",
+        "venue_ground": "Barsapara Cricket Stadium",
+        "venue_city": "Guwahati",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-03-31": [
+      {
+        "match_id": 149651,
+        "team1": "Gujarat Titans",
+        "team2": "Punjab Kings",
+        "desc": "4th Match",
+        "venue_ground": "Maharaja Yadavindra Singh International Cricket Stadium, Mullanpur",
+        "venue_city": "New Chandigarh",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-01": [
+      {
+        "match_id": 149662,
+        "team1": "Lucknow Super Giants",
+        "team2": "Delhi Capitals",
+        "desc": "5th Match",
+        "venue_ground": "Bharat Ratna Shri Atal Bihari Vajpayee Ekana Cricket Stadium",
+        "venue_city": "Lucknow",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-02": [
+      {
+        "match_id": 149673,
+        "team1": "Sunrisers Hyderabad",
+        "team2": "Kolkata Knight Riders",
+        "desc": "6th Match",
+        "venue_ground": "Eden Gardens",
+        "venue_city": "Kolkata",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-03": [
+      {
+        "match_id": 149684,
+        "team1": "Chennai Super Kings",
+        "team2": "Punjab Kings",
+        "desc": "7th Match",
+        "venue_ground": "MA Chidambaram Stadium",
+        "venue_city": "Chennai",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-04": [
+      {
+        "match_id": 149695,
+        "team1": "Mumbai Indians",
+        "team2": "Delhi Capitals",
+        "desc": "8th Match",
+        "venue_ground": "Arun Jaitley Stadium",
+        "venue_city": "Delhi",
+        "time_ist_24": "15:30",
+        "time_ist_12": "3:30 PM"
+      },
+      {
+        "match_id": 149699,
+        "team1": "Rajasthan Royals",
+        "team2": "Gujarat Titans",
+        "desc": "9th Match",
+        "venue_ground": "Narendra Modi Stadium",
+        "venue_city": "Ahmedabad",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-05": [
+      {
+        "match_id": 149710,
+        "team1": "Sunrisers Hyderabad",
+        "team2": "Lucknow Super Giants",
+        "desc": "10th Match",
+        "venue_ground": "Rajiv Gandhi International Stadium",
+        "venue_city": "Hyderabad",
+        "time_ist_24": "15:30",
+        "time_ist_12": "3:30 PM"
+      },
+      {
+        "match_id": 149721,
+        "team1": "Royal Challengers Bengaluru",
+        "team2": "Chennai Super Kings",
+        "desc": "11th Match",
+        "venue_ground": "M.Chinnaswamy Stadium",
+        "venue_city": "Bengaluru",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-06": [
+      {
+        "match_id": 149732,
+        "team1": "Kolkata Knight Riders",
+        "team2": "Punjab Kings",
+        "desc": "12th Match",
+        "venue_ground": "Eden Gardens",
+        "venue_city": "Kolkata",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-07": [
+      {
+        "match_id": 149743,
+        "team1": "Rajasthan Royals",
+        "team2": "Mumbai Indians",
+        "desc": "13th Match",
+        "venue_ground": "Barsapara Cricket Stadium",
+        "venue_city": "Guwahati",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-08": [
+      {
+        "match_id": 149746,
+        "team1": "Gujarat Titans",
+        "team2": "Delhi Capitals",
+        "desc": "14th Match",
+        "venue_ground": "Arun Jaitley Stadium",
+        "venue_city": "Delhi",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-09": [
+      {
+        "match_id": 149757,
+        "team1": "Kolkata Knight Riders",
+        "team2": "Lucknow Super Giants",
+        "desc": "15th Match",
+        "venue_ground": "Eden Gardens",
+        "venue_city": "Kolkata",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-10": [
+      {
+        "match_id": 149768,
+        "team1": "Royal Challengers Bengaluru",
+        "team2": "Rajasthan Royals",
+        "desc": "16th Match",
+        "venue_ground": "Barsapara Cricket Stadium",
+        "venue_city": "Guwahati",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-11": [
+      {
+        "match_id": 149779,
+        "team1": "Sunrisers Hyderabad",
+        "team2": "Punjab Kings",
+        "desc": "17th Match",
+        "venue_ground": "Maharaja Yadavindra Singh International Cricket Stadium, Mullanpur",
+        "venue_city": "New Chandigarh",
+        "time_ist_24": "15:30",
+        "time_ist_12": "3:30 PM"
+      },
+      {
+        "match_id": 149790,
+        "team1": "Chennai Super Kings",
+        "team2": "Delhi Capitals",
+        "desc": "18th Match",
+        "venue_ground": "MA Chidambaram Stadium",
+        "venue_city": "Chennai",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-12": [
+      {
+        "match_id": 149801,
+        "team1": "Lucknow Super Giants",
+        "team2": "Gujarat Titans",
+        "desc": "19th Match",
+        "venue_ground": "Bharat Ratna Shri Atal Bihari Vajpayee Ekana Cricket Stadium",
+        "venue_city": "Lucknow",
+        "time_ist_24": "15:30",
+        "time_ist_12": "3:30 PM"
+      },
+      {
+        "match_id": 149812,
+        "team1": "Royal Challengers Bengaluru",
+        "team2": "Mumbai Indians",
+        "desc": "20th Match",
+        "venue_ground": "Wankhede Stadium",
+        "venue_city": "Mumbai",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-13": [
+      {
+        "match_id": 151752,
+        "team1": "Sunrisers Hyderabad",
+        "team2": "Rajasthan Royals",
+        "desc": "21st Match",
+        "venue_ground": "Rajiv Gandhi International Stadium",
+        "venue_city": "Hyderabad",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-14": [
+      {
+        "match_id": 151763,
+        "team1": "Chennai Super Kings",
+        "team2": "Kolkata Knight Riders",
+        "desc": "22nd Match",
+        "venue_ground": "MA Chidambaram Stadium",
+        "venue_city": "Chennai",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-15": [
+      {
+        "match_id": 151774,
+        "team1": "Lucknow Super Giants",
+        "team2": "Royal Challengers Bengaluru",
+        "desc": "23rd Match",
+        "venue_ground": "M.Chinnaswamy Stadium",
+        "venue_city": "Bengaluru",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-16": [
+      {
+        "match_id": 151785,
+        "team1": "Mumbai Indians",
+        "team2": "Punjab Kings",
+        "desc": "24th Match",
+        "venue_ground": "Wankhede Stadium",
+        "venue_city": "Mumbai",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-17": [
+      {
+        "match_id": 151796,
+        "team1": "Kolkata Knight Riders",
+        "team2": "Gujarat Titans",
+        "desc": "25th Match",
+        "venue_ground": "Narendra Modi Stadium",
+        "venue_city": "Ahmedabad",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-18": [
+      {
+        "match_id": 151807,
+        "team1": "Royal Challengers Bengaluru",
+        "team2": "Delhi Capitals",
+        "desc": "26th Match",
+        "venue_ground": "M.Chinnaswamy Stadium",
+        "venue_city": "Bengaluru",
+        "time_ist_24": "15:30",
+        "time_ist_12": "3:30 PM"
+      },
+      {
+        "match_id": 151818,
+        "team1": "Sunrisers Hyderabad",
+        "team2": "Chennai Super Kings",
+        "desc": "27th Match",
+        "venue_ground": "Rajiv Gandhi International Stadium",
+        "venue_city": "Hyderabad",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-19": [
+      {
+        "match_id": 151829,
+        "team1": "Rajasthan Royals",
+        "team2": "Kolkata Knight Riders",
+        "desc": "28th Match",
+        "venue_ground": "Eden Gardens",
+        "venue_city": "Kolkata",
+        "time_ist_24": "15:30",
+        "time_ist_12": "3:30 PM"
+      },
+      {
+        "match_id": 151840,
+        "team1": "Punjab Kings",
+        "team2": "Lucknow Super Giants",
+        "desc": "29th Match",
+        "venue_ground": "Maharaja Yadavindra Singh International Cricket Stadium, Mullanpur",
+        "venue_city": "New Chandigarh",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-20": [
+      {
+        "match_id": 151845,
+        "team1": "Mumbai Indians",
+        "team2": "Gujarat Titans",
+        "desc": "30th Match",
+        "venue_ground": "Narendra Modi Stadium",
+        "venue_city": "Ahmedabad",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-21": [
+      {
+        "match_id": 151856,
+        "team1": "Sunrisers Hyderabad",
+        "team2": "Delhi Capitals",
+        "desc": "31st Match",
+        "venue_ground": "Rajiv Gandhi International Stadium",
+        "venue_city": "Hyderabad",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-22": [
+      {
+        "match_id": 151867,
+        "team1": "Rajasthan Royals",
+        "team2": "Lucknow Super Giants",
+        "desc": "32nd Match",
+        "venue_ground": "Bharat Ratna Shri Atal Bihari Vajpayee Ekana Cricket Stadium",
+        "venue_city": "Lucknow",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-23": [
+      {
+        "match_id": 151878,
+        "team1": "Chennai Super Kings",
+        "team2": "Mumbai Indians",
+        "desc": "33rd Match",
+        "venue_ground": "Wankhede Stadium",
+        "venue_city": "Mumbai",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-24": [
+      {
+        "match_id": 151889,
+        "team1": "Gujarat Titans",
+        "team2": "Royal Challengers Bengaluru",
+        "desc": "34th Match",
+        "venue_ground": "M.Chinnaswamy Stadium",
+        "venue_city": "Bengaluru",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-25": [
+      {
+        "match_id": 151891,
+        "team1": "Delhi Capitals",
+        "team2": "Punjab Kings",
+        "desc": "35th Match",
+        "venue_ground": "Arun Jaitley Stadium",
+        "venue_city": "Delhi",
+        "time_ist_24": "15:30",
+        "time_ist_12": "3:30 PM"
+      },
+      {
+        "match_id": 151902,
+        "team1": "Rajasthan Royals",
+        "team2": "Sunrisers Hyderabad",
+        "desc": "36th Match",
+        "venue_ground": "Sawai Mansingh Stadium",
+        "venue_city": "Jaipur",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-26": [
+      {
+        "match_id": 151913,
+        "team1": "Chennai Super Kings",
+        "team2": "Gujarat Titans",
+        "desc": "37th Match",
+        "venue_ground": "MA Chidambaram Stadium",
+        "venue_city": "Chennai",
+        "time_ist_24": "15:30",
+        "time_ist_12": "3:30 PM"
+      },
+      {
+        "match_id": 151924,
+        "team1": "Kolkata Knight Riders",
+        "team2": "Lucknow Super Giants",
+        "desc": "38th Match",
+        "venue_ground": "Bharat Ratna Shri Atal Bihari Vajpayee Ekana Cricket Stadium",
+        "venue_city": "Lucknow",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-27": [
+      {
+        "match_id": 151935,
+        "team1": "Delhi Capitals",
+        "team2": "Royal Challengers Bengaluru",
+        "desc": "39th Match",
+        "venue_ground": "Arun Jaitley Stadium",
+        "venue_city": "Delhi",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-28": [
+      {
+        "match_id": 151943,
+        "team1": "Punjab Kings",
+        "team2": "Rajasthan Royals",
+        "desc": "40th Match",
+        "venue_ground": "Maharaja Yadavindra Singh International Cricket Stadium, Mullanpur",
+        "venue_city": "New Chandigarh",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-29": [
+      {
+        "match_id": 151954,
+        "team1": "Mumbai Indians",
+        "team2": "Sunrisers Hyderabad",
+        "desc": "41st Match",
+        "venue_ground": "Wankhede Stadium",
+        "venue_city": "Mumbai",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-04-30": [
+      {
+        "match_id": 151965,
+        "team1": "Royal Challengers Bengaluru",
+        "team2": "Gujarat Titans",
+        "desc": "42nd Match",
+        "venue_ground": "Narendra Modi Stadium",
+        "venue_city": "Ahmedabad",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-01": [
+      {
+        "match_id": 151976,
+        "team1": "Rajasthan Royals",
+        "team2": "Delhi Capitals",
+        "desc": "43rd Match",
+        "venue_ground": "Sawai Mansingh Stadium",
+        "venue_city": "Jaipur",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-02": [
+      {
+        "match_id": 151987,
+        "team1": "Chennai Super Kings",
+        "team2": "Mumbai Indians",
+        "desc": "44th Match",
+        "venue_ground": "MA Chidambaram Stadium",
+        "venue_city": "Chennai",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-03": [
+      {
+        "match_id": 151998,
+        "team1": "Sunrisers Hyderabad",
+        "team2": "Kolkata Knight Riders",
+        "desc": "45th Match",
+        "venue_ground": "Rajiv Gandhi International Stadium",
+        "venue_city": "Hyderabad",
+        "time_ist_24": "15:30",
+        "time_ist_12": "3:30 PM"
+      },
+      {
+        "match_id": 152009,
+        "team1": "Gujarat Titans",
+        "team2": "Punjab Kings",
+        "desc": "46th Match",
+        "venue_ground": "Narendra Modi Stadium",
+        "venue_city": "Ahmedabad",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-04": [
+      {
+        "match_id": 152020,
+        "team1": "Mumbai Indians",
+        "team2": "Lucknow Super Giants",
+        "desc": "47th Match",
+        "venue_ground": "Wankhede Stadium",
+        "venue_city": "Mumbai",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-05": [
+      {
+        "match_id": 152031,
+        "team1": "Delhi Capitals",
+        "team2": "Chennai Super Kings",
+        "desc": "48th Match",
+        "venue_ground": "Arun Jaitley Stadium",
+        "venue_city": "Delhi",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-06": [
+      {
+        "match_id": 152042,
+        "team1": "Sunrisers Hyderabad",
+        "team2": "Punjab Kings",
+        "desc": "49th Match",
+        "venue_ground": "Rajiv Gandhi International Stadium",
+        "venue_city": "Hyderabad",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-07": [
+      {
+        "match_id": 152053,
+        "team1": "Lucknow Super Giants",
+        "team2": "Royal Challengers Bengaluru",
+        "desc": "50th Match",
+        "venue_ground": "Bharat Ratna Shri Atal Bihari Vajpayee Ekana Cricket Stadium",
+        "venue_city": "Lucknow",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-08": [
+      {
+        "match_id": 152064,
+        "team1": "Delhi Capitals",
+        "team2": "Kolkata Knight Riders",
+        "desc": "51st Match",
+        "venue_ground": "Arun Jaitley Stadium",
+        "venue_city": "Delhi",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-09": [
+      {
+        "match_id": 152075,
+        "team1": "Rajasthan Royals",
+        "team2": "Gujarat Titans",
+        "desc": "52nd Match",
+        "venue_ground": "Sawai Mansingh Stadium",
+        "venue_city": "Jaipur",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-10": [
+      {
+        "match_id": 152086,
+        "team1": "Chennai Super Kings",
+        "team2": "Lucknow Super Giants",
+        "desc": "53rd Match",
+        "venue_ground": "MA Chidambaram Stadium",
+        "venue_city": "Chennai",
+        "time_ist_24": "15:30",
+        "time_ist_12": "3:30 PM"
+      },
+      {
+        "match_id": 152097,
+        "team1": "Royal Challengers Bengaluru",
+        "team2": "Mumbai Indians",
+        "desc": "54th Match",
+        "venue_ground": "Shaheed Veer Narayan Singh International Stadium",
+        "venue_city": "Raipur",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-11": [
+      {
+        "match_id": 152108,
+        "team1": "Punjab Kings",
+        "team2": "Delhi Capitals",
+        "desc": "55th Match",
+        "venue_ground": "Himachal Pradesh Cricket Association Stadium",
+        "venue_city": "Dharamsala",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-12": [
+      {
+        "match_id": 152119,
+        "team1": "Gujarat Titans",
+        "team2": "Sunrisers Hyderabad",
+        "desc": "56th Match",
+        "venue_ground": "Narendra Modi Stadium",
+        "venue_city": "Ahmedabad",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-13": [
+      {
+        "match_id": 152130,
+        "team1": "Royal Challengers Bengaluru",
+        "team2": "Kolkata Knight Riders",
+        "desc": "57th Match",
+        "venue_ground": "Shaheed Veer Narayan Singh International Stadium",
+        "venue_city": "Raipur",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-14": [
+      {
+        "match_id": 152141,
+        "team1": "Punjab Kings",
+        "team2": "Mumbai Indians",
+        "desc": "58th Match",
+        "venue_ground": "Himachal Pradesh Cricket Association Stadium",
+        "venue_city": "Dharamsala",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-15": [
+      {
+        "match_id": 152152,
+        "team1": "Lucknow Super Giants",
+        "team2": "Chennai Super Kings",
+        "desc": "59th Match",
+        "venue_ground": "Bharat Ratna Shri Atal Bihari Vajpayee Ekana Cricket Stadium",
+        "venue_city": "Lucknow",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-16": [
+      {
+        "match_id": 152163,
+        "team1": "Kolkata Knight Riders",
+        "team2": "Gujarat Titans",
+        "desc": "60th Match",
+        "venue_ground": "Eden Gardens",
+        "venue_city": "Kolkata",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-17": [
+      {
+        "match_id": 152174,
+        "team1": "Punjab Kings",
+        "team2": "Royal Challengers Bengaluru",
+        "desc": "61st Match",
+        "venue_ground": "Himachal Pradesh Cricket Association Stadium",
+        "venue_city": "Dharamsala",
+        "time_ist_24": "15:30",
+        "time_ist_12": "3:30 PM"
+      },
+      {
+        "match_id": 152185,
+        "team1": "Delhi Capitals",
+        "team2": "Rajasthan Royals",
+        "desc": "62nd Match",
+        "venue_ground": "Arun Jaitley Stadium",
+        "venue_city": "Delhi",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-18": [
+      {
+        "match_id": 152196,
+        "team1": "Chennai Super Kings",
+        "team2": "Sunrisers Hyderabad",
+        "desc": "63rd Match",
+        "venue_ground": "MA Chidambaram Stadium",
+        "venue_city": "Chennai",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-19": [
+      {
+        "match_id": 152207,
+        "team1": "Rajasthan Royals",
+        "team2": "Lucknow Super Giants",
+        "desc": "64th Match",
+        "venue_ground": "Sawai Mansingh Stadium",
+        "venue_city": "Jaipur",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-20": [
+      {
+        "match_id": 152218,
+        "team1": "Kolkata Knight Riders",
+        "team2": "Mumbai Indians",
+        "desc": "65th Match",
+        "venue_ground": "Eden Gardens",
+        "venue_city": "Kolkata",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-21": [
+      {
+        "match_id": 152229,
+        "team1": "Gujarat Titans",
+        "team2": "Chennai Super Kings",
+        "desc": "66th Match",
+        "venue_ground": "Narendra Modi Stadium",
+        "venue_city": "Ahmedabad",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-22": [
+      {
+        "match_id": 152240,
+        "team1": "Sunrisers Hyderabad",
+        "team2": "Royal Challengers Bengaluru",
+        "desc": "67th Match",
+        "venue_ground": "Rajiv Gandhi International Stadium",
+        "venue_city": "Hyderabad",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-23": [
+      {
+        "match_id": 152241,
+        "team1": "Lucknow Super Giants",
+        "team2": "Punjab Kings",
+        "desc": "68th Match",
+        "venue_ground": "Bharat Ratna Shri Atal Bihari Vajpayee Ekana Cricket Stadium",
+        "venue_city": "Lucknow",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ],
+    "2026-05-24": [
+      {
+        "match_id": 152252,
+        "team1": "Mumbai Indians",
+        "team2": "Rajasthan Royals",
+        "desc": "69th Match",
+        "venue_ground": "Wankhede Stadium",
+        "venue_city": "Mumbai",
+        "time_ist_24": "15:30",
+        "time_ist_12": "3:30 PM"
+      },
+      {
+        "match_id": 152263,
+        "team1": "Kolkata Knight Riders",
+        "team2": "Delhi Capitals",
+        "desc": "70th Match",
+        "venue_ground": "Eden Gardens",
+        "venue_city": "Kolkata",
+        "time_ist_24": "19:30",
+        "time_ist_12": "7:30 PM"
+      }
+    ]
+  }
+}

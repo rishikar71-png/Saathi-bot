@@ -458,7 +458,7 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
     try:
         from apis import (
             fetch_news, fetch_cricket, fetch_cricket_news, fetch_weather,
-            fetch_today_ipl_from_espn,
+            lookup_today_ipl_match,
         )
     except ImportError:
         return None
@@ -568,28 +568,29 @@ def _inject_live_data_if_needed(text: str, user_context: dict) -> str | None:
                     except Exception:
                         pass
                 else:
-                    # Bug E1''' (1 May 2026): CricAPI free tier silent on today's
-                    # IPL fixture (RR v DC at Jaipur, 19:30 IST). RSS fallback
-                    # surfaced post-match coverage from yesterday but no schedule.
-                    # New schedule-source: scrape ESPNCricinfo homepage —
-                    # always carries today's IPL match.
+                    # Bug E1''''' (1 May 2026): CricAPI free tier silent on
+                    # today's IPL fixture. Live scrapes (ESPN, Cricbuzz)
+                    # all hide schedule data behind JS hydration — server
+                    # fetches return SSR shells without match info.
+                    # Pivoted to static IPL 2026 schedule JSON, refreshed
+                    # via scripts/refresh_ipl_schedule.py when needed.
                     #
-                    # Priority order: CricAPI -> ESPN homepage -> cricket RSS ->
-                    # scripted no-match.
-                    espn_match = None
+                    # Priority: CricAPI -> static IPL schedule -> cricket
+                    # RSS -> scripted no-match.
+                    static_match = None
                     try:
-                        espn_match = fetch_today_ipl_from_espn()
-                    except Exception as _espn_err:
-                        logger.debug("LIVE_DATA | ESPN scrape error | %s", _espn_err)
+                        static_match = lookup_today_ipl_match()
+                    except Exception as _ipl_err:
+                        logger.debug("LIVE_DATA | IPL schedule lookup error | %s", _ipl_err)
 
-                    if espn_match:
+                    if static_match:
                         parts.append(
-                            "Cricket — raw data (from ESPNCricinfo today's schedule):\n"
-                            f"{espn_match}\n\n"
+                            "Cricket — raw data (from IPL 2026 schedule):\n"
+                            f"{static_match}\n\n"
                             "INSTRUCTION: Share this match info naturally with the senior "
-                            "(in the language they're using). The teams, venue, date, and "
-                            "start time above are factual — use them. Do NOT invent any "
-                            "score, result, or detail not present above."
+                            "(in the language they're using). The teams, match label, "
+                            "venue, and start time above are factual — use them. Do NOT "
+                            "invent any score or result not present above."
                         )
                     else:
                         # ESPN scrape also returned nothing. Last fallback —
@@ -2683,67 +2684,36 @@ async def cricdebug_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             except Exception as inner_e:
                 lines.append(f"  EXCEPTION inside {label}: {inner_e}")
 
-        # Send the CricAPI dump as the FIRST message before running Cricbuzz
-        # probe — otherwise the verbose CricAPI section can truncate the
-        # Cricbuzz output (Bug E1'''' diagnostic, 1 May 2026).
+        # === IPL static schedule lookup — sent as separate message ===
+        ipl_lines = ["=== IPL static schedule lookup (Railway-side) ==="]
+        try:
+            from apis import lookup_today_ipl_match, _load_ipl_schedule
+            schedule = _load_ipl_schedule()
+            ipl_lines.append(
+                f"file_meta: matches={schedule.get('total_matches', '?')} | "
+                f"range={schedule.get('date_range', '?')}"
+            )
+            ipl_result = lookup_today_ipl_match()
+            if ipl_result:
+                ipl_lines.append("\nResult:")
+                ipl_lines.append(ipl_result)
+            else:
+                ipl_lines.append(
+                    "\nResult: None (no IPL match today, or schedule file missing/stale)"
+                )
+        except Exception as ipl_e:
+            ipl_lines.append(f"\nEXCEPTION: {ipl_e}")
+
+        ipl_text = "\n".join(ipl_lines)
+        if len(ipl_text) > 3800:
+            ipl_text = ipl_text[:3800] + "\n…(truncated)"
+
         text = "\n".join(lines)
         if len(text) > 3800:
             text = text[:3800] + "\n…(truncated)"
         await update.message.reply_text(text)  # PLAIN TEXT — no parse_mode
-
-        # === Cricbuzz probe — sent as a SEPARATE message ===
-        # ESPN returns 403 from Railway despite 200 from residential Mac IPs
-        # (Cloudflare ASN-based bot detection). Cricbuzz uses different infra
-        # — probe before investing in a parser.
-        cb_lines = ["=== Cricbuzz probe (Railway-side) ==="]
-        _CB_UA = (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-        _CB_HEADERS = {
-            "User-Agent": _CB_UA,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate, br",
-            "DNT": "1",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-        }
-        _CB_URLS = [
-            "https://www.cricbuzz.com/",
-            "https://www.cricbuzz.com/cricket-match/live-scores",
-            "https://www.cricbuzz.com/cricket-schedule/upcoming-series/all",
-        ]
-        import re as _re
-        for cb_url in _CB_URLS:
-            try:
-                r = requests.get(cb_url, headers=_CB_HEADERS, timeout=6)
-                cb_lines.append(f"\nURL: {cb_url}")
-                cb_lines.append(f"  HTTP {r.status_code} | bytes={len(r.text)}")
-                if r.ok:
-                    body = r.text
-                    m1 = _re.findall(r'([A-Z][A-Za-z ]+ vs [A-Z][A-Za-z ]+,\s*\d+(?:st|nd|rd|th) Match[^<"]{0,40})', body)
-                    cb_lines.append(f"  match-title hits: {len(m1)}")
-                    for s in m1[:3]:
-                        cb_lines.append(f"    - {s.strip()[:90]}")
-                    m2 = _re.findall(r'(matchStartTimestamp[^,]{1,30}|data-(?:start|date)[^>"]{0,40})', body)
-                    cb_lines.append(f"  ts/date attr hits: {len(m2)}")
-                    for s in m2[:2]:
-                        cb_lines.append(f"    - {s[:90]}")
-                else:
-                    cb_lines.append(f"  body[:120]: {r.text[:120]}")
-            except Exception as cb_e:
-                cb_lines.append(f"  EXCEPTION: {cb_e}")
-
-        cb_text = "\n".join(cb_lines)
-        if len(cb_text) > 3800:
-            cb_text = cb_text[:3800] + "\n…(truncated)"
         try:
-            await update.message.reply_text(cb_text)
+            await update.message.reply_text(ipl_text)
         except Exception:
             pass
     except Exception as outer_e:
