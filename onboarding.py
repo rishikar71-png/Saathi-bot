@@ -400,29 +400,45 @@ SELF_SETUP_DAY_1_QUESTIONS = [
 # Revised 19 Apr 2026: every question is load-bearing. wake_time/sleep_time
 # and cricket-only question dropped (unused or lossy). Emergency contact
 # added so self-setup users get safety features and family bridge access.
+# Patch 6 (2 May 2026): cut afternoon + evening ritual times, added persona +
+# religion. Self-setup users now get persona-driven warmth + festival awareness;
+# afternoon/evening rhythm emerges from observed message times via adaptive
+# learning + user-initiated chats. Morning ritual stays as the daily anchor.
 SELF_SETUP_DAY_2_QUESTIONS = [
-    # Q6 — Medicines (proper format — feeds reminder parser)
+    # Step 6 — Medicines (proper format — feeds reminder parser)
     (
         "Do you take any medicines regularly?\n\n"
         "If yes, please list them with their times — e.g. "
         "'metformin 8am and 8pm, BP tablet at night'.\n\n"
         "If not, just say 'no'."
     ),
-    # Q7 — Morning check-in time
+    # Step 7 — Morning check-in time
     "What time in the morning would you like me to say hello? (e.g. 8am or 9 baje)",
-    # Q8 — Afternoon check-in time
-    "And what time in the afternoon? (e.g. 1pm or 2 baje)",
-    # Q9 — Evening check-in time
-    "What time in the evening works for a chat? (e.g. 7pm or 8 baje)",
-    # Q10 — News interests (open — replaces cricket yes/no)
+    # Step 8 — News interests (open — replaces cricket yes/no)
     (
         "What news topics do you enjoy following — cricket, Bollywood, "
         "local news, politics, business, religion, or something else?\n\n"
         "(Or say 'skip' if you'd prefer to pass on news.)"
     ),
-    # Q11 — Music preferences
+    # Step 9 — Music preferences
     "What kind of music do you enjoy?",
-    # Q12 — Emergency contact (Rishi's phrasing, 19 Apr 2026)
+    # Step 10 — Persona (NEW for self-setup, mirrors family-led step 15)
+    (
+        "How would you like me to feel to you? You can pick:\n\n"
+        "• *Friend* — warm, peer-to-peer, easy\n"
+        "• *Caring Child* — respectful, attentive, gentle\n"
+        "• *Grandchild* — playful, devoted, full of love\n"
+        "• *Assistant* — helpful, calm, practical\n\n"
+        "Just reply with whichever feels right."
+    ),
+    # Step 11 — Religion (NEW for self-setup, mirrors family-led step 13)
+    (
+        "What's your faith, if any? (For example: Hindu, Muslim, Sikh, "
+        "Christian, Jain, Buddhist, or another.)\n\n"
+        "This helps me mark the right festivals and be respectful of your "
+        "traditions. You can say 'prefer not to say' if you'd rather skip."
+    ),
+    # Step 12 — Emergency contact (Rishi's phrasing, 19 Apr 2026)
     (
         "Would you like to add someone from your family or a close friend "
         "I should contact in an emergency? Share a name and phone number — "
@@ -433,8 +449,8 @@ SELF_SETUP_DAY_2_QUESTIONS = [
 # Bridge question — asked after Day 1 (step 5) is answered. User chooses now or tomorrow.
 SELF_SETUP_BRIDGE_QUESTION = (
     "Thank you. 🙏\n\n"
-    "I'd love to know a few more things so I can be most useful — just 5 more questions. "
-    "Shall we do them now, or would you prefer I ask tomorrow?\n\n"
+    "I'd love to know a few more things so I can be most useful — just a few "
+    "more questions. Shall we do them now, or would you prefer I ask tomorrow?\n\n"
     "Reply: *now* or *tomorrow*"
 )
 
@@ -860,10 +876,14 @@ def handle_mode_detection(user_id: int, text: str):
         # the onboarding gate's 'joining' branch re-prompts via INVALID_CODE_REPROMPT.
         return ("joining", ASK_FOR_CODE_MESSAGE)
     else:
-        # Self-setup: send first message + first question
+        # Self-setup: return ONLY the calm first message (no question).
+        # Patch 6 (2 May 2026): main.py sends the first Day 1 question as
+        # a separate Telegram message after a small delay, so we don't
+        # bend the First-Contact "no question in first outgoing message"
+        # rule. The first Day 1 question text is exposed via
+        # SELF_SETUP_DAY_1_QUESTIONS[0] for main.py to access.
         update_user_fields(user_id, onboarding_step=1)
-        first_q = SELF_SETUP_DAY_1_QUESTIONS[0]
-        return ("self", f"{MODE_2_FIRST_MESSAGE}\n\n{first_q}")
+        return ("self", MODE_2_FIRST_MESSAGE)
 
 
 def _rehydrate_family_ctx(user_id: int, ctx: dict) -> None:
@@ -1204,9 +1224,26 @@ def _save_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> Op
         update_user_fields(user_id, language=_parse_language(t))
     elif step == 5:  # Family members
         if tl not in ("no", "none", "nahi", "nobody"):
-            names = [n.strip().title() for n in re.split(r"[,\n]", t) if n.strip()]
-            if names:
-                add_family_members_bulk(user_id, names, "family")
+            # Patch 6 (2 May 2026): try structured parse first ("wife Ishween
+            # and daughter Noor" → spouse=Ishween + child=Noor). Falls back to
+            # current prose splitter if no relationship keywords detected.
+            spouse, structured = _parse_self_setup_family(t)
+            if spouse or structured:
+                if spouse:
+                    update_user_fields(user_id, spouse_name=spouse)
+                    # Also save in family_members for FAMILY block rendering
+                    add_family_members_bulk(user_id, [spouse], "spouse")
+                # Group by relationship for bulk add
+                by_rel = {}
+                for m in (structured or []):
+                    by_rel.setdefault(m["relationship"], []).append(m["name"])
+                for rel, names in by_rel.items():
+                    add_family_members_bulk(user_id, names, rel)
+            else:
+                # Fallback — current behaviour (split on comma/newline only)
+                names = [n.strip().title() for n in re.split(r"[,\n]", t) if n.strip()]
+                if names:
+                    add_family_members_bulk(user_id, names, "family")
 
     # --- Day 2 ---
     elif step == 6:  # Medicines + times (free text → reminder parser)
@@ -1252,21 +1289,20 @@ def _save_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> Op
         hhmm = _parse_single_time(t, slot="morning")
         if hhmm:
             update_user_fields(user_id, morning_checkin_time=hhmm)
-    elif step == 8:  # Afternoon check-in time
-        hhmm = _parse_single_time(t, slot="afternoon")
-        if hhmm:
-            update_user_fields(user_id, afternoon_checkin_time=hhmm)
-    elif step == 9:  # Evening check-in time
-        hhmm = _parse_single_time(t, slot="evening")
-        if hhmm:
-            update_user_fields(user_id, evening_checkin_time=hhmm)
-    elif step == 10:  # News interests (open, replaces cricket yes/no)
+    # Patch 6 (2 May 2026): step 8 + 9 (afternoon/evening times) cut.
+    # Steps 8/9 below are now news/music (renumbered from old 10/11).
+    elif step == 8:  # News interests (was step 10 pre-Patch 6)
         if tl not in ("no", "nahi", "none", "nothing", "no.", "nil", "skip",
                       "not interested"):
             update_user_fields(user_id, news_interests=t)
-    elif step == 11:  # Music preferences
+    elif step == 9:  # Music preferences (was step 11 pre-Patch 6)
         if tl not in ("no", "nahi", "none", "nothing", "no.", "nil", "skip"):
             update_user_fields(user_id, music_preferences=t)
+    elif step == 10:  # Persona — NEW in Patch 6
+        update_user_fields(user_id, persona=_parse_persona(t))
+    elif step == 11:  # Religion — NEW in Patch 6
+        if tl not in ("prefer not to say", "skip", "no", "nahi", "none"):
+            update_user_fields(user_id, religion=t)
     elif step == 12:  # Emergency contact — name + phone
         skip_signals = ("skip", "no", "nahi", "none", "nothing", "no.", "nil",
                         "no thanks", "later")
@@ -1794,6 +1830,77 @@ def _parse_language(text: str) -> str:
 
     # 5. Unknown input — treat as unsupported, NOT as raw text.
     return _UNSUPPORTED_LANG
+
+
+_FAMILY_KEYWORD_PATTERNS = [
+    # (regex, relationship)
+    (r"\b(?:my\s+)?(?:wife|husband|spouse|patni|pati|wifey|hubby)\b\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)", "spouse"),
+    (r"\b(?:my\s+)?(?:son|daughter|child|kid|beta|beti|bachcha)\b\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)", "child"),
+    (r"\b(?:my\s+)?(?:mother|father|mom|dad|mum|maa|papa|mata|pita|ma|pa)\b\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)", "parent"),
+    (r"\b(?:my\s+)?(?:brother|sister|bhai|behen|behan|sibling)\b\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)", "sibling"),
+]
+
+
+def _parse_self_setup_family(text: str) -> tuple:
+    """
+    Patch 6 (2 May 2026): structured-prose parser for the self-setup family
+    question.
+
+    Input examples:
+      'wife ishween and daughter noor'      → (Ishween, [{Noor, child}])
+      'my husband ramesh'                    → (Ramesh, [])
+      'wife priya, son arjun, daughter maya' → (Priya, [{Arjun, child}, {Maya, child}])
+      'ishween and noor'                     → (None, None)  ← fallback
+      'no family'                            → (None, None)  ← caller already filtered
+
+    Returns (spouse_name_or_None, list_of_member_dicts_or_None).
+    Returns (None, None) when NO relationship keyword matched anywhere — the
+    caller falls back to the current prose splitter so existing behavior is
+    preserved for unstructured input.
+
+    Each member dict is {"name": str, "relationship": "child"|"parent"|"sibling"|"family"}.
+    """
+    if not text or not text.strip():
+        return (None, None)
+
+    # Split on connectors. " and " / " aur " consumed only when keywords are
+    # found; comma/newline consumed regardless.
+    parts = re.split(r"\s*(?:,|\band\b|\baur\b|\n)\s*", text.strip(), flags=re.IGNORECASE)
+
+    spouse = None
+    members = []
+    keyword_seen = False
+
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        matched = False
+        for pattern, rel in _FAMILY_KEYWORD_PATTERNS:
+            m = re.search(pattern, part, re.IGNORECASE)
+            if m:
+                name = m.group(1).strip().title()
+                if not name:
+                    continue
+                if rel == "spouse":
+                    spouse = name
+                else:
+                    members.append({"name": name, "relationship": rel})
+                keyword_seen = True
+                matched = True
+                break
+        if not matched and keyword_seen:
+            # Already in structured-mode — treat unmatched parts as 'family'
+            # bare names. Strip leading 'and ' / 'a ' / 'my ' filler.
+            bare = re.sub(r"^(?:and|a|my|the)\s+", "", part, flags=re.IGNORECASE).strip()
+            bare = bare.title()
+            if bare and any(c.isalpha() for c in bare):
+                members.append({"name": bare, "relationship": "family"})
+
+    if not keyword_seen:
+        return (None, None)
+
+    return (spouse, members)
 
 
 def _parse_persona(text: str) -> str:

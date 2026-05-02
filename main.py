@@ -1385,6 +1385,18 @@ async def _run_pipeline(
             mode, next_msg = handle_mode_detection(user_id, text)
             _invalidate_user_cache(user_id)
             await update.message.reply_text(next_msg, parse_mode="Markdown")
+            # Patch 6 (2 May 2026): for self-setup, the first message is
+            # calm-only (no question — First-Contact rule). Send the first
+            # Day 1 question as a separate Telegram message after a small
+            # delay so it visually breathes and doesn't read as one greeting+question blob.
+            if mode == "self":
+                from onboarding import SELF_SETUP_DAY_1_QUESTIONS
+                await asyncio.sleep(2)
+                first_q = SELF_SETUP_DAY_1_QUESTIONS[0]
+                try:
+                    await update.message.reply_text(first_q, parse_mode="Markdown")
+                except Exception:
+                    await update.message.reply_text(first_q)
             logger.info("OUT | user_id=%s | type=mode_detection | mode=%s", user_id, mode)
             return
 
@@ -2676,6 +2688,72 @@ async def profiledump_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
+async def meddump_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Admin-only command to dump medicine_reminders rows for a user.
+    Useful for verifying that medicines were parsed and stored correctly during
+    onboarding (e.g. 'plavix at 8' resolved to 08:00 morning, 'rosuvastatin
+    after dinner' resolved to 20:00, ambiguous bare-hour rows marked is_active=0).
+
+    Usage: /meddump [telegram_id]
+    Defaults to the admin's own telegram_id when no arg is given.
+
+    Patch 6 (2 May 2026).
+    """
+    if update.effective_user.id != 8711370451:
+        return
+    args = context.args or []
+    if args:
+        try:
+            target_telegram_id = int(args[0])
+        except ValueError:
+            await update.message.reply_text("Invalid telegram_id — must be a number.")
+            return
+    else:
+        target_telegram_id = update.effective_user.id
+
+    from database import get_connection
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                "SELECT id, medicine_name, schedule_time, is_active, "
+                "       reminder_attempt, last_sent_at, last_acked_at, "
+                "       family_alerted_at, days_of_week, created_at "
+                "FROM medicine_reminders WHERE user_id = ? "
+                "ORDER BY schedule_time, id",
+                (target_telegram_id,),
+            ).fetchall()
+    except Exception as _e:
+        await update.message.reply_text(f"DB read failed: {_e}")
+        return
+
+    if not rows:
+        await update.message.reply_text(
+            f"No medicine reminders for `{target_telegram_id}`.",
+            parse_mode="Markdown",
+        )
+        return
+
+    lines = [f"*Medicine reminders for `{target_telegram_id}`* ({len(rows)} rows)\n"]
+    for r in rows:
+        active_marker = "✅ active" if r["is_active"] else "⏸ inactive"
+        attempt = r["reminder_attempt"] or 0
+        last_sent = r["last_sent_at"] or "never"
+        last_acked = r["last_acked_at"] or "never"
+        family_alerted = r["family_alerted_at"] or "never"
+        lines.append(
+            f"`#{r['id']}` *{r['medicine_name']}* @ `{r['schedule_time']}`  "
+            f"({active_marker}, days=`{r['days_of_week']}`)\n"
+            f"  attempt=`{attempt}` · last_sent=`{last_sent}` · "
+            f"last_acked=`{last_acked}` · family_alerted=`{family_alerted}`"
+        )
+
+    text = "\n".join(lines)
+    if len(text) > 3800:
+        text = text[:3800] + "\n…(truncated)"
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
 async def setpersona_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Admin-only command to switch a user's persona post-onboarding.
@@ -3199,6 +3277,7 @@ def main() -> None:
     app.add_handler(CommandHandler("setcity", setcity_command))
     app.add_handler(CommandHandler("setpersona", setpersona_command))
     app.add_handler(CommandHandler("profiledump", profiledump_command))
+    app.add_handler(CommandHandler("meddump", meddump_command))
     app.add_handler(CommandHandler("testapis", testapis_command))
     app.add_handler(CommandHandler("cricdebug", cricdebug_command))
     app.add_handler(CallbackQueryHandler(handle_help_callback, pattern="^help_"))
