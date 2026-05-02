@@ -2631,13 +2631,18 @@ async def profiledump_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # Pull the fields most likely to matter for diagnostics. Keep the list
     # short — readability matters more than completeness in chat.
+    # Patch 5 (2 May 2026): added family_term + 4 pending/awaiting state
+    # fields so deferral and bare-code-join state is visible during pilot.
     fields_of_interest = [
         "name", "preferred_salutation", "bot_name", "persona", "language",
-        "city", "religion", "favourite_topics", "news_interests",
+        "city", "religion", "family_term",
+        "favourite_topics", "news_interests",
         "music_preferences", "spouse_name", "wake_time", "sleep_time",
         "morning_checkin_time", "afternoon_checkin_time", "evening_checkin_time",
         "heartbeat_consent", "escalation_opted_in",
         "onboarding_complete", "onboarding_step", "setup_mode", "handoff_step",
+        "pending_grandkids_names", "pending_medicines",
+        "awaiting_pending_capture", "awaiting_family_name",
     ]
 
     lines = [f"*Profile dump for `{target_telegram_id}`*\n"]

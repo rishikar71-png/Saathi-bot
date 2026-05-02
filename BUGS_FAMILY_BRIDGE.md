@@ -19,7 +19,7 @@ V1–V10 (in CLAUDE.md) applies to every patch in this list.
 
 ## P1 — pilot-blocking trust/clarity breaks
 
-### FB-1: `family_term` ignored in family-side bot messages ✅ (Patch 1, commit 7c75188 — pending live test)
+### FB-1: `family_term` ignored in family-side bot messages ✅ (Patch 1, commit 7c75188 — live-verified 2 May 2026)
 
 **Symptom:** Senior tells `/familycode` that family member calls them "Ma".
 Bot stores `users.family_term="Ma"`. But every Saathi-to-family message
@@ -51,7 +51,7 @@ prompt at main.py:894 uses returned `senior_name`.
 
 ---
 
-### FB-2: `family_members.name` hardcoded to `'Family'` on bare-code join 🔄 (code shipped, live test pending)
+### FB-2: `family_members.name` hardcoded to `'Family'` on bare-code join ✅ (Patch 2, commit 2242903 — live-verified 2 May 2026, Ishween captured + senior-side relay shows real name)
 
 **Symptom:** Senior sees `Family ne aapko sandesh bheja hai 💌` — generic,
 not the actual sender's name.
@@ -91,7 +91,7 @@ Lean: separate column — different lifecycle.
 
 ---
 
-### FB-3: Relay wrappers in Hindi when senior was onboarded in English ✅ (Patch 1, commit 7c75188 — pending live test)
+### FB-3: Relay wrappers in Hindi when senior was onboarded in English ✅ (Patch 1, commit 7c75188 — live-verified 2 May 2026)
 
 **Symptom:** Both relay directions render in Hindi:
 - Senior side: `Family ne aapko sandesh bheja hai 💌`
@@ -132,7 +132,7 @@ language should also be per-message vs. learned. **Out of scope for this bug.**
 
 ## P2 — UX gaps
 
-### FB-4: Opening detection question missing "I have a code" path 🔄 (code shipped, live test pending)
+### FB-4: Opening detection question missing "I have a code" path ✅ (Patch 3, commit 38d5866 — live-verified 2 May 2026, 3-option question shows on /start)
 
 **Symptom:** Family member who lands on `/start` first (instead of pasting
 code first) gets routed into child-led onboarding for a fictitious senior.
@@ -165,7 +165,7 @@ Lean: **(a)** — pilot families won't guess (b) without docs.
 
 ---
 
-### FB-5: `/familycode` ack copy promises something it doesn't fully deliver 🔄
+### FB-5: `/familycode` ack copy promises something it doesn't fully deliver ✅ (auto-resolved with FB-1; "I'll refer to them as Ma" is now factually true everywhere — verified 2 May 2026)
 
 **Symptom:** Bot says `Got it — I'll refer to them as *Ma* in the message.`
 Strictly true only for the WhatsApp forward block. False for every Saathi-to-family
@@ -180,7 +180,7 @@ message (per FB-1).
 
 ## P3 — formatting
 
-### FB-6: Senior-side relay format collapses paragraph break ✅ (Patch 1, commit 7c75188 — pending live test)
+### FB-6: Senior-side relay format collapses paragraph break ✅ (Patch 1, commit 7c75188 — live-verified on Mac Telegram 2 May 2026; Android verification optional but pending)
 
 **Symptom:** Code at `family.py:381-382` writes
 `*{family_name}* ne aapko sandesh bheja hai 💌\n\n_{message_text}_` but
