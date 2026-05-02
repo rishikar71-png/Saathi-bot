@@ -123,15 +123,13 @@ POLICY_COMMAND_RESPONSE = (
     "Or ask me any question about how this works."
 )
 
-# Sections shown to family members during/after setup — discloses what family can and cannot see
+# Sections shown to family members during/after setup — discloses what family can and cannot see.
+# Patch 4 (1 May 2026): cut from ~70 words to ~30 — old version read like a data
+# dump and could intimidate the adult child. Full policy still one /policy away.
 FAMILY_SETUP_POLICY_SECTIONS = (
     "\n\n---\n\n"
-    "*A note on privacy — what you can see*\n\n"
-    "You may receive safety alerts (if opted in) and medicine acknowledgement alerts. "
-    "You will NOT be able to read the actual conversations between Saathi and your family member. "
-    "Their words are private to them.\n\n"
-    "Saathi will gently encourage them to reach out to you — but it will never report what they said.\n\n"
-    "In a future update, you can opt in to a weekly health summary. "
-    "This will cover mood trends and health mentions — not conversation content.\n\n"
-    "If you have questions about the full privacy policy, type */policy* at any time."
+    "*A note on privacy*\n\n"
+    "You'll receive safety alerts (if opted in) and medicine acknowledgments — "
+    "but never the actual conversations. Their words stay private. "
+    "Type */policy* anytime for the full details."
 )

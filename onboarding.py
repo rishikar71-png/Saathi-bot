@@ -1526,7 +1526,9 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> Optional[str]
 
     elif step == 17:
         hhmm = _parse_single_time(t, slot="morning")
-        update_user_fields(user_id, morning_checkin_time=hhmm, wake_time=hhmm)
+        # Patch 4 (1 May 2026): dropped wake_time auto-mirror — vestigial
+        # (no code reads it; cosmetic noise in /profiledump).
+        update_user_fields(user_id, morning_checkin_time=hhmm)
 
     elif step == 18:
         hhmm = _parse_single_time(t, slot="afternoon")
@@ -1534,7 +1536,9 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> Optional[str]
 
     elif step == 19:
         hhmm = _parse_single_time(t, slot="evening")
-        update_user_fields(user_id, evening_checkin_time=hhmm, sleep_time=hhmm)
+        # Patch 4 (1 May 2026): dropped sleep_time auto-mirror — vestigial
+        # (no code reads it; cosmetic noise in /profiledump).
+        update_user_fields(user_id, evening_checkin_time=hhmm)
 
     elif step == 20:
         consent = 1 if t.lower() in (
