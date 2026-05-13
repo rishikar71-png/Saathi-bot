@@ -1719,14 +1719,116 @@ async def _run_pipeline(
         logger.info("OUT | user_id=%s | type=emergency_prompt", user_id)
         return
 
+    # --- Privacy intercept (runs BEFORE Protocol 1) ---
+    # Bug 4 fix (13 May 2026, GPT/Gemini external review): privacy queries
+    # bypass DeepSeek entirely. Reasoning:
+    #   1. DeepSeek has historically failed to honor system-prompt rules on
+    #      emotionally heavy content (Bug B regression history).
+    #   2. Privacy claims are policy statements, not stylistic behavior —
+    #      they must be deterministic, not generated probabilistically.
+    #   3. The "pleaser bias" in LLMs makes false absolute reassurance
+    #      ("no one reads what we talk about") a likely default response,
+    #      breaking the trust contract Rule 10 is designed to protect.
+    #
+    # Response is branched on:
+    #   - Detected message language (Devanagari / Hinglish / English)
+    #   - weekly_report_opt_in (mention the setup person's weekly note if so)
+    _PRIVACY_KEYWORDS = [
+        # English
+        "is this private", "is it private", "are you private",
+        "is this confidential", "kept private", "stay private",
+        "can i trust you", "can i trust this", "do you remember",
+        "what do you remember", "will my family know",
+        "will anyone know", "anyone reads", "who reads this",
+        "can anyone see", "is anyone watching", "is anyone listening",
+        "between us", "stays between us", "stays with you",
+        # Hindi / Hinglish
+        "kya yeh private", "kya yeh confidential", "kya yeh secret",
+        "koi padhta hai", "koi padh sakta", "koi padhega",
+        "kya aap par bharosa", "kya tum par bharosa",
+        "family ko pata", "parivaar ko pata", "ghar walon ko pata",
+        "mere parivaar ko pata", "kisi ko pata",
+        "kya yaad rakhte ho", "kya yaad hai aapko", "kya yaad hai tumhe",
+        "koi sun raha hai", "koi sun sakta",
+        "yeh baat private hai",
+    ]
+    _privacy_text_lower = text.lower()
+    _is_privacy_query = any(sig in _privacy_text_lower for sig in _PRIVACY_KEYWORDS)
+    if _is_privacy_query:
+        # Detect language for response. Use the per-message effective language
+        # if user_context already has it, else fall back to stored profile.
+        _priv_lang = (user_context.get("language") or user_row["language"] or "english").lower()
+        # weekly_report opt-in surfaces the setup person's weekly note. If on,
+        # add a second sentence naming the setup person and what they receive.
+        _weekly_opt = 0
+        if "weekly_report_opt_in" in user_row.keys():
+            _weekly_opt = int(user_row["weekly_report_opt_in"] or 0)
+        _setup_name_for_priv = None
+        if _weekly_opt:
+            try:
+                from database import get_setup_person as _gsp_priv
+                _sp = _gsp_priv(user_id)
+                _setup_name_for_priv = _sp["name"] if _sp else None
+            except Exception:
+                _setup_name_for_priv = None
+
+        if _priv_lang in ("hindi", "hinglish"):
+            _privacy_reply = (
+                "Aap mere saath khulkar baat kar sakte hain — main sunne ke liye hoon. "
+                "Jo hum baat karte hain, woh aam taur par hum dono ke beech rahti hai. "
+                "Bas ek baat — agar mujhe aapki safety ki gehri chinta ho, "
+                "toh main aapke chosen family contact ko bata sakta hoon."
+            )
+            if _weekly_opt and _setup_name_for_priv:
+                _privacy_reply += (
+                    f"\n\nAur ek aur baat — har Sunday main {_setup_name_for_priv} ko "
+                    "ek choti si update bhejta hoon — bas mood aur sehat ka general sense, "
+                    "jo hum baat karte hain woh nahi."
+                )
+        else:
+            _privacy_reply = (
+                "You can speak freely with me — I'm here to listen. "
+                "What we talk about generally stays between us. "
+                "The only exception — if I become seriously worried about your safety, "
+                "I may involve your chosen family contact."
+            )
+            if _weekly_opt and _setup_name_for_priv:
+                _privacy_reply += (
+                    f"\n\nOne more thing — every Sunday I send {_setup_name_for_priv} "
+                    "a brief update on how you're doing — just a general sense of your "
+                    "mood and health, not what we've talked about."
+                )
+        await update.message.reply_text(_privacy_reply)
+        save_message_record(user_id, "out", _privacy_reply)
+        save_session_turn(user_id, "user", text)
+        save_session_turn(user_id, "assistant", _privacy_reply)
+        logger.info(
+            "OUT | user_id=%s | type=privacy_intercept | lang=%s | weekly_opt=%d",
+            user_id, _priv_lang, _weekly_opt,
+        )
+        # Voice — privacy is a policy statement, hand-bounded copy. force=True.
+        asyncio.create_task(_send_tts_bg(
+            user_id, _privacy_reply, _priv_lang, update, time.monotonic(), force=True,
+        ))
+        return
+
     # --- Protocol 1 check (runs BEFORE DeepSeek) ---
+    # 13 May 2026 rework (Bugs 1, 3, 5): check_protocol1 now returns
+    # (response, is_escalation, stage). Stage 2 returns (None, False, 2)
+    # — main.py is responsible for assembling the response with DB-derived
+    # setup_name + family-contact eligibility. Escalation does NOT bump the
+    # Stage 1 session counter (Bug 3 fix — prevents subsequent Stage 1
+    # triggers from being silently promoted to Stage 2).
     session_count = _protocol1_session_counts.get(user_id, 0)
-    protocol1_reply, is_escalation = check_protocol1(user_id, text, session_count)
+    protocol1_reply, is_escalation, p1_stage = check_protocol1(user_id, text, session_count)
 
     if is_escalation:
         # Imminent-risk signal. Attempt family alert if user has consented.
         # Build an honest response based on whether the alert actually went out.
-        _protocol1_session_counts[user_id] = session_count + 1
+        # Bug 3 fix: do NOT increment _protocol1_session_counts on escalation.
+        # Escalation is a separate severity tier — should not push subsequent
+        # Stage 1 triggers (which may be a senior recovering, oscillating back
+        # down to ordinary distress) into a Stage 2 helpline dump.
         from safety import alert_emergency_contacts
         from protocol1 import _ESCALATION_RESPONSE_ALERT_SENT, _ESCALATION_RESPONSE_NO_ALERT
         _alert_sent = 0
@@ -1734,7 +1836,6 @@ async def _run_pipeline(
             _alert_sent = await alert_emergency_contacts(context.bot, user_id, user_row)
         except Exception as _ae:
             logger.error("PROTOCOL1 | family alert failed | user_id=%s | %s", user_id, _ae)
-        # Use the honest response variant — never claim alert sent if it wasn't
         _p1_escalation_text = (
             _ESCALATION_RESPONSE_ALERT_SENT if _alert_sent > 0
             else _ESCALATION_RESPONSE_NO_ALERT
@@ -1744,22 +1845,48 @@ async def _run_pipeline(
             "OUT | user_id=%s | type=protocol1_escalation | alert_sent=%d",
             user_id, _alert_sent,
         )
-        # Voice — force=True bypasses TTS_MAX_CHARS (P1 strings are Hinglish, hand-bounded)
         asyncio.create_task(_send_tts_bg(
             user_id, _p1_escalation_text, "hinglish", update, time.monotonic(), force=True,
         ))
         return
 
-    if protocol1_reply:
+    # Stage 1 — protocol1_reply is already a built (rotated) response string.
+    if protocol1_reply and p1_stage == 1:
         _protocol1_session_counts[user_id] = session_count + 1
         await update.message.reply_text(protocol1_reply)
         logger.info(
-            "OUT | user_id=%s | type=protocol1 | stage=%d",
-            user_id, session_count + 1,
+            "OUT | user_id=%s | type=protocol1 | stage=1",
+            user_id,
         )
-        # Voice — force=True (P1 Stage 2 is 538 chars, exceeds default cap)
         asyncio.create_task(_send_tts_bg(
             user_id, protocol1_reply, "hinglish", update, time.monotonic(), force=True,
+        ))
+        return
+
+    # Stage 2 — main.py assembles the response. Pulls setup_name from
+    # family_members + checks contact eligibility. Bug 1 + 5 fix: never
+    # hardcode names; never offer family alert when no contact exists.
+    if p1_stage == 2:
+        _protocol1_session_counts[user_id] = session_count + 1
+        from protocol1 import build_stage2_response
+        from database import get_setup_person
+        from safety import _get_family_contacts_with_telegram
+        _setup = get_setup_person(user_id)
+        _setup_name = _setup["name"] if _setup else None
+        _has_contact = bool(_get_family_contacts_with_telegram(user_id))
+        _esc_opted = int(user_row["escalation_opted_in"] or 0) if "escalation_opted_in" in user_row.keys() else 0
+        _stage2_text = build_stage2_response(
+            setup_name=_setup_name,
+            escalation_opted_in=_esc_opted,
+            has_family_contact=_has_contact,
+        )
+        await update.message.reply_text(_stage2_text)
+        logger.info(
+            "OUT | user_id=%s | type=protocol1 | stage=2 | setup_name=%s | has_contact=%s | opted_in=%d",
+            user_id, _setup_name or "<none>", _has_contact, _esc_opted,
+        )
+        asyncio.create_task(_send_tts_bg(
+            user_id, _stage2_text, "hinglish", update, time.monotonic(), force=True,
         ))
         return
 
@@ -1962,20 +2089,32 @@ async def _run_pipeline(
         "bichhad gaye", "bichhad gayi",
     ]
 
-    # Loneliness / invisibility signals — one-sentence hold, no excavation
+    # Loneliness / invisibility signals — one-sentence hold, no excavation.
+    # 13 May 2026 (Bug 2 + GPT/Gemini external review): expanded to absorb
+    # Hindi/Hinglish phrases previously misclassified as Protocol 1 Stage 1
+    # crisis triggers. These are loneliness or ordinary depressive idioms,
+    # NOT death/disappearance/farewell ideation — they belong here.
     _VULNERABILITY_SIGNALS = [
-        # English
+        # English — original
         "nobody needs me", "no one needs me", "feel like nobody",
         "feel invisible", "nobody cares", "no one cares",
         "feel useless", "feel alone", "feel lonely", "feel like a burden",
         "nobody listens", "no one listens", "i am a burden", "i'm a burden",
         "nobody wants me", "no one wants me", "don't belong",
         "feel left out", "feel forgotten", "nobody remembers",
-        # Hindi / Hinglish
+        # English — moved from protocol1.py _STAGE1_PATTERNS
+        "feel so alone", "completely alone",
+        # Hindi / Hinglish — original
         "koi zaroorat nahi", "koi nahi chahta", "akela feel",
         "akela hoon", "akele hoon", "koi nahi sunata", "koi nahi sunta",
         "kisi ko zaroorat nahi", "bekar lagta", "bekar lag raha",
         "bojh lag raha", "bojh lagta", "koi yaad nahi karta",
+        # Hindi / Hinglish — moved from protocol1.py _STAGE1_PATTERNS
+        # (loneliness, ordinary depressive idiom — not crisis ideation)
+        "koi sunne wala nahi", "koi samajhne wala nahi", "koi nahi mera",
+        "bahut akela", "mann nahi lagta",
+        "bojh ban gaya", "bojh ban gayi", "sabke liye bojh",
+        "koi nahi hai mera", "koi fayda nahi", "sab bekar", "sab bekaar",
     ]
 
     _text_lower = text.lower()
