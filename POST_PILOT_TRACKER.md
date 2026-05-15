@@ -6,6 +6,53 @@
 
 ---
 
+## P1 — Protocol 1 / safety architecture (added 13 May 2026 from GPT-4o + Gemini external review of Patch 7)
+
+These were flagged by external reviewers as real concerns beyond Patch 7's scope. None pilot-blocking individually; cumulative architectural debt is real and worth addressing post-pilot before scaling.
+
+### Stateful escalation design (replace single counter)
+- Currently `_protocol1_session_counts` is a single monotonic counter per user. Patch 7 stops escalation events from incrementing it — but the design itself is too crude.
+- GPT recommendation: replace with (a) latest crisis timestamp, (b) latest escalation timestamp, (c) rolling severity window, (d) repetition count per category.
+- Why: real user distress is oscillatory (acute → de-escalation → loneliness → shame → humour → acute again). A linear ladder punishes recovery behavior by trapping users in heavier responses.
+
+### Persistence escalation in vulnerability layer
+- Currently vulnerability is a single-shot soft acknowledgment. No tracking of repeated vulnerability signals over a rolling window.
+- GPT recommendation: if vulnerability signals repeat 3+ times in 24h, escalate strategy (not directly to crisis): "Aaj ka din thoda bhaari lag raha hai..." Repeated hopelessness + death language → Protocol 1.
+- Catches slow-burn risk without medicalizing single instances.
+
+### Hinglish trigger logging + labeled corpus
+- Regex-only Hinglish crisis detection is fragile. Hindi emotional speech is metaphorical, contextual, idiomatic. "khatam ho gaya" / "bas ho gaya" / "mann uth gaya" / "thak gaya hoon" can be ordinary frustration OR genuine suicidality.
+- Action: log anonymized trigger decisions (which protocol fired, which regex matched, escalation reason); human-review classifications; build a labeled internal corpus.
+- Without this, classifier quality drifts invisibly during the pilot.
+
+### Memory contamination audit
+- Bug 6 ("three brothers" hallucination) suggests context blending across memory/state boundaries. Specifically: assistant-suggested actions becoming implied user truths.
+- Audit: memory retrieval ordering, truncation behavior, stale context carryover, prompt assembly.
+- Verify: old inferred facts NEVER promoted to persistent memory; assistant-generated text NEVER re-ingested as user truth.
+
+### Protocol observability — structured logging
+- Before pilot scale-up, add structured logging for: which protocol fired, which regex matched, escalation reason, whether LLM was bypassed, family alert path availability, which template variant was selected (Patch 7 random.choice).
+- Without this, real-world failures cannot be debugged safely.
+
+### iCall repetition cooldown
+- If iCall has been mentioned twice in last 30 min, do not repeat verbatim again. Repetition becomes emotionally flattening.
+- Implement as session-level dedup on the iCall mention specifically.
+
+### Pre-LLM context structure (VERIFIED_FACTS / USER_STATED_THIS_TURN / UNVERIFIED_SUGGESTIONS)
+- GPT recommendation for Bug 6 architectural mitigation. Before each DeepSeek call, construct three explicit categories. Forbid migration across them in the system prompt.
+- Example: `UNVERIFIED_SUGGESTIONS: Assistant previously suggested calling Noor. User has NOT confirmed this happened.`
+- Stronger than natural-language Rule 14 alone. The model appears to synthesize latent narrative continuity; structured input + explicit forbidden migration is the architectural fix.
+
+### Vulnerability layer suggesting family-add at low-stakes later moment
+- Gemini recommendation. Don't introduce setup/onboarding language during a crisis interaction. Instead, when senior is in a low-stakes moment later in the week, the vulnerability pre-processor can prompt: "I really enjoy our chats, [name]. Would you ever want [child] to see a little update on how you're doing?"
+- Adds opt-in path for family escalation without cognitive load during an acute moment.
+
+### Banned therapy phrases drift
+- GPT noted: "DeepSeek has historically failed to honor system prompt rules on emotionally heavy content." Rule 12's banned-phrases list is large and may drift.
+- Post-pilot: build a runtime checker that flags banned-phrase use and logs a warning. Use pilot data to tune.
+
+---
+
 ## P1 — design decisions to revisit with pilot data
 
 ### Self-setup consent model
