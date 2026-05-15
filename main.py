@@ -1869,7 +1869,6 @@ async def _run_pipeline(
     if p1_stage == 2:
         _protocol1_session_counts[user_id] = session_count + 1
         from protocol1 import build_stage2_response
-        from database import get_setup_person
         from safety import _get_family_contacts_with_telegram
         _setup = get_setup_person(user_id)
         _setup_name = _setup["name"] if _setup else None
