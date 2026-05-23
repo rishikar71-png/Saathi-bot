@@ -325,37 +325,51 @@ def write_diary_entry(user_id: int) -> bool:
 This diary entry will be read at the start of tomorrow's conversation to help
 the bot speak naturally and personally.
 
+CRITICAL RULE: Use ONLY names, places, topics, and details that actually appear in
+the conversation transcript below. NEVER invent a name, place, family member, topic,
+song, or event that the senior did not actually mention. The examples in this prompt
+use fictional placeholders (e.g. [FAMILY_NAME], [TOPIC]) for structural illustration
+only — do NOT copy those placeholders or their pattern names into the diary.
+If a field has no actual content from the conversation, return an empty string or
+empty list for that field. An empty diary is far better than a fabricated one.
+
 Read the conversation below and create a diary entry with these fields:
 
 1. mood: One word (happy / content / tired / quiet / irritated / sad / anxious / energetic)
 
 2. emotional_context: 2-3 sentences describing the emotional texture of the conversation.
    This is the most important field. Write it so that tomorrow's bot can reference
-   specific emotional moments naturally.
+   specific emotional moments naturally. Use only actual quotes and references from
+   the conversation — never embellish.
 
-   GOOD: "Senior sounded really happy after talking about Priya's upcoming visit.
-          Became animated and warm when describing Priya's cooking.
-          The conversation had a light, nostalgic quality."
+   GOOD structure (using fictional [FAMILY_NAME] / [TOPIC] placeholders for illustration —
+   do not copy these literal words into the diary):
+       "Senior sounded really happy after talking about [FAMILY_NAME]'s upcoming visit.
+        Became animated and warm when describing [TOPIC].
+        The conversation had a light, nostalgic quality."
 
-   BAD: "Senior was happy today. Talked about family."
+   BAD: "Senior was happy today. Talked about family." (too generic — lifts no actual detail)
 
 3. health_mentions: Any physical symptoms, medicines mentioned, or health topics raised.
-   Include exact words used where possible.
-   Example: "Mentioned knee pain ('thoda dard hai ghuthe mein'), said it comes and goes."
+   Include exact words the senior used where possible.
+   Use only health topics actually mentioned in the conversation — never infer.
 
-4. family_mentions: Names of family members mentioned and context.
-   Example: "Priya (daughter) — visiting next week, very excited about this.
-              Rahul (son) — brief mention, no emotional weight."
+4. family_mentions: Names of family members the senior actually mentioned, with context.
+   Format: "[name] ([relationship if stated]) — [what the senior said about them]."
+   Use only names that appear in the conversation below. If no family members were
+   mentioned, return an empty list. Never insert a name from training data or
+   example prompts.
 
-5. topics: List of main topics discussed (be specific, not generic).
-   Example: ["Priya's visit next week", "old Bombay memories", "cricket scores", "lunch"]
-   Not: ["family", "food", "sports"]
+5. topics: List of main topics actually discussed (be specific, not generic).
+   Use only topics that appear in the conversation below.
+   GOOD shape (specific, drawn from real conversation): short noun phrases.
+   BAD shape: ["family", "food", "sports"] (too generic).
+   If the conversation was brief or non-substantive, return an empty list.
 
 6. notable_moments: 1-3 specific moments worth remembering for tomorrow.
-   Things the bot can naturally reference.
-   Example: ["Senior laughed a lot remembering the 1983 World Cup",
-              "Mentioned feeling tired in the afternoon — something about a poor night's sleep",
-              "Asked about a specific old Hindi song (Lag Ja Gale)"]
+   Things the bot can naturally reference. Use only moments that actually occurred
+   in the conversation below — never invent a moment, a song, an event, or a memory
+   the senior did not actually share. If nothing notable happened, return an empty list.
 
 7. songs_requested: Any specific songs or music requested or mentioned.
 

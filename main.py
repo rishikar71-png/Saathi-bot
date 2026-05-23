@@ -2059,9 +2059,14 @@ async def _run_pipeline(
         text = (
             f"The user just returned mid-session with a greeting ('{_original_text.strip()}').\n\n"
             f"Recent conversation:\n{_ctx}\n\n"
-            f"Respond in 1-2 warm sentences. If there is an unfinished story or topic above, "
-            f"reference it warmly — e.g. 'Welcome back — you were just about to tell me about Bombay.' "
-            f"Do NOT say 'Good evening. How has the day been?' or any generic time-of-day greeting."
+            f"Respond in 1-2 warm sentences. If — and ONLY if — the recent conversation "
+            f"above contains a clearly unfinished story or topic the senior was sharing, "
+            f"you may reference it warmly using the senior's own words. NEVER invent a "
+            f"topic, place, person, or activity the senior did not actually mention in "
+            f"the conversation above. If there is no clear unfinished thread, simply "
+            f"acknowledge their return softly ('Hello again.' / 'Glad you're back.' / "
+            f"'Good to hear from you.'). Do NOT say 'Good evening. How has the day been?' "
+            f"or any generic time-of-day greeting."
         )
         _session_history = []  # History already embedded in prompt — don't double-inject
 
@@ -2803,19 +2808,48 @@ async def profiledump_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             value = "<missing column>"
         lines.append(f"`{field}`: `{value}`")
 
-    # Also show family members — the FAMILY block diagnostic
+    # Also show family members — the FAMILY block diagnostic.
+    # 23 May 2026 — extended to include telegram_user_id + escalation-fire flag
+    # so we can diagnose "will medicine/safety alerts actually reach this contact?".
+    # Escalation fires when: family member has telegram_user_id AND user has
+    # escalation_opted_in=1. Without telegram_user_id, alerts dead-letter.
     try:
-        members = get_family_members(target_telegram_id) or []
-        if members:
+        from database import get_connection
+        try:
+            esc_opted_in = int(row["escalation_opted_in"] or 0)
+        except (KeyError, IndexError, TypeError):
+            esc_opted_in = 0
+        with get_connection() as conn:
+            full_rows = conn.execute(
+                """
+                SELECT name, relationship, phone, role, is_setup_user, telegram_user_id
+                FROM family_members
+                WHERE user_id = ?
+                ORDER BY id ASC
+                """,
+                (target_telegram_id,),
+            ).fetchall()
+        if full_rows:
             lines.append("\n*Family members:*")
-            for m in members:
+            for r in full_rows:
+                name = (r["name"] or "?").strip() or "?"
+                rel = (r["relationship"] or "?").strip() or "?"
+                phone = (r["phone"] or "").strip() or "no phone"
+                tg_id = r["telegram_user_id"]
+                setup_flag = " [setup]" if int(r["is_setup_user"] or 0) else ""
+                self_flag = " [SELF — same TG as senior]" if tg_id == target_telegram_id else ""
+                if tg_id and esc_opted_in:
+                    will_alert = "✅ alerts ON"
+                elif tg_id and not esc_opted_in:
+                    will_alert = "⚠️ has TG but escalation OFF"
+                else:
+                    will_alert = "❌ no TG link — alerts dead-letter"
                 lines.append(
-                    f"  • `{m.get('relationship', '?')}`: "
-                    f"`{m.get('name', '?')}` "
-                    f"({m.get('phone') or 'no phone'})"
+                    f"  • `{rel}`: `{name}` ({phone}){setup_flag}{self_flag}\n"
+                    f"    tg_id=`{tg_id}` · {will_alert}"
                 )
         else:
-            lines.append("\n*Family members:* (none)")
+            lines.append("\n*Family members:* (none — escalation has nowhere to go)")
     except Exception as _fm_err:
         lines.append(f"\n*Family members:* read failed — {_fm_err}")
 
