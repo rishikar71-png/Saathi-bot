@@ -1,27 +1,71 @@
-# CHECKPOINT — Resume after 13 May 2026 session
+# CHECKPOINT — Resume after 23 May 2026 session
 
 **Read order for next session:** this file → CLAUDE.md → BUGS_FAMILY_BRIDGE.md → POST_PILOT_TRACKER.md → progress.md.
 
 ---
 
-## HEAD state at session close
+## HEAD state at session close (23 May 2026)
 
-**Local chain (Patch 7 pushed by Rishi this session):**
+**Local chain — Patch 9 committed in sandbox, NOT YET PUSHED:**
 ```
+ff55c25  Patch 9: fix hardcoded 'Bombay' / 'Priya' leaks in mid-session greeting + diary extraction prompts  [LOCAL ONLY]
+d4140c8  Doc updates: 15 May session close (Patch 8 + V4 migration plan + admin playbook)
+5ec0762  Patch 8: fix UnboundLocalError on every text message (Patch 7 regression)
 6e1f2df  Patch 7: Protocol 1 + privacy hardening (6 P0 fixes from 13 May test pass)
-47153bd  Patch 6: self-setup hardening — 4 sub-changes from 2 May Section 1.2 test
-14975aa  Patch 5: extend /profiledump with family_term + pending/awaiting state
-e2694a6  Patch 4: shorten family-side privacy block + drop vestigial wake/sleep_time
 ```
 
-**First task next session: live-verify Patch 7 against Railway.** Run `git log --oneline -8` and confirm `6e1f2df` is on origin/main. If yes, Railway should already have deployed it during this session's wait window.
+**FIRST TASK NEXT SESSION (or do now):** push Patch 9 to GitHub. Sandbox cannot push (no creds). One command:
+```bash
+cd ~/saathi-bot && git push origin main
+```
+Railway auto-deploys on push. Wait 2–4 min, then continue with verification below.
 
-If verification command shows it's NOT on origin/main, push it:
-```
-cd /Users/rishikar/saathi-bot
-rm -f .git/*.lock .git/*.lock.*
-git push origin main
-```
+---
+
+## What Patch 9 fixes — soak/log review surfaced 23 May
+
+Live Telegram chatlog showed a memory-contamination bug:
+1. Senior sent `hello` mid-session
+2. Saathi: *"Welcome back, Rishi Ji. You were just about to tell me about Bombay…"*
+3. Senior: *"i dont know anything about mumbai. whatever gave you the idea…"*
+4. Saathi recovered cleanly in-turn (Rule 14 fired correctly)
+5. **But the next morning's briefing still said:** *"I was thinking about those old Bombay stories you were about to share the other day…"*
+
+Root cause: same bug class as Patch 7 Bug 1 (hardcoded `Priya` in protocol1.py). Two sites missed in Patch 7's audit:
+- `main.py:2063` — mid-session greeting prompt used literal `Bombay` as an "e.g." example. DeepSeek copied it.
+- `memory.py:336–351` — diary extraction prompt used `Priya` / `Rahul` / `Bombay` as illustrative examples in 4 fields. On a sparse conversation, DeepSeek fell back to literal example names → diary contaminated → next morning's briefing pulled "Bombay" back as an "unfinished thread."
+
+Fixes:
+- `main.py` mid-session greeting prompt: stripped literal example, added explicit `NEVER invent a topic, place, person, or activity the senior did not actually mention` + soft no-thread fallback (`Hello again.` / `Glad you're back.` / `Good to hear from you.`).
+- `memory.py` diary extraction prompt: replaced literal names with `[FAMILY_NAME]` / `[TOPIC]` placeholders + a new CRITICAL RULE block (`Use ONLY names, places, topics, and details that actually appear in the conversation transcript below… An empty diary is far better than a fabricated one.`).
+- `/profiledump` extended: now surfaces `family_members.telegram_user_id` and a derived **`✅ alerts ON` / `⚠️ has TG but escalation OFF` / `❌ no TG link — alerts dead-letter`** flag per contact. Needed to answer "is the senior their own emergency contact / does escalation actually reach a human?" without direct Volume DB access.
+
+Verification: py_compile clean both files; 6/6 V4 unit tests pass (`test_bombay_leak_regression.py`); git diff --stat: 2 files +76/-28.
+
+Out of scope (logged as follow-up): `rituals.py wrap_weather` / `wrap_cricket` / `wrap_news` prompts also contain hardcoded examples (Mumbai, India 245/6 vs Australia, Delhi PM meeting). NOT patched — they've been firing daily with good output and the risk of regression > risk of leakage. Audit separately if a similar leak shows up.
+
+---
+
+## Post-deploy verification (do these once `ff55c25` is on Railway)
+
+1. **Test A — `/profiledump` shows family contact status.** Send `/profiledump` from your Telegram. Look for the `Family members:` section. Each contact row now shows:
+   - `tg_id=...` (numeric Telegram user ID, or `None` if not linked)
+   - `✅ alerts ON` → escalation will fire to a real human
+   - `⚠️ has TG but escalation OFF` → toggle escalation_opted_in
+   - `❌ no TG link — alerts dead-letter` → reminders/safety alerts go nowhere
+   - `[SELF — same TG as senior]` flag if a contact's tg_id == your own → you're your own contact, alerts loop back to you.
+
+2. **Test B — Bombay leak doesn't return.** Have a 4+ message conversation with Saathi (anything substantive). Then send `hello`. Expected: warm acknowledgement of your real recent thread OR soft `Hello again. / Glad you're back. / Good to hear from you.` — **never** a fabricated topic ("Bombay", "the bakery story", any noun you didn't mention).
+
+3. **Test C — diary doesn't fabricate.** Tomorrow's morning briefing should reference real things from today's conversation only. If it pulls "Bombay" or any fictional name, the diary extraction is still leaking — re-investigate.
+
+---
+
+## Other findings from 23 May soak (not fixed in Patch 9)
+
+- **P1 — reminder fatigue.** Plavix + Rosouvastatin both went through full 3-attempt cycles across multiple days; you didn't ack. Whether family escalation actually fired depends on `/profiledump` Test A above. If your family contact is `❌ no TG link` or `[SELF]`, escalation has been dead-lettering harmlessly. If a real contact has `✅ alerts ON`, they've been getting alerts for days — investigate or opt out.
+- **P2 — multi-day template repetition.** `"Thursday already — the week's moving along"` and `"Friday already — the week has moved along"` are the same template. Faint Multi-Day Behavior Rule violation. Not pilot-blocking but worth varying morning opener templates if you touch `rituals.py` for any reason.
+- **Working as designed (no bug):** Rule 14 in-turn recovery on "i dont know anything about mumbai" was clean. Short-reply disengagement ("ok" → "Alright.", "yes" → "Alright.") working when there's no prior Saathi question. Morning briefing structure healthy (weather + news + warm thread). No exceptions/"Sorry, something went wrong" in the log.
 
 ---
 
