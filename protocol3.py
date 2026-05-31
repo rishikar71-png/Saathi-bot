@@ -25,29 +25,78 @@ Never validate or invalidate the transaction. Never take sides.
 
 import re
 import logging
+from dataclasses import dataclass
 from typing import Optional
 from database import log_protocol_event
 
 logger = logging.getLogger(__name__)
 
+
+@dataclass
+class Protocol3Result:
+    """Richer return for the detection/intervention split (31 May 2026).
+
+    response:         the P3 reply string when the protocol FIRES, else None.
+    context_detected: a financial CONTEXT noun (or a fire) was present. Logged
+                      for observability; NOT yet injected into DeepSeek (A2,
+                      deferred — needs a defined behavioural spec first).
+    reason:           short label for logging (crisis_keyword / bucketN /
+                      context_only / None).
+    """
+
+    response: Optional[str]
+    context_detected: bool
+    reason: Optional[str]
+
 # ---------------------------------------------------------------------------
-# Flat keyword list — simple case-insensitive substring match.
-# Runs BEFORE the bucket regex patterns as a broad first pass.
+# Layer A — split into CONTEXT vs CRISIS (31 May 2026 fix).
+#
+# Root cause of the 31 May false positive: the old flat FINANCIAL_KEYWORDS list
+# fired Protocol 3 (the heaviest non-crisis response) on the MERE MENTION of a
+# financial noun. "the tenant in one of my rented property is leaving" tripped
+# the bare word "property" and the senior was told to see a lawyer. A senior
+# talking about ordinary life involving money/property/business must not trip
+# the intervention.
+#
+# Fix (external review V6 — GPT + Gemini both endorsed): SPLIT DETECTION FROM
+# INTERVENTION.
+#   CONTEXT_KEYWORDS -> only set context_detected=True. NEVER fire P3, NEVER set
+#                       the 60-min protocol3_active flag. Logged for observability.
+#   CRISIS_KEYWORDS  -> unambiguous financial-malice terms. Solo-fire + flag.
+#   Layer B buckets  -> decision / pressure / asset patterns. Fire + flag.
+#
+# Deliberately EXCLUDED from solo-fire (caught in Layer B only when paired with
+# money): bare "cheating"/"cheat" (marital, card games, exams) and "dhoka"/
+# "dhokha" (general betrayal — love, friendship, trust). Both are ambiguous and
+# solo-firing them recreates the exact false-positive class this fix removes.
 # ---------------------------------------------------------------------------
 
-FINANCIAL_KEYWORDS = [
+# Context-only: financial nouns that, alone, mean nothing actionable.
+# These NEVER fire Protocol 3 and NEVER set the session flag.
+CONTEXT_KEYWORDS = [
     "invest", "investment", "investing",
     "business", "scheme", "shares", "stocks",
     "mutual fund", "fixed deposit", "fd",
     "loan", "borrow", "lend", "lending",
     "property", "real estate", "savings",
-    "insurance", "policy", "fraud", "scam",
-    "cheating", "money", "lakhs", "crore",
-    "rupees", "₹", "paise",
+    "insurance", "policy", "money", "lakhs",
+    "crore", "rupees", "₹", "paise",
     "paisa", "nivesh", "vyapar",
     "dhandha", "karz", "udhaar", "zameen",
     "bima", "yojana",
 ]
+
+# Unambiguous financial-malice terms — almost always signal a scam/fraud concern
+# in a senior's mouth. These solo-fire Protocol 3 and set the session flag.
+# NOTE: bare "cheating"/"cheat" and "dhoka"/"dhokha" intentionally NOT here
+# (see comment above) — they are routed through Layer B paired with money.
+CRISIS_KEYWORDS = [
+    "fraud", "scam", "ghotala", "froad",
+    "thag", "thagi", "thaggi",
+]
+
+# Backwards-compat alias (kept so any external reference doesn't break).
+FINANCIAL_KEYWORDS = CONTEXT_KEYWORDS + CRISIS_KEYWORDS
 
 # ---------------------------------------------------------------------------
 # Keyword lists — three buckets (regex patterns for complex phrase matching)
@@ -105,6 +154,37 @@ _BUCKET1_PATTERNS = [
     r"financial (help|support|assistance)",
     r"loan (for|to)",
     r"(take|break) (my|your|the) (FD|fixed deposit|savings)",
+    # --- Added 31 May 2026 (review-named coverage gaps) ---
+    # Relational / pestering pressure (English)
+    r"keeps? asking (me )?for (money|cash|paisa|paise)",
+    r"wants? (his|her|their) share",
+    r"forcing me to (give|help|pay|lend|sign)",
+    r"pressuring me",
+    r"pressure to (give|pay|lend|help|sign)",
+    # Relational pressure (Hinglish)
+    r"pais[ae] maang raha",
+    r"paise maang rahe",
+    r"pais[ae] mang raha",
+    r"paise mang rahe",
+    r"hissa maang",
+    r"paise ke liye (force|pressure|majboor)",
+    r"pais[ae] dena padega",
+    # Borrowing under request
+    r"wants? to borrow",
+    r"udhaar maang",
+    r"karz maang",
+    # Investment solicitation
+    r"promising (high )?returns",
+    r"invest(ment)? opportunity",
+    # Authority-figure pressure (agent/manager/broker + financial action)
+    r"\b(agent|manager|broker|advisor)\b.{0,30}\b(invest|sign|scheme|returns|polic)",
+    r"nivesh karne (bol|keh|kah)",
+    r"pais[ae] lagane (bol|keh|kah)",
+    # Cheating / dhoka ONLY when paired with money (bare forms excluded from Layer A)
+    r"cheat(ing|ed|s)? me\b.{0,25}\b(money|savings|paisa|paise|lakhs|crore|fd|deposit|bank|account)",
+    r"financial(ly)? cheat",
+    r"pais[ae].{0,15}dhokh?a",
+    r"dhokh?a.{0,15}(paisa|paise|bank|account|savings|fd)",
 ]
 
 # Bucket 2 — Asset & inheritance decisions.
@@ -144,6 +224,28 @@ _BUCKET2_PATTERNS = [
     r"cut (him|her|them) out",
     r"(divide|split) (my |the )?assets",
     r"(share|portion|cut) of (my |the )?estate",
+    # --- Added 31 May 2026 (review-named coverage gaps) ---
+    # Urgent / coerced liquidation (English) — bounded proximity, never .*
+    r"sell(ing)? (the |my )?(flat|house|property|land|shares?|stocks?)\b.{0,20}\b(quick|fast|urgent|to help|for him|for her|for them|for his|for her)",
+    r"break(ing)? (my |the )?(fd|fixed deposit|savings)",
+    # Liquidation (Hinglish)
+    r"property bech",
+    r"flat bech",
+    r"makaan bech",
+    r"zameen bech",
+    r"ghar bech",
+    r"fd tod",
+    r"fixed deposit tod",
+    r"shares? bech",
+    # Coerced signing / control of accounts (require financial/legal context)
+    r"(financial|bank|property|legal|loan|investment) (papers?|documents?)",
+    r"sign(ing)? (some |the )?(papers?|documents?)\b.{0,25}\b(property|house|flat|land|money|account|bank|share|investment|loan|will|nominee)",
+    r"put(ting)? (his|her|their) name on (the )?(account|property|house|flat)",
+    r"make (him|her|them) (the |a )?nominee",
+    r"naam chadhana",
+    r"naam chadha",
+    r"nominee banana",
+    r"paper par sign",
 ]
 
 # Bucket 3 — Will & estate planning.
@@ -235,9 +337,15 @@ def _get_protocol3_response(language: str) -> str:
 # Public interface
 # ---------------------------------------------------------------------------
 
-def check_protocol3(user_id: int, text: str, language: str = "english") -> Optional[str]:
+def check_protocol3(user_id: int, text: str, language: str = "english") -> "Protocol3Result":
     """
     Check the message for Protocol 3 financial/legal signals.
+
+    Detection/intervention split (31 May 2026). Evaluation order:
+      1. CRISIS_KEYWORDS (Layer A, unambiguous malice) -> FIRE + flag.
+      2. Layer B buckets (decision / pressure / asset)  -> FIRE + flag.
+      3. CONTEXT_KEYWORDS (bare financial nouns)        -> DETECT ONLY, no fire.
+      4. otherwise                                      -> clear.
 
     Args:
         user_id: Telegram user ID (for logging).
@@ -246,37 +354,42 @@ def check_protocol3(user_id: int, text: str, language: str = "english") -> Optio
                   Defaults to 'english' — never assume Hindi.
 
     Returns:
-        A response string in the user's language if Protocol 3 fires,
-        or None if the message is clear.
+        Protocol3Result. `.response` is the reply string ONLY when the protocol
+        fires (crisis keyword or a Layer B bucket); it is None for context-only
+        and clear messages. The caller fires + sets the 60-min session flag iff
+        `.response` is truthy — so context-only mentions never contaminate the
+        next hour of conversation.
     """
     text_lower = text.lower()
 
-    # Flat keyword check — broad first pass.
-    # Bug P (30 Apr 2026): substring match collided "lend" with "calendar"/
-    # "splendid"/"blender". Use word-boundary regex.
-    _financial_re = [
+    # --- Layer A: CRISIS keywords (unambiguous malice — solo-fire + flag) ---
+    # Word-boundary regex (V9): short keywords must not substring-collide.
+    _crisis_re = [
         re.compile(r"\b" + re.escape(kw) + r"\b", re.IGNORECASE)
-        for kw in FINANCIAL_KEYWORDS
+        for kw in CRISIS_KEYWORDS
     ]
-    matched_keywords = [
-        FINANCIAL_KEYWORDS[i]
-        for i, rx in enumerate(_financial_re)
-        if rx.search(text_lower)
+    crisis_hits = [
+        CRISIS_KEYWORDS[i] for i, rx in enumerate(_crisis_re) if rx.search(text_lower)
     ]
-    if matched_keywords:
+    if crisis_hits:
         logger.warning(
-            "PROTOCOL3 | user_id=%s | bucket=keyword_match | keywords=%s | language=%s",
-            user_id, matched_keywords, language,
+            "PROTOCOL3 | user_id=%s | bucket=crisis_keyword | keywords=%s | language=%s",
+            user_id, crisis_hits, language,
         )
         log_protocol_event(
             user_id=user_id,
             protocol_type="3",
-            trigger_bucket="keyword_match",
-            trigger_keywords=", ".join(matched_keywords),
+            trigger_bucket="crisis_keyword",
+            trigger_keywords=", ".join(crisis_hits),
             family_alerted=0,
         )
-        return _get_protocol3_response(language)
+        return Protocol3Result(
+            response=_get_protocol3_response(language),
+            context_detected=True,
+            reason="crisis_keyword",
+        )
 
+    # --- Layer B: decision / pressure / asset buckets (fire + flag) ---
     for bucket_name, patterns in _ALL_BUCKETS:
         matched_keywords = _find_matches(text, patterns)
         if matched_keywords:
@@ -291,9 +404,30 @@ def check_protocol3(user_id: int, text: str, language: str = "english") -> Optio
                 trigger_keywords=", ".join(matched_keywords),
                 family_alerted=0,
             )
-            return _get_protocol3_response(language)
+            return Protocol3Result(
+                response=_get_protocol3_response(language),
+                context_detected=True,
+                reason=bucket_name,
+            )
 
-    return None
+    # --- Layer A: CONTEXT keywords (detect only — NO fire, NO session flag) ---
+    _context_re = [
+        re.compile(r"\b" + re.escape(kw) + r"\b", re.IGNORECASE)
+        for kw in CONTEXT_KEYWORDS
+    ]
+    context_hits = [
+        CONTEXT_KEYWORDS[i] for i, rx in enumerate(_context_re) if rx.search(text_lower)
+    ]
+    if context_hits:
+        # INFO not WARNING: this is awareness, not an intervention. No DB event,
+        # no fire, no flag. (A2 — feeding this to DeepSeek — is deferred.)
+        logger.info(
+            "PROTOCOL3 | user_id=%s | context_only (no fire) | keywords=%s",
+            user_id, context_hits,
+        )
+        return Protocol3Result(response=None, context_detected=True, reason="context_only")
+
+    return Protocol3Result(response=None, context_detected=False, reason=None)
 
 
 # ---------------------------------------------------------------------------

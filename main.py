@@ -1943,8 +1943,13 @@ async def _run_pipeline(
     )
 
     if not _p3_active:
-        # Only run keyword detection when P3 hasn't already fired this session
-        protocol3_reply = check_protocol3(user_id, text, language=user_language)
+        # Only run keyword detection when P3 hasn't already fired this session.
+        # Detection/intervention split (31 May 2026): a context-only financial
+        # noun (e.g. "rented property") returns response=None and does NOT fire
+        # P3 or set the 60-min protocol3_active flag. Only a crisis keyword or a
+        # Layer B decision/pressure match yields a non-None response.
+        p3_result = check_protocol3(user_id, text, language=user_language)
+        protocol3_reply = p3_result.response
         if protocol3_reply:
             await update.message.reply_text(protocol3_reply)
             # Voice — force=True (P3 Hindi is 444 chars, over default cap)
