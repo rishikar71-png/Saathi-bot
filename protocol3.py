@@ -176,8 +176,13 @@ _BUCKET1_PATTERNS = [
     # Investment solicitation
     r"promising (high )?returns",
     r"invest(ment)? opportunity",
-    # Authority-figure pressure (agent/manager/broker + financial action)
-    r"\b(agent|manager|broker|advisor)\b.{0,30}\b(invest|sign|scheme|returns|polic)",
+    # Authority-figure pressure — tightened 31 May 2026 so "travel agent wants
+    # me to sign the form" stays silent. Fire only when (a) the authority figure
+    # is financial in type, or (b) an authority figure co-occurs with a genuinely
+    # financial action. Bare "sign" is NOT a trigger here (handled by the Bucket 2
+    # signing pattern when it sits next to a financial/legal noun).
+    r"\b(insurance|bank|financial|investment|policy|mutual fund)\b.{0,15}\b(agent|manager|broker|advisor)\b",
+    r"\b(agent|manager|broker|advisor)\b.{0,40}\b(invest|scheme|returns|polic|nivesh|mutual fund|fixed deposit)\b",
     r"nivesh karne (bol|keh|kah)",
     r"pais[ae] lagane (bol|keh|kah)",
     # Cheating / dhoka ONLY when paired with money (bare forms excluded from Layer A)
