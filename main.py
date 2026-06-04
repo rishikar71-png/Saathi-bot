@@ -3349,6 +3349,85 @@ async def weekly_report_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Daily DB backup (31 May 2026)
+#
+# Railway native Volume backups require the Pro plan; this is the free offsite
+# path for the Hobby tier. Once a day we take a CONSISTENT snapshot of the
+# volume SQLite DB (online backup API — WAL-safe, unlike a raw file copy) and
+# send it to the admin Telegram chat as a document. Restore = download the file
+# and drop it back on the volume as saathi.db.
+# ---------------------------------------------------------------------------
+
+_last_backup_date_ist = None  # module-level self-gate: one backup per IST day
+_BACKUP_CHAT_ID = int(os.environ.get("BACKUP_CHAT_ID", "8711370451"))
+_BACKUP_HHMM_IST = os.environ.get("BACKUP_TIME_IST", "03:30")
+
+
+def _make_db_snapshot(src_path: str, dest_path: str) -> int:
+    """Write a consistent copy of the SQLite DB at src_path to dest_path using
+    the online backup API (safe with WAL mode and a live writer). Returns the
+    byte size of the snapshot. Pure stdlib — unit-testable in isolation.
+    """
+    import sqlite3
+    if os.path.exists(dest_path):
+        os.remove(dest_path)
+    src = sqlite3.connect(src_path)
+    dest = sqlite3.connect(dest_path)
+    try:
+        with dest:
+            src.backup(dest)
+    finally:
+        dest.close()
+        src.close()
+    return os.path.getsize(dest_path)
+
+
+async def backup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Called every minute. Once per IST day at BACKUP_TIME_IST, sends a
+    consistent snapshot of the volume DB to the admin Telegram chat. Self-gated;
+    a failure never crashes the scheduler and resets the gate so a later minute
+    can retry the same day.
+    """
+    global _last_backup_date_ist
+    try:
+        from datetime import datetime, timezone, timedelta
+        now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+        today = now_ist.strftime("%Y-%m-%d")
+        if _last_backup_date_ist == today:
+            return  # already backed up today
+        # Fire on the first tick AT OR AFTER the target time (robust to the 60s
+        # scheduler skipping the exact target minute, and catches up if the bot
+        # was down at the target time). HH:MM string compare is valid for the
+        # zero-padded format produced by strftime.
+        if now_ist.strftime("%H:%M") < _BACKUP_HHMM_IST:
+            return
+        _last_backup_date_ist = today  # claim the slot before the slow work
+
+        import database
+        src = database.DB_PATH
+        if not os.path.exists(src):
+            logger.error("BACKUP | source DB not found at %s — skipping", src)
+            return
+        snap = "/tmp/saathi_backup_%s.db" % today
+        size_kb = _make_db_snapshot(src, snap) / 1024.0
+        with open(snap, "rb") as fh:
+            await context.bot.send_document(
+                chat_id=_BACKUP_CHAT_ID,
+                document=fh,
+                filename="saathi_backup_%s.db" % today,
+                caption="🗄️ Saathi DB backup — %s IST (%.0f KB)" % (today, size_kb),
+            )
+        try:
+            os.remove(snap)
+        except OSError:
+            pass
+        logger.info("BACKUP | sent daily snapshot %s (%.0f KB)", today, size_kb)
+    except Exception as e:
+        _last_backup_date_ist = None  # allow a retry later today
+        logger.error("BACKUP | backup_job failed: %s", e)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -3487,6 +3566,10 @@ def main() -> None:
     # Register the weekly family report scheduler — runs every minute, self-gated to Sunday 10am IST
     app.job_queue.run_repeating(weekly_report_job, interval=60, first=45)
     logger.info("Weekly report scheduler registered (interval=60s, Sunday 10am IST)")
+
+    # Register the daily DB backup scheduler — runs every minute, self-gated to BACKUP_TIME_IST
+    app.job_queue.run_repeating(backup_job, interval=60, first=50)
+    logger.info("Backup scheduler registered (interval=60s, daily at %s IST)", _BACKUP_HHMM_IST)
 
     if WEBHOOK_URL:
         logger.info("Starting webhook mode on port %s", PORT)
