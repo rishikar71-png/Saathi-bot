@@ -1944,7 +1944,7 @@ async def _run_pipeline(
 
     if not _p3_active:
         # Only run keyword detection when P3 hasn't already fired this session.
-        # Detection/intervention split (31 May 2026): a context-only financial
+        # Detection/intervention split (4 June 2026): a context-only financial
         # noun (e.g. "rented property") returns response=None and does NOT fire
         # P3 or set the 60-min protocol3_active flag. Only a crisis keyword or a
         # Layer B decision/pressure match yields a non-None response.
@@ -3349,7 +3349,7 @@ async def weekly_report_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Daily DB backup (31 May 2026)
+# Daily DB backup (4 June 2026)
 #
 # Railway native Volume backups require the Pro plan; this is the free offsite
 # path for the Hobby tier. Once a day we take a CONSISTENT snapshot of the

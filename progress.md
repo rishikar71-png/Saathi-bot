@@ -1,7 +1,7 @@
 # SAATHI BOT — Build Progress
 
-Last updated: 30 April 2026 (cont. 3)
-Current phase: Module 19 — End-to-End Capability Testing (Tasks 1/4/5/6 done; Bug E1'' fix awaiting live verification; Tasks 2/3 deferred to next session)
+Last updated: 4 June 2026
+Current phase: PILOT LIVE — 18 invites sent 4 June. Monitoring responses. (Protocol 3 false-positive fix + daily DB backup job shipped same day; backup awaiting live-verify.)
 
 ---
 
@@ -340,12 +340,14 @@ Current phase: Module 19 — End-to-End Capability Testing (Tasks 1/4/5/6 done; 
 
 ---
 
-### ⬜ Module 20 — Testing + Pilot Prep
-- [ ] End-to-end test with all modules connected
-- [ ] 5 test users (non-seniors) run through full flow
-- [ ] 20-user pilot invite list prepared
-- [ ] Onboarding instructions written for adult children
-- [ ] Railway scaled as needed
+### 🔄 Module 20 — Testing + Pilot Prep
+- [x] End-to-end test with all modules connected (Patch 7/8/9 + Protocol 3 verified live)
+- [x] Pilot invite list prepared (5 seed invitees / 8 accounts; editable tracker artifact for more)
+- [x] Onboarding instructions written for adult children (Family + Senior guides + 3 WhatsApp blurbs, kaea-framed)
+- [x] **4 June: 18 pilot invites SENT — pilot is live, monitoring responses**
+- [ ] Live-verify daily backup job (confirm a .db lands in admin Telegram)
+- [ ] Decide family-escalation /join path for self-setup users (phone contacts can't get TG alerts)
+- [ ] Railway scaled as needed (Hobby tier; native backups need Pro — using free Telegram-dump instead)
 
 ---
 

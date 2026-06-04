@@ -53,6 +53,30 @@ These were flagged by external reviewers as real concerns beyond Patch 7's scope
 
 ---
 
+## P1 — Protocol 3 + pilot ops (added 4 June 2026)
+
+### Split Protocol 3 into subtype responses (P3-A / P3-B / P3-C)
+- GPT flagged a semantic mismatch: the single P3 response ("this isn't something I should help you decide — see a CA/lawyer") is tuned for asset/inheritance decisions, but it also fires for fraud/scam reports. A senior reporting a scam should not be told "see a lawyer."
+- Post-pilot: split into **P3-A** asset/inheritance decisions, **P3-B** financial pressure (family asking for money, borrowing), **P3-C** fraud/scam concern — each with its own wording. The 4 June detection refactor already tags `reason` (crisis_keyword / bucketN), so the routing hook exists.
+
+### Authority-pressure pattern — watch for misfires
+- The 4 June fix added `\b(agent|manager|broker|advisor)\b.{0,40}\b(invest|scheme|returns|polic|...)` plus a financial-type-agent pattern. The tightened version stays silent on "travel agent wants me to sign," but the agent+financial-action pattern is the loosest new regex. Watch pilot logs for false fires; tighten if needed.
+
+### cheating / dhoka demotion — watch for missed scams
+- Bare `cheating`/`dhoka` were demoted from solo-fire (ambiguous betrayal words). They now only fire in Layer B paired with money. Risk: a real scam phrased as "they cheated me" with no money word nearby would be missed. Watch pilot for this; add Layer B patterns if it surfaces.
+
+### Family escalation for self-setup users (phone vs Telegram link)
+- Self-setup users enter a phone *number* for emergency contact, which cannot receive Telegram alerts. So medicine-miss escalation, silence detection, and the weekly report dead-letter for self-setup seniors unless a family member `/join`s via the family code (which links their Telegram).
+- The senior companion experience is unaffected. But the family-facing safety-net value prop is inert for self-setup users until a family member joins.
+- Decide: prompt self-setup users (or their family) to join via code during/after onboarding, OR build SMS/phone-based alerting as an alternative path.
+
+### DB backup — live-verify + restore drill + offsite
+- The 4 June daily Telegram-dump backup job is built + pushed but **not live-verified** — confirm a `.db` arrives in the admin chat (first task next session).
+- Railway native Volume backups require the **Pro plan** (Hobby does not have them) — this corrects the 15 May note.
+- Post-pilot: (a) do a real **restore drill** (download a snapshot, load it, confirm integrity) — an untested backup is not a backup; (b) consider an **offsite copy** (e.g. GCS) for the catastrophic case (Railway account loss), since Telegram-dump + Railway are not fully independent.
+
+---
+
 ## P1 — design decisions to revisit with pilot data
 
 ### Self-setup consent model

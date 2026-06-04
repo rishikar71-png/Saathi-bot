@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Protocol3Result:
-    """Richer return for the detection/intervention split (31 May 2026).
+    """Richer return for the detection/intervention split (4 June 2026).
 
     response:         the P3 reply string when the protocol FIRES, else None.
     context_detected: a financial CONTEXT noun (or a fire) was present. Logged
@@ -49,9 +49,9 @@ class Protocol3Result:
     reason: Optional[str]
 
 # ---------------------------------------------------------------------------
-# Layer A — split into CONTEXT vs CRISIS (31 May 2026 fix).
+# Layer A — split into CONTEXT vs CRISIS (4 June 2026 fix).
 #
-# Root cause of the 31 May false positive: the old flat FINANCIAL_KEYWORDS list
+# Root cause of the false positive: the old flat FINANCIAL_KEYWORDS list
 # fired Protocol 3 (the heaviest non-crisis response) on the MERE MENTION of a
 # financial noun. "the tenant in one of my rented property is leaving" tripped
 # the bare word "property" and the senior was told to see a lawyer. A senior
@@ -154,7 +154,7 @@ _BUCKET1_PATTERNS = [
     r"financial (help|support|assistance)",
     r"loan (for|to)",
     r"(take|break) (my|your|the) (FD|fixed deposit|savings)",
-    # --- Added 31 May 2026 (review-named coverage gaps) ---
+    # --- Added 4 June 2026 (review-named coverage gaps) ---
     # Relational / pestering pressure (English)
     r"keeps? asking (me )?for (money|cash|paisa|paise)",
     r"wants? (his|her|their) share",
@@ -176,7 +176,7 @@ _BUCKET1_PATTERNS = [
     # Investment solicitation
     r"promising (high )?returns",
     r"invest(ment)? opportunity",
-    # Authority-figure pressure — tightened 31 May 2026 so "travel agent wants
+    # Authority-figure pressure — tightened 4 June 2026 so "travel agent wants
     # me to sign the form" stays silent. Fire only when (a) the authority figure
     # is financial in type, or (b) an authority figure co-occurs with a genuinely
     # financial action. Bare "sign" is NOT a trigger here (handled by the Bucket 2
@@ -229,7 +229,7 @@ _BUCKET2_PATTERNS = [
     r"cut (him|her|them) out",
     r"(divide|split) (my |the )?assets",
     r"(share|portion|cut) of (my |the )?estate",
-    # --- Added 31 May 2026 (review-named coverage gaps) ---
+    # --- Added 4 June 2026 (review-named coverage gaps) ---
     # Urgent / coerced liquidation (English) — bounded proximity, never .*
     r"sell(ing)? (the |my )?(flat|house|property|land|shares?|stocks?)\b.{0,20}\b(quick|fast|urgent|to help|for him|for her|for them|for his|for her)",
     r"break(ing)? (my |the )?(fd|fixed deposit|savings)",
@@ -346,7 +346,7 @@ def check_protocol3(user_id: int, text: str, language: str = "english") -> "Prot
     """
     Check the message for Protocol 3 financial/legal signals.
 
-    Detection/intervention split (31 May 2026). Evaluation order:
+    Detection/intervention split (4 June 2026). Evaluation order:
       1. CRISIS_KEYWORDS (Layer A, unambiguous malice) -> FIRE + flag.
       2. Layer B buckets (decision / pressure / asset)  -> FIRE + flag.
       3. CONTEXT_KEYWORDS (bare financial nouns)        -> DETECT ONLY, no fire.
