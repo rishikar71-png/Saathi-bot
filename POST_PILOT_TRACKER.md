@@ -115,6 +115,33 @@ Pilot data signal: how many self-setup users want to update these post-onboardin
 
 ---
 
+## P2 / P3 — added 5 June 2026 (diary wiring + name validator session)
+
+### Diary `mood_score` always 3 (P2)
+- The diary prompt asks DeepSeek for a mood *word* ("content", "tired") but no numeric 1–5 `mood_score`. `write_diary_entry` therefore always falls back to `mood_score=3`. The weekly report / v2 dashboard mood-trend line will be flat.
+- Fix: either have the prompt also return a 1–5 score, or map the mood word → score in `write_diary_entry`. Verified live 5 June (entry for 2026-06-05 stored mood_label='content', mood_score=3).
+
+### Diary log line prints wrong key (P3 cosmetic)
+- `memory.py write_diary_entry` logs `data.get("mood_label")` (→ `None`) instead of `data.get("mood")`. The stored value is correct; only the log reads `mood=None`. One-line fix.
+
+### `last_active_at` is a dead column (P3)
+- Defined + migrated on `users`, but **never written** anywhere. Only read by `family.py` (weekly report "last active" line → renders blank). Silence detection uses `MAX(created_at) FROM messages`, so this is cosmetic, not a safety bug.
+- Fix: either populate `last_active_at` on each inbound message, or drop the column and point the weekly report at `messages`.
+
+### "Skip" / non-Indian city stored literally (P2)
+- Pilot user Gati is LA-based; at the city step they replied "skip" → stored as literal city "Skip" (and OWM can't resolve non-Indian cities → no weather). City step has no skip-handling or validation like the name step now has.
+- Fix: add skip-signal handling at the city step (store NULL, ack "no city set"), and consider extending the diaspora city/timezone map (22 Apr work) to cover the LA/NY/Melbourne pilot users so weather resolves.
+
+### Purge stale pre-pilot test accounts (P3)
+- `users` has 2 stale test rows from before the 4 June pilot: 8319343123 ("Can You Remind…", created 20 Apr) and 8765757604 ("Mani", 3 May). They inflate pilot counts and one carries the pre-fix garbage name.
+- Blocker: there is **no per-user admin reset** — `/adminreset` only resets the admin's own account; no `/wipeuser <tg_id>` or `/setname <tg_id>` exists. Either add one of those admin commands or delete the rows directly in the DB.
+
+### Persist the backup/diary day-gate (P3, optional)
+- `_last_backup_date_ist` / `_last_diary_date_ist` are in-memory, so every redeploy re-fires both jobs (catch-up semantics). Harmless (diary upserts; backup is idempotent) but noisy during active dev.
+- Fix: persist the last-run date to the DB or a file on the volume so restarts don't re-fire.
+
+---
+
 ## P2 — UX nits
 
 ### Self-setup ritual times — silent acceptance of unparseable input

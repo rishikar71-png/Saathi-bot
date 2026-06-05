@@ -4,9 +4,15 @@
 
 ---
 
-## Headline: PILOT SHIPPED 🚀
+## Headline: PILOT LIVE — backup + diary verified, now monitoring
 
-**4 June 2026: 18 pilot invites sent.** Now in the watch-and-respond phase — see how many onboard, log issues from real users.
+**4 June: 18 invites sent. 5 June: backup live-verified, nightly diary wired + verified, name validator shipped.** Reality check from the DB snapshot: **only 1 of 17 real invitees has actually onboarded** (Gati). The watch-and-respond phase is the job now — chase onboarding + triage real-user bugs.
+
+**HEAD at 5 June close:** `fc8216c` (name validator) on top of `db8702d` (diary job) on top of `7ffe965` (4 June docs). Plus an unpushed doc commit (this file + CLAUDE.md + POST_PILOT_TRACKER.md). Push:
+```bash
+cd ~/saathi-bot && rm -f .git/index.lock && git add -A && git commit -m "Session close 5 June: backup verified, diary wired+verified, name validator, tracker" && git push origin main
+```
+Also: revert Railway `DIARY_TIME_IST` to `00:30` (or delete it — code default is 00:30).
 
 ---
 
@@ -67,11 +73,19 @@ No "kaea brand spec" doc exists; it was only ever a one-line item. The 6 user-fa
 
 ## Next session — priority order
 
-1. **Live-verify the backup job** (first task — see §2 above). Backups are NOT "on" until a `.db` lands in Telegram.
-2. **Monitor pilot responses** — how many of the 18 onboarded? Watch Railway logs + your own Telegram for issues from real users. Triage anything pilot-breaking immediately.
+1. **Pilot monitoring (the main job).** Only 1 of 17 real invitees has onboarded. Two fronts: (a) **onboarding conversion** — why have 16 not started? Likely Telegram-install friction or the invite didn't land; chase via the right WhatsApp message (with-Telegram vs no-Telegram). (b) **real-user bug triage** — watch Railway logs + admin Telegram; fix anything pilot-breaking immediately.
+2. **Run `pilot_status.py` on the latest backup `.db`** for a fast read (onboarded count, per-user message volume + last-active, family-alert reachability, medicine streaks, protocol triggers, late-night usage). Script lives in the outputs scratch dir; point it at any snapshot: `python3 pilot_status.py <snapshot.db>`.
 3. **Fill the tracker** as invitees reply (language / Telegram / status).
-4. **Decide on the family-escalation limitation** — do you want self-setup users' families to join via code so alerts work?
-5. POST_PILOT_TRACKER items only if surfaced as pilot-blocking by real users.
+4. **Decide the family-escalation limitation** — self-setup users' phone-number contacts can't get Telegram alerts. Want their families to `/join` via code so alerts work?
+5. **Restore drill** (take up shortly) — download a snapshot, load it, confirm the bot boots + integrity_check ok. An untested backup is not a backup.
+6. POST_PILOT_TRACKER items only if surfaced as pilot-blocking by real users.
+
+## Pilot-ops cadence (agreed 5 June)
+
+- **Daily (~2 min):** glance at admin Telegram for the 03:30 backup `.db` (confirms the bot is alive + DB intact) and for any Protocol-1/emergency alert. Skim Railway logs for `ERROR`/`failed`.
+- **Every 2–3 days (~10 min):** send the newest backup to this session; `pilot_status.py` readout → check new onboards, who's gone quiet, any protocol triggers from real users, late-night patterns.
+- **Weekly:** review the Sunday family-report path (once a real family member has `/join`ed); re-prioritize POST_PILOT_TRACKER against real signal; chase un-onboarded invitees.
+- **Immediately, any time:** a Protocol-1 trigger from a real user, a crash loop in logs, or a senior reporting the bot is broken → triage now, don't wait for the cadence.
 
 ---
 
