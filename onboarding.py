@@ -155,6 +155,108 @@ def _parse_setup_person(text: str) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Name-step input handling — reject sentences/questions at "what should I call
+# you?" so a conversational reply ("can you remind me tomorrow? I've booked an
+# exhibition…") is never stored verbatim as the senior's name. Re-ask once,
+# then accept a best-effort name so a confused senior is never trapped on the
+# first question.
+# ---------------------------------------------------------------------------
+
+_NAME_INTRO_RE = re.compile(
+    r"^\s*(?:my name is|my name's|name is|i am|i'm|im|call me|you can call me|"
+    r"mera naam|mera nam|mujhe|naam)\s+",
+    re.IGNORECASE,
+)
+_NAME_OUTRO_RE = re.compile(
+    r"\s+(?:hai|he|kaho|kahiye|kahna|bula(?:o|iye|na)?|bol(?:o|iye)?)\s*$",
+    re.IGNORECASE,
+)
+
+# Words a name reply effectively never starts with — interrogatives, question
+# auxiliaries, and command leads (English + Hindi). A reply beginning with one
+# of these is a question/command, not a name. Matched on the exact first token,
+# so real names like "Kabir" (≠ "kab") or "Hari" are unaffected. The rare real
+# name that is itself a lead word (e.g. "Will") is salvaged by the best-effort
+# path after a single re-ask, so this list can be broad without harm.
+_NON_NAME_LEADS = {
+    "what", "who", "whom", "whose", "why", "how", "where", "when", "which",
+    "is", "are", "am", "was", "were", "do", "does", "did", "can", "could",
+    "will", "would", "should", "may", "might", "have", "has", "had", "shall",
+    "tell", "please", "give", "show", "send", "remind", "book", "help", "let",
+    "kya", "kaun", "kyun", "kyon", "kaise", "kaisa", "kaisi", "kahan", "kab",
+    "kitna", "kitni", "kuch", "mujhe", "batao", "bata", "karo", "kar", "de",
+}
+
+_NAME_REASK = (
+    "I want to be sure I get this right — what name would you like me to call "
+    "you? Just your name is all I need."
+)
+
+# In-memory, once-only re-ask gate. Resets on redeploy, which is acceptable for
+# a two-message onboarding window (mirrors the codebase's other in-memory
+# session counters). Worst case after a redeploy between the two messages: the
+# senior is re-asked once more — never a hard failure.
+_name_reask_seen: set = set()
+
+
+def _sanitize_name(raw: str) -> str:
+    """Strip name-intro/outro phrases and surrounding punctuation from a reply."""
+    s = (raw or "").strip()
+    s = _NAME_INTRO_RE.sub("", s)
+    s = _NAME_OUTRO_RE.sub("", s)
+    return s.strip(" \t\r\n.,!?-—:;\"'")
+
+
+def _looks_like_name(s: str) -> bool:
+    """True if s is plausibly a person's name, not a sentence or a question."""
+    s = (s or "").strip()
+    if not s or "?" in s:
+        return False
+    tokens = s.split()
+    if len(tokens) > 4 or len(s) > 40:
+        return False
+    if any(len(tok) > 20 for tok in tokens):
+        return False
+    if len(re.findall(r"\d", s)) >= 3:          # phone-like, not a name
+        return False
+    if tokens[0].lower().strip(".,!?'\"") in _NON_NAME_LEADS:
+        return False                             # starts like a question/command
+    return bool(re.search(r"[A-Za-zऀ-ॿ]", s))  # has at least one letter
+
+
+def _best_effort_name(raw: str) -> str:
+    """Last-resort name from a non-name reply: first 1–2 alphabetic tokens."""
+    s = _sanitize_name(raw)
+    tokens = [tok for tok in re.split(r"\s+", s)
+              if re.search(r"[A-Za-zऀ-ॿ]", tok)]
+    if not tokens:
+        return "Friend"
+    pick = re.sub(r"[^A-Za-zऀ-ॿ\s'\-]", "", " ".join(tokens[:2])).strip()
+    return pick.title() if pick else "Friend"
+
+
+def _resolve_name_input(user_id: int, raw: str):
+    """Decide how to handle a name-step reply.
+
+    Returns (name_to_store, reask_message):
+      • (name, None) — store this name and advance.
+      • (None, msg)  — send msg and STAY on the name step (re-ask, once only).
+
+    Re-asks at most once per user; a second non-name reply yields a best-effort
+    name so the senior is never trapped on the first onboarding question.
+    """
+    cleaned = _sanitize_name(raw)
+    if _looks_like_name(cleaned):
+        _name_reask_seen.discard(user_id)
+        return (cleaned.title(), None)
+    if user_id not in _name_reask_seen:
+        _name_reask_seen.add(user_id)
+        return (None, _NAME_REASK)
+    _name_reask_seen.discard(user_id)
+    return (_best_effort_name(raw), None)
+
+
+# ---------------------------------------------------------------------------
 # Deferral detection — "I don't have the details, ask the senior later".
 # Used at step 7 (grandkids) and step 10 (medicines). When detected, we
 # warm-ack + flag in ctx so Batch 2's ask-Ma-later mechanism can pick it up.
@@ -1205,7 +1307,9 @@ def _save_self_setup_answer(user_id: int, step: int, text: str, ctx: dict) -> Op
 
     # --- Day 1 ---
     if step == 1:  # What would you like me to call you?
-        name = t.title()
+        name, reask = _resolve_name_input(user_id, t)
+        if reask is not None:
+            return reask  # not name-shaped — re-ask once, stay on this step
         ctx["senior_name"] = name
         update_user_fields(user_id, name=name)
     elif step == 2:  # What would you like to call me?
@@ -1353,7 +1457,9 @@ def _save_answer(user_id: int, step: int, text: str, ctx: dict) -> Optional[str]
         save_setup_person(user_id, name, phone)
 
     elif step == 1:
-        name = t.title()
+        name, reask = _resolve_name_input(user_id, t)
+        if reask is not None:
+            return reask  # not name-shaped — re-ask once, stay on this step
         ctx["senior_name"] = name
         update_user_fields(user_id, name=name)
 
