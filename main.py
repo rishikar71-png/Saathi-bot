@@ -42,7 +42,7 @@ from onboarding import (
     detect_archetype_signal,
     get_archetype_adjustment_text,
 )
-from memory import extract_and_save_memories
+from memory import extract_and_save_memories, write_diary_entry
 from whisper import transcribe_voice
 from tts import text_to_speech
 from youtube import detect_music_request, find_music, build_music_message
@@ -3349,6 +3349,68 @@ async def weekly_report_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Nightly diary (wired 5 June 2026)
+#
+# write_diary_entry() summarises each user's day of conversation into a
+# diary_entries row that feeds the NEXT day's context injection (last-3-diary
+# entries + same-day-last-week/month). It was built in Module 7 but never
+# scheduled — diary_entries was empty in production until this job was wired.
+#
+# Timing note: write_diary_entry() selects messages by UTC date
+# (date(created_at) = date('now')) and stamps entry_date with the UTC date.
+# Running at 00:30 IST (= 19:00 UTC) means date('now') UTC still points at the
+# senior's just-completed waking day (UTC date D = IST window 05:30 D .. 05:29 D+1,
+# i.e. an Indian senior's daytime), so this run captures the right day's
+# messages. Override with DIARY_TIME_IST if needed.
+# ---------------------------------------------------------------------------
+
+_last_diary_date_ist = None  # module-level self-gate: one diary run per IST day
+_DIARY_HHMM_IST = os.environ.get("DIARY_TIME_IST", "00:30")
+
+
+async def diary_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Called every minute. Once per IST day at DIARY_TIME_IST, writes a diary
+    entry for every onboarded user who spoke that day. Self-gated; a failure for
+    one user never stops the others, and a top-level failure resets the gate so a
+    later minute can retry the same day. Each per-user call is offloaded to a
+    thread (it makes a blocking DeepSeek call) and runs sequentially, so at most
+    one diary write is in flight at a time.
+    """
+    global _last_diary_date_ist
+    try:
+        from datetime import datetime, timezone, timedelta
+        now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+        today = now_ist.strftime("%Y-%m-%d")
+        if _last_diary_date_ist == today:
+            return  # already ran today
+        if now_ist.strftime("%H:%M") < _DIARY_HHMM_IST:
+            return  # not time yet
+        _last_diary_date_ist = today  # claim the slot before the slow work
+
+        import database
+        with database.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT user_id FROM users WHERE onboarding_complete = 1"
+            ).fetchall()
+        user_ids = [r["user_id"] for r in rows]
+
+        written = 0
+        for uid in user_ids:
+            try:
+                if await asyncio.to_thread(write_diary_entry, uid):
+                    written += 1
+            except Exception as e:
+                logger.error("DIARY | user_id=%s | job failed: %s", uid, e)
+        logger.info(
+            "DIARY | nightly run %s | %d/%d onboarded users got an entry",
+            today, written, len(user_ids),
+        )
+    except Exception as e:
+        _last_diary_date_ist = None  # allow a retry later today
+        logger.error("DIARY | diary_job failed: %s", e)
+
+
+# ---------------------------------------------------------------------------
 # Daily DB backup (4 June 2026)
 #
 # Railway native Volume backups require the Pro plan; this is the free offsite
@@ -3570,6 +3632,10 @@ def main() -> None:
     # Register the daily DB backup scheduler — runs every minute, self-gated to BACKUP_TIME_IST
     app.job_queue.run_repeating(backup_job, interval=60, first=50)
     logger.info("Backup scheduler registered (interval=60s, daily at %s IST)", _BACKUP_HHMM_IST)
+
+    # Register the nightly diary scheduler — runs every minute, self-gated to DIARY_TIME_IST
+    app.job_queue.run_repeating(diary_job, interval=60, first=55)
+    logger.info("Diary scheduler registered (interval=60s, nightly at %s IST)", _DIARY_HHMM_IST)
 
     if WEBHOOK_URL:
         logger.info("Starting webhook mode on port %s", PORT)
